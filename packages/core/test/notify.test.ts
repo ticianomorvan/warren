@@ -136,6 +136,22 @@ describe('kapsoSender', () => {
     expect(result).toMatchObject({ outcome: 'failed', errorCode: WINDOW_CLOSED, retryable: false })
   })
 
+  it("reads Kapso's own 24-hour refusal as a closed window", async () => {
+    // The body Kapso really sends (seen 2026-11-18), before Meta is asked at all.
+    const { fetchFn } = fakeFetch(422, {
+      error: 'Cannot send non-template messages outside the 24-hour window.',
+      next_steps: 'Send a WhatsApp template message to reopen the session.',
+    })
+    const result = await kapsoSender({ ...config, fetchFn }).sendText('hola')
+    expect(result).toMatchObject({ outcome: 'failed', errorCode: WINDOW_CLOSED, retryable: false })
+  })
+
+  it('does not take any other 422 for a closed window', async () => {
+    const { fetchFn } = fakeFetch(422, { error: 'Invalid recipient.' })
+    const result = await kapsoSender({ ...config, fetchFn }).sendText('hola')
+    expect(result).toMatchObject({ outcome: 'failed', errorCode: null, retryable: false })
+  })
+
   it('treats outages and network errors as temporary', async () => {
     const down = fakeFetch(503, {})
     expect(await kapsoSender({ ...config, fetchFn: down.fetchFn }).sendText('x')).toMatchObject({
@@ -306,6 +322,18 @@ describe('flushNotices', () => {
     expect(outbox.attempts).toHaveLength(1)
   })
 
+  it('leaves a temporary failure for the next run', async () => {
+    const outbox = new MemoryOutbox(sent)
+    const down: SendResult = { outcome: 'failed', errorCode: null, retryable: true, detail: 'x' }
+    const sender = scriptedSender([down], [])
+    expect(await flushNotices(outbox.within, sender)).toHaveLength(1)
+    expect(await flushNotices(outbox.within, sender)).toHaveLength(1)
+    expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
+      'text:failed',
+      'text:sent',
+    ])
+  })
+
   it('falls back to the template when the window is closed', async () => {
     const outbox = new MemoryOutbox(sent)
     const closed: SendResult = {
@@ -316,12 +344,60 @@ describe('flushNotices', () => {
     }
     const sender = scriptedSender([closed], [])
     await flushNotices(outbox.within, sender)
-    await flushNotices(outbox.within, sender)
     expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
       'text:failed',
       'template:sent',
     ])
     expect(outbox.attempts[1]?.body).toBe(noticeOneLine(sent))
+    await flushNotices(outbox.within, sender)
+    expect(outbox.attempts).toHaveLength(2)
+  })
+
+  it('does not retry a failed template in the same run', async () => {
+    const outbox = new MemoryOutbox(sent)
+    const closed: SendResult = {
+      outcome: 'failed',
+      errorCode: WINDOW_CLOSED,
+      retryable: false,
+      detail: 'http-422',
+    }
+    const busy: SendResult = { outcome: 'failed', errorCode: null, retryable: true, detail: 'x' }
+    const sender = scriptedSender([closed], [busy])
+    expect(await flushNotices(outbox.within, sender)).toHaveLength(2)
+    expect(await flushNotices(outbox.within, sender)).toHaveLength(1)
+    expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
+      'text:failed',
+      'template:failed',
+      'template:sent',
+    ])
+  })
+
+  it('sends the template in the same run when Kapso refuses the text for the window', async () => {
+    const outbox = new MemoryOutbox(sent)
+    const bodies: unknown[] = []
+    const fetchFn = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { type: string }
+      bodies.push(body.type)
+      return body.type === 'text'
+        ? new Response(
+            JSON.stringify({
+              error: 'Cannot send non-template messages outside the 24-hour window.',
+            }),
+            { status: 422 },
+          )
+        : new Response(JSON.stringify({ messages: [{ id: 'wamid.T' }] }), { status: 200 })
+    }) as typeof fetch
+    const sender = kapsoSender({
+      ...config,
+      template: { name: 'movement_notice', language: 'es_AR' },
+      fetchFn,
+    })
+    await flushNotices(outbox.within, sender)
+    expect(bodies).toEqual(['text', 'template'])
+    expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
+      'text:failed',
+      'template:sent',
+    ])
   })
 
   it('sends the template after WhatsApp reports the text as failed', async () => {

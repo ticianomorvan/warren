@@ -45,7 +45,7 @@ export function kapsoSender(config: KapsoConfig): WhatsAppSender {
     }
     const json = (await res.json().catch(() => null)) as {
       messages?: { id?: unknown }[]
-      error?: { code?: unknown; message?: unknown }
+      error?: { code?: unknown; message?: unknown } | string
     } | null
     if (res.ok) {
       const wamid = json?.messages?.[0]?.id
@@ -53,8 +53,18 @@ export function kapsoSender(config: KapsoConfig): WhatsAppSender {
       // Probably delivered, so it must not be sent again.
       return { outcome: 'failed', errorCode: null, retryable: false, detail: 'no-message-id' }
     }
-    const code = typeof json?.error?.code === 'number' ? json.error.code : null
-    const reason = typeof json?.error?.message === 'string' ? json.error.message : ''
+    const error = json?.error
+    // Kapso checks the 24-hour window itself and answers 422 with a plain string, before Meta
+    // would answer 131047. Both mean the same thing: only a template gets through.
+    const kapsoWindowClosed =
+      res.status === 422 && typeof error === 'string' && /24-hour window/i.test(error)
+    const code = kapsoWindowClosed
+      ? WINDOW_CLOSED
+      : typeof error === 'object' && typeof error?.code === 'number'
+        ? error.code
+        : null
+    const reason =
+      typeof error === 'string' ? error : typeof error?.message === 'string' ? error.message : ''
     return {
       outcome: 'failed',
       errorCode: code,

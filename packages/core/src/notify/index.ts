@@ -72,21 +72,47 @@ export async function flushNotices(
 ): Promise<Attempt[]> {
   const owed = await withOutbox((outbox) => outbox.owed())
   const made: Attempt[] = []
+  const hasTemplate = sender.sendTemplate !== undefined
   for (const notice of owed) {
-    const plan = planAttempt(notice.history, sender.sendTemplate !== undefined)
+    const plan = planAttempt(notice.history, hasTemplate)
     if (plan === 'done' || plan === 'give-up') continue
-    let attempt: Attempt
-    if (plan === 'template' && sender.sendTemplate) {
-      const body = noticeOneLine(notice.movement)
-      attempt = { mode: 'template', body, ...(await sender.sendTemplate(body)) }
-    } else {
-      const body = noticeText(notice.movement)
-      attempt = { mode: 'text', body, ...(await sender.sendText(body)) }
+    const first = await attempt(sender, plan, notice.movement)
+    await withOutbox((outbox) => outbox.recordAttempt(notice.noticeId, first))
+    made.push(first)
+    // A closed window moves on to the template at once, so the notice is not held until the
+    // next mail arrives. Any other failure waits for the next run.
+    const next = planAttempt([...notice.history, asRecord(first)], hasTemplate)
+    if (first.mode === 'text' && next === 'template') {
+      const second = await attempt(sender, 'template', notice.movement)
+      await withOutbox((outbox) => outbox.recordAttempt(notice.noticeId, second))
+      made.push(second)
     }
-    await withOutbox((outbox) => outbox.recordAttempt(notice.noticeId, attempt))
-    made.push(attempt)
   }
   return made
+}
+
+async function attempt(
+  sender: WhatsAppSender,
+  mode: AttemptMode,
+  movement: NoticeMovement,
+): Promise<Attempt> {
+  if (mode === 'template' && sender.sendTemplate) {
+    const body = noticeOneLine(movement)
+    return { mode: 'template', body, ...(await sender.sendTemplate(body)) }
+  }
+  const body = noticeText(movement)
+  return { mode: 'text', body, ...(await sender.sendText(body)) }
+}
+
+function asRecord(attempt: Attempt): AttemptRecord {
+  return attempt.outcome === 'sent'
+    ? { mode: attempt.mode, failed: false, errorCode: null, retryable: false }
+    : {
+        mode: attempt.mode,
+        failed: true,
+        errorCode: attempt.errorCode,
+        retryable: attempt.retryable,
+      }
 }
 
 /**
