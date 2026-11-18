@@ -42,7 +42,7 @@ describe('erasure and work in flight', () => {
   })
 
   it('finds the tombstone after erasure and never makes a new key', async () => {
-    await eraseUser(t.eraser, user, files)
+    await eraseUser(t, user, files)
     for (const spelling of [user, user.toUpperCase()]) {
       await expect(asUser(t.app, spelling, async () => 'ran')).rejects.toBeInstanceOf(
         UserErasedError,

@@ -153,7 +153,7 @@ describe('the meta test: erasure covers everything', () => {
 
   it('passes on the baseline: the eraser can do exactly what the erasure set says', async () => {
     const checks = await checkErasure(t.app)
-    expect(checks).toHaveLength(5)
+    expect(checks).toHaveLength(8)
     expect(failures(checks)).toEqual([])
   })
 
@@ -208,6 +208,43 @@ describe('the meta test: erasure covers everything', () => {
       await ddl('drop trigger event_x on event')
     }
     expect(failures(await checkErasure(t.app))).toEqual([])
+  })
+
+  it('fails when warren_auth may delete a user row, or loses a delete erasure needs', async () => {
+    await ddl('grant delete on "user" to warren_auth')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain('extra: DELETE user')
+    } finally {
+      await ddl('revoke delete on "user" from warren_auth')
+    }
+    await ddl('revoke delete on session from warren_auth')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain('missing: DELETE session')
+    } finally {
+      await ddl('grant delete on session to warren_auth')
+    }
+  })
+
+  it('fails when the user row gains a column erasure does not know about', async () => {
+    await ddl('alter table "user" add column phone text')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain('user.phone is unreviewed')
+    } finally {
+      await ddl('alter table "user" drop column phone')
+    }
+  })
+
+  it('fails when sessions can be made for an erased user', async () => {
+    await ddl('drop trigger session_not_for_erased_user on session')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain(
+        'session_not_for_erased_user is missing',
+      )
+    } finally {
+      await ddl(
+        'create trigger session_not_for_erased_user before insert on session for each row execute function refuse_session_for_erased_user()',
+      )
+    }
   })
 
   it('fails when a kept table gains a column that is neither sealed nor reviewed', async () => {

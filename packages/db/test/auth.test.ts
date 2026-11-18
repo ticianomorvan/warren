@@ -22,7 +22,7 @@ beforeAll(async () => {
 describe('setCredentialPassword', () => {
   it('gives a user without a password one, as warren_auth', async () => {
     expect(await credentials()).toEqual([])
-    expect(await setCredentialPassword(t.auth, user, 'hash-one')).toBe(true)
+    expect(await setCredentialPassword(t.auth, user, 'hash-one')).toBe('set')
     expect(await credentials()).toMatchObject([
       { providerId: 'credential', accountId: user, password: 'hash-one' },
     ])
@@ -37,12 +37,12 @@ describe('setCredentialPassword', () => {
       }),
     )
     expect(await sessions()).toHaveLength(1)
-    expect(await setCredentialPassword(t.auth, user, 'hash-two')).toBe(true)
+    expect(await setCredentialPassword(t.auth, user, 'hash-two')).toBe('set')
     expect(await credentials()).toMatchObject([{ password: 'hash-two' }])
     expect(await sessions()).toEqual([])
   })
 
   it('says so when the user does not exist, and writes nothing', async () => {
-    expect(await setCredentialPassword(t.auth, randomUUID(), 'hash')).toBe(false)
+    expect(await setCredentialPassword(t.auth, randomUUID(), 'hash')).toBe('no-user')
   })
 })

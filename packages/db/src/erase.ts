@@ -1,5 +1,6 @@
 import { userFilesPrefix } from '@warren/core'
 import { desc, eq } from 'drizzle-orm'
+import { type AuthErasure, eraseAuthUser } from './auth'
 import {
   canonicalUserId,
   type Database,
@@ -16,10 +17,17 @@ export type ErasureReport = {
   files: number
   /** True when the user had been erased before: only the files were swept again. */
   alreadyErased: boolean
+  /** What was removed from the sign-in side: sessions and credentials. */
+  auth: AuthErasure
 }
 
+/** The two roles erasure needs: `eraser` for the ledger side, `auth` for sign-in. */
+export type ErasureDatabases = { eraser: Database; auth: Database }
+
 /**
- * Erases a user. Connect as `warren_eraser`: it may delete only the user's rows in
+ * Erases a user. First, as `warren_auth`, it ends the user's sessions and credentials and
+ * scrubs their email and name (`eraseAuthUser`), so nobody can sign in as them while the rest
+ * runs. Then, as `warren_eraser`, which may delete only the user's rows in
  * `ERASED_TABLES` (their key, mailboxes, accounts and identifiers, movements, sources and
  * notices), write the tombstone, and read the chain head.
  *
@@ -27,19 +35,22 @@ export type ErasureReport = {
  * and work that starts later finds the tombstone), deletes those rows and writes
  * `erasure(user_id, chain_head, erased_at)`. After the commit it deletes the user's files.
  * Everything append-only stays as ciphertext nobody can open once the key is gone, and every
- * chain, this user's included, still verifies.
+ * chain, this user's included, still verifies. Each step is safe to run again, so a run that
+ * stopped halfway is finished by running it again.
  *
  * Files: an intake that was in flight can put a file after the sweep. Intake deletes that file
  * itself when it finds the user erased (`ensureStored`, best effort). If even that failed, run
  * this again: for an erased user it only repeats the sweep. So is it when the first sweep fails.
  */
 export async function eraseUser(
-  database: Database,
+  { eraser, auth }: ErasureDatabases,
   id: string,
   files: { deletePrefix(prefix: string): Promise<number> },
 ): Promise<ErasureReport> {
   const userId = canonicalUserId(id)
-  const report = await inUserContext(database, userId, async (tx) => {
+  const signIn = await eraseAuthUser(auth, userId)
+  if (!signIn) throw new Error(`no user ${userId}`)
+  const report = await inUserContext(eraser, userId, async (tx) => {
     await lockUserExclusive(tx, userId, ERASURE_LOCK)
     const done = await tx
       .select({ userId: erasure.userId })
@@ -60,5 +71,5 @@ export async function eraseUser(
     await tx.insert(erasure).values({ userId, chainHead: head })
     return { chainHead: head ? Buffer.from(head).toString('hex') : null, alreadyErased: false }
   })
-  return { ...report, files: await files.deletePrefix(userFilesPrefix(userId)) }
+  return { ...report, auth: signIn, files: await files.deletePrefix(userFilesPrefix(userId)) }
 }

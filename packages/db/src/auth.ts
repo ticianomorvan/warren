@@ -1,34 +1,50 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import type { Pool } from 'pg'
 import { canonicalUserId, type Database, inSystemContext } from './client'
-import { authAccount, session, user, verification } from './schema'
+import { authAccount, rateLimit, session, user, verification } from './schema'
 
 /**
- * What Better Auth sees of the database: its four tables, and nothing else. The key of the
- * renamed `account` table is the model name Better Auth is configured with (`auth_account`).
- * Connect it with the `warren_auth` URL: that role has grants on these tables only.
+ * What Better Auth sees of the database: its tables, and nothing else. The keys of the renamed
+ * `account` and `rateLimit` tables are the model names Better Auth is configured with
+ * (`auth_account`, `rate_limit`). Connect it with the `warren_auth` URL: that role has grants on
+ * these tables only.
  */
-export const authSchema = { user, session, auth_account: authAccount, verification }
+export const authSchema = {
+  user,
+  session,
+  auth_account: authAccount,
+  verification,
+  rate_limit: rateLimit,
+}
 
 export function createAuthDatabase(pool: Pool) {
   return drizzle(pool, { schema: authSchema })
 }
 
+export type SetPasswordResult = 'set' | 'no-user' | 'erased'
+
 /**
  * Gives a user a password, or replaces theirs, and ends their sessions. For the operator, until
  * a reset mail exists (slice 6): `hash` comes from Better Auth's own hasher, never the password.
- * Run it on a connection as `warren_auth`. Returns false when there is no such user.
+ * Run it on a connection as `warren_auth`. An erased user gets none: their credentials are gone
+ * for good, and a new one would let them sign in again.
  */
 export async function setCredentialPassword(
   auth: Database,
   id: string,
   hash: string,
-): Promise<boolean> {
+): Promise<SetPasswordResult> {
   const userId = canonicalUserId(id)
   return inSystemContext(auth, async (tx) => {
-    const found = await tx.select({ id: user.id }).from(user).where(eq(user.id, userId))
-    if (found.length === 0) return false
+    // The row lock orders this against an erasure in flight: it waits, then sees the result.
+    const found = await tx
+      .select({ erasedAt: user.erasedAt })
+      .from(user)
+      .where(eq(user.id, userId))
+      .for('update')
+    if (!found[0]) return 'no-user'
+    if (found[0].erasedAt) return 'erased'
     const credential = and(eq(authAccount.userId, userId), eq(authAccount.providerId, 'credential'))
     const updated = await tx
       .update(authAccount)
@@ -41,6 +57,54 @@ export async function setCredentialPassword(
         .values({ userId, providerId: 'credential', accountId: userId, password: hash })
     }
     await tx.delete(session).where(eq(session.userId, userId))
-    return true
+    return 'set'
+  })
+}
+
+export type AuthErasure = { sessions: number; accounts: number }
+
+/**
+ * The auth side of erasing a user, as `warren_auth`: deletes their sessions, their credentials
+ * and any pending verification for their email, marks the user row erased, and scrubs its
+ * email, name and image. The row itself stays, because every `user_id` points at it; its email
+ * becomes `erased+<id>@invalid` so the unique constraint holds and the address is free again.
+ * Safe to run again. Returns null when there is no such user.
+ *
+ * The row is locked and updated first, and the sessions deleted after: with the trigger in
+ * migration 0006 a sign-in racing with this either never gets a session or has it deleted here.
+ */
+export async function eraseAuthUser(auth: Database, id: string): Promise<AuthErasure | null> {
+  const userId = canonicalUserId(id)
+  return inSystemContext(auth, async (tx) => {
+    const found = await tx
+      .select({ email: user.email })
+      .from(user)
+      .where(eq(user.id, userId))
+      .for('update')
+    if (!found[0]) return null
+    await tx
+      .update(user)
+      .set({
+        erasedAt: sql`coalesce(${user.erasedAt}, now())`,
+        email: `erased+${userId}@invalid`,
+        name: 'erased',
+        image: null,
+        emailVerified: false,
+      })
+      .where(eq(user.id, userId))
+    const sessions = await tx
+      .delete(session)
+      .where(eq(session.userId, userId))
+      .returning({ id: session.id })
+    const accounts = await tx
+      .delete(authAccount)
+      .where(eq(authAccount.userId, userId))
+      .returning({ id: authAccount.id })
+    // Better Auth keys a verification by the email, as given or lower-cased.
+    const email = found[0].email
+    await tx
+      .delete(verification)
+      .where(inArray(verification.identifier, [email, email.toLowerCase()]))
+    return { sessions: sessions.length, accounts: accounts.length }
   })
 }
