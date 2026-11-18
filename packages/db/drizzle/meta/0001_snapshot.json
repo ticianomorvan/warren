@@ -97,6 +97,24 @@
             "warren_app"
           ],
           "withCheck": "user_id = app_user_id()"
+        },
+        "account_erase_select": {
+          "name": "account_erase_select",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "warren_eraser"
+          ],
+          "using": "user_id = app_user_id()"
+        },
+        "account_erase_delete": {
+          "name": "account_erase_delete",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "warren_eraser"
+          ],
+          "using": "user_id = app_user_id()"
         }
       },
       "checkConstraints": {
@@ -204,6 +222,24 @@
             "warren_app"
           ],
           "withCheck": "user_id = app_user_id()"
+        },
+        "account_identifier_erase_select": {
+          "name": "account_identifier_erase_select",
+          "as": "PERMISSIVE",
+          "for": "SELECT",
+          "to": [
+            "warren_eraser"
+          ],
+          "using": "user_id = app_user_id()"
+        },
+        "account_identifier_erase_delete": {
+          "name": "account_identifier_erase_delete",
+          "as": "PERMISSIVE",
+          "for": "DELETE",
+          "to": [
+            "warren_eraser"
+          ],
+          "using": "user_id = app_user_id()"
         }
       },
       "checkConstraints": {

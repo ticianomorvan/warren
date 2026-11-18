@@ -1,5 +1,6 @@
 export {
   asUser,
+  canonicalUserId,
   createDatabase,
   createPool,
   type Database,
@@ -7,7 +8,7 @@ export {
   type Scope,
   UserErasedError,
 } from './client'
-export { createNoticeTenancy, createTenancy, sealedStore, userContext } from './context'
+export { createTenancy, sealedStore, userContext } from './context'
 export { type ErasureReport, eraseUser } from './erase'
 export {
   type ChainReport,

@@ -1,9 +1,8 @@
-import type { NoticeTenancy, RawStore, Tenancy, UserContext } from '@warren/core'
+import type { RawStore, Tenancy, UserContext } from '@warren/core'
 import { eq } from 'drizzle-orm'
 import { asUser, type Database, type Scope } from './client'
 import { createLedger } from './ledger'
 import { createMailLog } from './mail-log'
-import { createOutbox } from './outbox'
 import { mailbox } from './schema'
 import * as system from './system'
 
@@ -48,13 +47,5 @@ export function createTenancy(database: Database, files: RawStore): Tenancy {
     recordUnrouted: (delivery) => system.recordUnrouted(database, delivery),
     withUser: (userId, fn) =>
       asUser(database, userId, async (scope) => fn(await userContext(scope, files))),
-  }
-}
-
-/** The legacy Kapso webhook's door (slice 3 deletes it). */
-export function createNoticeTenancy(database: Database): NoticeTenancy {
-  return {
-    userForWamid: (wamid) => system.userForWamid(database, wamid),
-    withOutbox: (userId, fn) => asUser(database, userId, (scope) => fn(createOutbox(scope))),
   }
 }

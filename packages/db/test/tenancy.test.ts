@@ -5,6 +5,7 @@ import { verifyChain } from '../src/ledger'
 import {
   checkAuthRole,
   checkConcurrency,
+  checkErasure,
   checkIsolation,
   checkStructure,
   EXEMPT_KEYS,
@@ -146,12 +147,96 @@ describe('the meta test: the catalog says every table is covered', () => {
   })
 })
 
+describe('the meta test: erasure covers everything', () => {
+  const ddl = (statement: string) =>
+    inSystemContext(t.owner, (tx) => tx.execute(sql.raw(statement)))
+
+  it('passes on the baseline: the eraser can do exactly what the erasure set says', async () => {
+    const checks = await checkErasure(t.app)
+    expect(checks).toHaveLength(5)
+    expect(failures(checks)).toEqual([])
+  })
+
+  it('fails when the eraser is given a grant outside the erasure set', async () => {
+    await ddl('grant delete on mail_parse to warren_eraser')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain('extra: mail_parse DELETE')
+    } finally {
+      await ddl('revoke delete on mail_parse from warren_eraser')
+    }
+  })
+
+  it('fails when an erased table loses its grant, policy or trigger exception', async () => {
+    await ddl('revoke delete on account from warren_eraser')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain('missing: account DELETE')
+    } finally {
+      await ddl('grant delete on account to warren_eraser')
+    }
+    await ddl('drop policy account_identifier_erase_delete on account_identifier')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain(
+        'missing: account_identifier DELETE',
+      )
+    } finally {
+      await ddl(
+        'create policy account_identifier_erase_delete on account_identifier as permissive for delete to warren_eraser using (user_id = app_user_id())',
+      )
+    }
+    await ddl('drop trigger account_no_mutation on account')
+    try {
+      await ddl(
+        'create trigger account_no_mutation before update or delete on account for each row execute function forbid_mutation()',
+      )
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain(
+        'account blocks every delete',
+      )
+    } finally {
+      await ddl('drop trigger account_no_mutation on account')
+      await ddl(
+        'create trigger account_no_mutation before update or delete on account for each row execute function forbid_mutation_except_erasure()',
+      )
+    }
+    await ddl(
+      'create trigger event_x before update or delete on event for each row execute function forbid_mutation_except_erasure()',
+    )
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain(
+        'event lets the eraser delete but is not in the erasure set',
+      )
+    } finally {
+      await ddl('drop trigger event_x on event')
+    }
+    expect(failures(await checkErasure(t.app))).toEqual([])
+  })
+
+  it('fails when a kept table gains a column that is neither sealed nor reviewed', async () => {
+    await ddl('alter table inbound_mail add column sender_name text')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain(
+        'inbound_mail.sender_name is neither sealed nor on the reviewed clear list',
+      )
+    } finally {
+      await ddl('alter table inbound_mail drop column sender_name')
+    }
+  })
+
+  it('fails when a table is added that no list mentions', async () => {
+    await ddl('create table stray_notes (user_id uuid)')
+    try {
+      expect(failures(await checkErasure(t.app)).join('\n')).toContain('stray_notes is in no list')
+    } finally {
+      await ddl('drop table stray_notes')
+    }
+  })
+})
+
 describe('pnpm db:tenancy-check, as the script runs it', () => {
   const options = () => ({ owner: t.owner, app: t.app, auth: t.auth })
 
   it('passes on the baseline, every check', async () => {
     const checks = await runTenancyCheck(options())
-    expect(checks.length).toBeGreaterThanOrEqual(10)
+    expect(checks.length).toBeGreaterThanOrEqual(15)
     expect(failures(checks)).toEqual([])
   })
 

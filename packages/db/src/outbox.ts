@@ -143,7 +143,9 @@ export async function recentNotices(scope: Scope, limit = 20): Promise<NoticeRow
           .where(eq(noticeStatus.wamid, last.wamid))
           .orderBy(asc(noticeStatus.occurredAt))
       : []
-    const detail = last?.detail ? scope.openText(last.detail, attemptAad(n.id, 'detail')) : null
+    const detail = last?.detail
+      ? scope.open(last.detail, attemptAad(n.id, 'detail')).toString('utf8')
+      : null
     out.push({
       noticeId: n.id,
       createdAt: n.createdAt,

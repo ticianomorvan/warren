@@ -316,8 +316,12 @@ CREATE INDEX "session_user_ix" ON "session" USING btree ("user_id");--> statemen
 CREATE INDEX "verification_identifier_ix" ON "verification" USING btree ("identifier");--> statement-breakpoint
 CREATE POLICY "account_select" ON "account" AS PERMISSIVE FOR SELECT TO "warren_app" USING (user_id = app_user_id());--> statement-breakpoint
 CREATE POLICY "account_insert" ON "account" AS PERMISSIVE FOR INSERT TO "warren_app" WITH CHECK (user_id = app_user_id());--> statement-breakpoint
+CREATE POLICY "account_erase_select" ON "account" AS PERMISSIVE FOR SELECT TO "warren_eraser" USING (user_id = app_user_id());--> statement-breakpoint
+CREATE POLICY "account_erase_delete" ON "account" AS PERMISSIVE FOR DELETE TO "warren_eraser" USING (user_id = app_user_id());--> statement-breakpoint
 CREATE POLICY "account_identifier_select" ON "account_identifier" AS PERMISSIVE FOR SELECT TO "warren_app" USING (user_id = app_user_id());--> statement-breakpoint
 CREATE POLICY "account_identifier_insert" ON "account_identifier" AS PERMISSIVE FOR INSERT TO "warren_app" WITH CHECK (user_id = app_user_id());--> statement-breakpoint
+CREATE POLICY "account_identifier_erase_select" ON "account_identifier" AS PERMISSIVE FOR SELECT TO "warren_eraser" USING (user_id = app_user_id());--> statement-breakpoint
+CREATE POLICY "account_identifier_erase_delete" ON "account_identifier" AS PERMISSIVE FOR DELETE TO "warren_eraser" USING (user_id = app_user_id());--> statement-breakpoint
 CREATE POLICY "blob_file_select" ON "blob_file" AS PERMISSIVE FOR SELECT TO "warren_app" USING (user_id = app_user_id());--> statement-breakpoint
 CREATE POLICY "blob_file_insert" ON "blob_file" AS PERMISSIVE FOR INSERT TO "warren_app" WITH CHECK (user_id = app_user_id());--> statement-breakpoint
 CREATE POLICY "erasure_select" ON "erasure" AS PERMISSIVE FOR SELECT TO "warren_app" USING (user_id = app_user_id());--> statement-breakpoint

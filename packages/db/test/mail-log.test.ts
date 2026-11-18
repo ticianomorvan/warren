@@ -41,9 +41,8 @@ describe('mail log', () => {
     await log((l) => l.recordMail(mail('a', 'em_1')))
     await log((l) => l.recordMail(mail('a', 'em_1')))
     await log((l) => l.recordMail(mail('a', 'em_2')))
-    expect(await log((l) => l.findDelivery('resend', 'em_1'))).toBe(sha('a'))
-    expect(await log((l) => l.findDelivery('resend', 'em_2'))).toBe(sha('a'))
-    expect(await log((l) => l.findDelivery('resend', 'nope'))).toBeNull()
+    expect(await log((l) => l.hasMail(sha('a')))).toBe(true)
+    expect(await log((l) => l.hasMail(sha('f')))).toBe(false)
     const { rows } = await t.pg.query<{ n: number }>('select count(*)::int n from inbound_mail')
     expect(rows[0]?.n).toBe(1)
   })
@@ -103,6 +102,20 @@ describe('mail log', () => {
       rejected: 1,
       parsed: 0,
     })
+  })
+
+  it('counts mail in the database: no sealed column is opened to do it', async () => {
+    const expected = await as((scope) => mailCounts(scope))
+    const counted = await as((scope) =>
+      mailCounts({
+        ...scope,
+        open: () => {
+          throw new Error('mailCounts must not open anything')
+        },
+      }),
+    )
+    expect(counted).toEqual(expected)
+    expect(counted.mails).toBeGreaterThan(0)
   })
 
   it('records one parse per mail and template set, and lists what is pending', async () => {
@@ -176,7 +189,7 @@ describe('append-only enforcement', () => {
     const attempt = (statement: string) =>
       inUserContext(t.app, user, (tx) => tx.execute(sql.raw(statement)))
     await log((l) => l.recordMail(mail('d', 'em_4')))
-    expect(await log((l) => l.findDelivery('resend', 'em_4'))).toBe(sha('d'))
+    expect(await log((l) => l.hasMail(sha('d')))).toBe(true)
     await expect(attempt('drop table mail_verdict')).rejects.toThrow()
     await expect(attempt('alter table mail_verdict disable trigger all')).rejects.toThrow()
     await expect(attempt('create table x (a int)')).rejects.toThrow()

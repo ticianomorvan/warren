@@ -17,17 +17,20 @@ const verdictAad = (mailId: string, column: 'subject' | 'detail') =>
 const parseAad = (mailId: string, templateSetVersion: number) =>
   `mail_parse:${mailId}:${templateSetVersion}:operation`
 
+const text = (scope: Scope, sealed: Uint8Array, aad: string) =>
+  scope.open(sealed, aad).toString('utf8')
+
 /** One user's mail log. Reads and writes run under that user's row-level security. */
 export function createMailLog(scope: Scope): MailLog {
   const { tx } = scope
   return {
-    async findDelivery(provider, providerId) {
+    async hasMail(mailId) {
       const rows = await tx
-        .select({ mailId: mailDelivery.mailId })
-        .from(mailDelivery)
-        .where(and(eq(mailDelivery.provider, provider), eq(mailDelivery.providerId, providerId)))
+        .select({ mailId: blobFile.mailId })
+        .from(blobFile)
+        .where(eq(blobFile.mailId, mailId))
         .limit(1)
-      return rows[0]?.mailId ?? null
+      return rows.length > 0
     },
 
     async recordMail(mail: NewMail) {
@@ -69,7 +72,7 @@ export function createMailLog(scope: Scope): MailLog {
       return {
         verdict: 'verified',
         senderId: row.senderId,
-        subject: row.subject ? scope.openText(row.subject, verdictAad(mailId, 'subject')) : '',
+        subject: row.subject ? text(scope, row.subject, verdictAad(mailId, 'subject')) : '',
         signedDate: row.signedDate,
       }
     },
@@ -122,7 +125,7 @@ export function createMailLog(scope: Scope): MailLog {
           reason: result.status === 'unparsed' ? result.reason : null,
           operation:
             result.status === 'parsed'
-              ? scope.sealJson(result.operation, parseAad(mailId, templateSetVersion))
+              ? scope.json.seal(result.operation, parseAad(mailId, templateSetVersion))
               : null,
         })
         .onConflictDoNothing()
@@ -155,9 +158,7 @@ export function createMailLog(scope: Scope): MailLog {
                 mailId: r.mailId,
                 pathname: r.pathname,
                 senderId: r.senderId,
-                subject: r.subject
-                  ? scope.openText(r.subject, verdictAad(r.mailId, 'subject'))
-                  : '',
+                subject: r.subject ? text(scope, r.subject, verdictAad(r.mailId, 'subject')) : '',
                 signedDate: r.signedDate,
               },
             ]
@@ -226,8 +227,8 @@ export async function recentMail(scope: Scope, limit = 20): Promise<MailStatusRo
     .limit(limit)
   return rows.map((r) => ({
     ...r,
-    subject: r.subject ? scope.openText(r.subject, verdictAad(r.mailId, 'subject')) : null,
-    detail: r.detail ? scope.openText(r.detail, verdictAad(r.mailId, 'detail')) : null,
+    subject: r.subject ? text(scope, r.subject, verdictAad(r.mailId, 'subject')) : null,
+    detail: r.detail ? text(scope, r.detail, verdictAad(r.mailId, 'detail')) : null,
   }))
 }
 
@@ -235,11 +236,32 @@ export async function recentMail(scope: Scope, limit = 20): Promise<MailStatusRo
 export type MailCounts = { mails: number; verified: number; rejected: number; parsed: number }
 
 export async function mailCounts(scope: Scope): Promise<MailCounts> {
-  const rows = await recentMail(scope, 1_000_000)
-  return {
-    mails: rows.length,
-    verified: rows.filter((r) => r.verdict === 'verified').length,
-    rejected: rows.filter((r) => r.verdict === 'rejected').length,
-    parsed: rows.filter((r) => r.parse === 'parsed').length,
-  }
+  const { tx } = scope
+  // The same "latest verdict, latest parse" as recentMail, counted by the database: nothing
+  // is opened, so a mailbox of any size is four numbers.
+  const latest = tx
+    .selectDistinctOn([mailVerdict.mailId], {
+      mailId: mailVerdict.mailId,
+      verdict: mailVerdict.verdict,
+    })
+    .from(mailVerdict)
+    .orderBy(mailVerdict.mailId, desc(mailVerdict.id))
+    .as('latest')
+  const parse = tx
+    .selectDistinctOn([mailParse.mailId], { mailId: mailParse.mailId, status: mailParse.status })
+    .from(mailParse)
+    .orderBy(mailParse.mailId, desc(mailParse.templateSetVersion))
+    .as('parse')
+  const rows = await tx
+    .select({
+      mails: sql<number>`count(*)::int`,
+      verified: sql<number>`(count(*) filter (where ${latest.verdict} = 'verified'))::int`,
+      rejected: sql<number>`(count(*) filter (where ${latest.verdict} = 'rejected'))::int`,
+      parsed: sql<number>`(count(*) filter (where ${parse.status} = 'parsed'))::int`,
+    })
+    .from(inboundMail)
+    .innerJoin(blobFile, eq(blobFile.mailId, inboundMail.mailId))
+    .leftJoin(latest, eq(latest.mailId, inboundMail.mailId))
+    .leftJoin(parse, eq(parse.mailId, inboundMail.mailId))
+  return rows[0] ?? { mails: 0, verified: 0, rejected: 0, parsed: 0 }
 }

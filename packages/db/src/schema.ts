@@ -57,7 +57,11 @@ const tenantWithUpdate = (table: string) => [
   pgPolicy(`${table}_update`, { for: 'update', to: warrenApp, using: mine, withCheck: mine }),
 ]
 
-/** What the erasure role may remove: only the rows of the user being erased. */
+/**
+ * What the erasure role may remove: only the rows of the user being erased. A table that uses
+ * this must also be in `ERASED_TABLES` (tables.ts), have the grants in 0002 and the
+ * `forbid_mutation_except_erasure` trigger in 0003: a test compares all four.
+ */
 const erasable = (table: string) => [
   pgPolicy(`${table}_erase_select`, { for: 'select', to: warrenEraser, using: mine }),
   pgPolicy(`${table}_erase_delete`, { for: 'delete', to: warrenEraser, using: mine }),
@@ -358,7 +362,10 @@ export const mailParse = pgTable(
 // Ledger
 // ---------------------------------------------------------------------------------------------
 
-/** A user's accounts. Written only by the operator (pnpm ledger:accounts). Append-only. */
+/**
+ * A user's accounts. Written only by the operator (pnpm ledger:accounts). Append-only, except
+ * that erasing the user deletes them: `name` is the user's own and sits in clear.
+ */
 export const account = pgTable(
   'account',
   {
@@ -374,10 +381,15 @@ export const account = pgTable(
     primaryKey({ columns: [t.userId, t.id] }),
     check('account_kind', sql`${t.kind} in ('asset','liability')`),
     ...tenant('account'),
+    ...erasable('account'),
   ],
 ).enableRLS()
 
-/** How an account is recognised in bank data. An identifier belongs to exactly one account. */
+/**
+ * How an account is recognised in bank data (a CBU, a bank's label). An identifier belongs to
+ * exactly one account. Append-only, except that erasing the user deletes it: `value` is the
+ * user's own and sits in clear, because it is part of the key.
+ */
 export const accountIdentifier = pgTable(
   'account_identifier',
   {
@@ -396,6 +408,7 @@ export const accountIdentifier = pgTable(
     }),
     check('account_identifier_scheme', sql`${t.scheme} in ('cbu','bank-label')`),
     ...tenant('account_identifier'),
+    ...erasable('account_identifier'),
   ],
 ).enableRLS()
 

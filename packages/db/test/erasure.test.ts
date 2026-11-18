@@ -30,7 +30,15 @@ const owned = async (table: string, user: string) => {
   )
   return rows[0]?.n ?? -1
 }
-const DERIVED = ['movement', 'movement_source', 'notice', 'mailbox', 'user_key']
+const DERIVED = [
+  'movement',
+  'movement_source',
+  'notice',
+  'mailbox',
+  'user_key',
+  'account',
+  'account_identifier',
+]
 const KEPT = [
   'event',
   'mail_parse',
@@ -80,7 +88,7 @@ describe('erasing a user', () => {
       await t.pg.query<{ id: string }>('select id from event where user_id = $1', [b])
     ).rows[0]?.id
     const payload = await asUser(t.app, b, async (scope) =>
-      scope.openJson<{ source: string }>(sealedPayloadB, `event:${eventId}:payload`),
+      scope.json.open<{ source: string }>(sealedPayloadB, `event:${eventId}:payload`),
     )
     expect(payload.source).toBe('mail')
     expect(await sealedStore(store, await keyless(b)).get(mailPath(b))).not.toBeNull()
@@ -168,7 +176,8 @@ describe('the erasure role', () => {
     await expect(attempt('delete from event')).rejects.toThrow()
     await expect(attempt('select * from mail_verdict')).rejects.toThrow()
     await expect(attempt('select payload from event')).rejects.toThrow()
-    await expect(attempt('delete from account')).rejects.toThrow()
+    await expect(attempt('delete from mail_delivery')).rejects.toThrow()
+    await expect(attempt('select name from account')).rejects.toThrow()
     await expect(attempt('delete from notice_attempt')).rejects.toThrow()
     await expect(attempt('update movement set reason = null')).rejects.toThrow()
     await expect(attempt('select 1 from "user"')).rejects.toThrow()

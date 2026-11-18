@@ -1,12 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import type { BankOperation } from '@warren/core'
-import { eq, sql } from 'drizzle-orm'
+import { eq, getTableColumns, getTableName, sql } from 'drizzle-orm'
 import { asUser, type Database, inSystemContext, inUserContext, rowsOf } from './client'
 import { createLedger, seedAccounts } from './ledger'
 import { createMailLog } from './mail-log'
 import { createOutbox } from './outbox'
 import { erasure, user } from './schema'
 import * as system from './system'
+import {
+  AUTH_TABLES as AUTH,
+  ERASED_TABLES,
+  EXEMPT_TABLES as EXEMPT,
+  KEPT_TABLES,
+  tableNames,
+} from './tables'
 
 /*
  * The proof that Postgres, not app code, keeps users apart. `pnpm test` runs it on an
@@ -17,10 +24,9 @@ import * as system from './system'
 
 export type Check = { name: string; ok: boolean; detail?: string }
 
-/** Better Auth's tables. Only `warren_auth` may touch them; `warren_app` has no grant on them. */
-export const AUTH_TABLES = ['user', 'session', 'auth_account', 'verification'] as const
-/** The one table without `user_id`: content-free notes of mail nobody claimed. */
-export const EXEMPT_TABLES = ['unrouted_delivery'] as const
+/** Better Auth's tables and the one exempt table: tagged once, in tables.ts. */
+export const AUTH_TABLES = tableNames(AUTH).slice() as readonly string[]
+export const EXEMPT_TABLES = tableNames(EXEMPT).slice() as readonly string[]
 /** Keys that do not start with `user_id`, on purpose. Each needs a reason. */
 export const EXEMPT_KEYS: Record<string, string> = {
   // An address belongs to one person, and only the operator registers it.
@@ -151,6 +157,152 @@ export async function checkStructure(db: Database): Promise<Check[]> {
     detail: [...appOnAuth, ...authOnData, ...appMutates]
       .map((p) => `${p.role} ${p.verb} ${p.table}`)
       .join(', '),
+  })
+  return out
+}
+
+/**
+ * Erasure covers everything. Reads the catalog and compares it with the tags in tables.ts:
+ * every table is tagged; a kept table holds only sealed columns and reviewed clear ones; and
+ * what `warren_eraser` can actually do (grants, policies, triggers) is exactly the erasure
+ * set, no more and no less. The SQL cannot be derived from the tags, so this is what keeps
+ * the two from drifting.
+ */
+export async function checkErasure(db: Database): Promise<Check[]> {
+  const out: Check[] = []
+  const erased = tableNames(ERASED_TABLES).sort()
+  const kept = KEPT_TABLES.map((k) => getTableName(k.table)).sort()
+  const tagged = new Set<string>([...tableNames(AUTH), ...tableNames(EXEMPT), ...erased, ...kept])
+
+  const tables = await query<{ name: string }>(
+    db,
+    sql`select c.relname as name from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relkind in ('r', 'p') order by 1`,
+  )
+  const untagged = tables.map((t) => t.name).filter((n) => !tagged.has(n))
+  const missing = [...tagged].filter((n) => !tables.some((t) => t.name === n))
+  out.push({
+    name: 'every table is tagged once: auth, exempt, erased with the user, or kept',
+    ok: untagged.length === 0 && missing.length === 0,
+    detail: [
+      ...untagged.map((n) => `${n} is in no list (tables.ts)`),
+      ...missing.map((n) => `${n} is tagged but does not exist`),
+    ].join(', '),
+  })
+
+  const columns = await query<{ table: string; column: string; type: string }>(
+    db,
+    sql`select table_name as table, column_name as column, data_type as type
+        from information_schema.columns where table_schema = 'public'`,
+  )
+  const problems: string[] = []
+  for (const k of KEPT_TABLES) {
+    const name = getTableName(k.table)
+    const all = getTableColumns(k.table)
+    const dbName = (key: string) => all[key]?.name ?? `?${key}`
+    const sealed = k.sealed.map((c) => dbName(String(c)))
+    const clear = k.clear.map((c) => dbName(String(c)))
+    const actual = columns.filter((c) => c.table === name)
+    for (const c of actual) {
+      if (!sealed.includes(c.column) && !clear.includes(c.column)) {
+        problems.push(`${name}.${c.column} is neither sealed nor on the reviewed clear list`)
+      }
+    }
+    for (const c of [...sealed, ...clear]) {
+      if (!actual.some((a) => a.column === c)) problems.push(`${name}.${c} is listed but missing`)
+    }
+    for (const c of sealed) {
+      if (actual.find((a) => a.column === c)?.type !== 'bytea') {
+        problems.push(`${name}.${c} is listed as sealed but is not bytea`)
+      }
+    }
+  }
+  out.push({
+    name: 'a table kept after erasure has only sealed columns and reviewed clear ones',
+    ok: problems.length === 0,
+    detail: problems.join(', '),
+  })
+
+  const tableGrants = await query<{ table: string; priv: string }>(
+    db,
+    sql`select c.relname as table, a.privilege_type as priv
+        from pg_class c join pg_namespace n on n.oid = c.relnamespace,
+             aclexplode(c.relacl) a
+        where n.nspname = 'public' and c.relkind in ('r', 'p')
+          and a.grantee = (select oid from pg_roles where rolname = 'warren_eraser')`,
+  )
+  const columnGrants = await query<{ table: string; column: string; priv: string }>(
+    db,
+    sql`select c.relname as table, t.attname as column, a.privilege_type as priv
+        from pg_class c join pg_namespace n on n.oid = c.relnamespace
+        join pg_attribute t on t.attrelid = c.oid, aclexplode(t.attacl) a
+        where n.nspname = 'public' and t.attacl is not null and not t.attisdropped
+          and a.grantee = (select oid from pg_roles where rolname = 'warren_eraser')`,
+  )
+  const grants = [
+    ...tableGrants.map((g) => `${g.table} ${g.priv}`),
+    ...columnGrants.map((g) => `${g.table}.${g.column} ${g.priv}`),
+  ].sort()
+  const wantedGrants = [
+    ...erased.flatMap((t) => [`${t} DELETE`, `${t}.user_id SELECT`]),
+    // The tombstone, and the chain head it records.
+    'erasure SELECT',
+    'erasure INSERT',
+    ...['user_id', 'seq', 'chain_sha256'].map((c) => `event.${c} SELECT`),
+  ].sort()
+  out.push({
+    name: "warren_eraser's grants are exactly the erasure set, plus the tombstone and the chain head",
+    ok: grants.join('|') === wantedGrants.join('|'),
+    detail: [
+      ...wantedGrants.filter((g) => !grants.includes(g)).map((g) => `missing: ${g}`),
+      ...grants.filter((g) => !wantedGrants.includes(g)).map((g) => `extra: ${g}`),
+    ].join(', '),
+  })
+
+  const policies = await query<{ table: string; cmd: string }>(
+    db,
+    sql`select tablename as table, cmd from pg_policies
+        where schemaname = 'public' and roles::text like '%warren_eraser%'`,
+  )
+  const havePolicies = policies.map((p) => `${p.table} ${p.cmd}`).sort()
+  const wantedPolicies = [
+    ...erased.flatMap((t) => [`${t} DELETE`, `${t} SELECT`]),
+    'erasure SELECT',
+    'erasure INSERT',
+    'event SELECT',
+  ].sort()
+  out.push({
+    name: "warren_eraser's policies are exactly the erasure set, plus the tombstone and the chain head",
+    ok: havePolicies.join('|') === wantedPolicies.join('|'),
+    detail: [
+      ...wantedPolicies.filter((g) => !havePolicies.includes(g)).map((g) => `missing: ${g}`),
+      ...havePolicies.filter((g) => !wantedPolicies.includes(g)).map((g) => `extra: ${g}`),
+    ].join(', '),
+  })
+
+  // Append-only tables in the erasure set carry the delete-for-erasure exception; the others
+  // (movement, mailbox, sources, key) are mutable and carry no trigger. A plain
+  // `forbid_mutation` on an erased table would make erasure fail halfway, and the exception on
+  // any other table would let the eraser delete append-only rows.
+  const triggers = await query<{ table: string; fn: string }>(
+    db,
+    sql`select c.relname as table, p.proname as fn
+        from pg_trigger t join pg_class c on c.oid = t.tgrelid
+        join pg_proc p on p.oid = t.tgfoid
+        where not t.tgisinternal and t.tgtype & 1 = 1
+          and p.proname in ('forbid_mutation', 'forbid_mutation_except_erasure')`,
+  )
+  const blocking = triggers.filter((t) => t.fn === 'forbid_mutation' && erased.includes(t.table))
+  const stray = triggers.filter(
+    (t) => t.fn === 'forbid_mutation_except_erasure' && !erased.includes(t.table),
+  )
+  out.push({
+    name: 'the delete-for-erasure exception is only on erased tables, and nothing blocks erasing them',
+    ok: blocking.length === 0 && stray.length === 0,
+    detail: [
+      ...blocking.map((t) => `${t.table} blocks every delete`),
+      ...stray.map((t) => `${t.table} lets the eraser delete but is not in the erasure set`),
+    ].join(', '),
   })
   return out
 }
@@ -508,6 +660,7 @@ export async function runTenancyCheck(options: TenancyCheckOptions): Promise<Che
   await seedFixtures(owner, app, b, 'b')
   return [
     ...(await checkStructure(app)),
+    ...(await checkErasure(app)),
     ...(await checkIsolation({ owner, app, a, b })),
     ...(await checkConcurrency({ app: appPoolOfOne ?? app, a, b })),
     ...(auth ? await checkAuthRole({ auth, owner }) : []),

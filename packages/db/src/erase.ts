@@ -1,7 +1,8 @@
 import { userFilesPrefix } from '@warren/core'
 import { desc, eq } from 'drizzle-orm'
-import { type Database, inUserContext } from './client'
-import { erasure, event, mailbox, movement, movementSource, notice, userKey } from './schema'
+import { canonicalUserId, type Database, ERASURE_LOCK, inUserContext, lockUser } from './client'
+import { erasure, event } from './schema'
+import { ERASED_TABLES } from './tables'
 
 export type ErasureReport = {
   /** The user's last chain link when they were erased, hex; null when they had no events. */
@@ -12,20 +13,24 @@ export type ErasureReport = {
 }
 
 /**
- * Erases a user. Connect as `warren_eraser`: it may delete only the user's key, mailboxes,
- * movements, movement sources and notices, write the tombstone, and read the chain head.
+ * Erases a user. Connect as `warren_eraser`: it may delete only the user's rows in
+ * `ERASED_TABLES` (their key, mailboxes, accounts and identifiers, movements, sources and
+ * notices), write the tombstone, and read the chain head.
  *
- * In one transaction it deletes those rows and writes `erasure(user_id, chain_head, erased_at)`.
- * After the commit it deletes the user's files. Everything append-only stays as ciphertext
- * nobody can open once the key is gone, and every chain, this user's included, still verifies.
- * Safe to run again if the file deletion failed.
+ * In one transaction it takes the erasure lock exclusively (so work in flight finishes first,
+ * and work that starts later finds the tombstone), deletes those rows and writes
+ * `erasure(user_id, chain_head, erased_at)`. After the commit it deletes the user's files.
+ * Everything append-only stays as ciphertext nobody can open once the key is gone, and every
+ * chain, this user's included, still verifies. Safe to run again if the file deletion failed.
  */
 export async function eraseUser(
   database: Database,
-  userId: string,
+  id: string,
   files: { deletePrefix(prefix: string): Promise<number> },
 ): Promise<ErasureReport> {
+  const userId = canonicalUserId(id)
   const report = await inUserContext(database, userId, async (tx) => {
+    await lockUser(tx, userId, ERASURE_LOCK)
     const done = await tx
       .select({ userId: erasure.userId })
       .from(erasure)
@@ -40,12 +45,8 @@ export async function eraseUser(
       .limit(1)
     const head = last[0]?.chain ?? null
 
-    // Children before parents: notices and sources point at movements.
-    await tx.delete(notice).where(eq(notice.userId, userId))
-    await tx.delete(movementSource).where(eq(movementSource.userId, userId))
-    await tx.delete(movement).where(eq(movement.userId, userId))
-    await tx.delete(mailbox).where(eq(mailbox.userId, userId))
-    await tx.delete(userKey).where(eq(userKey.userId, userId))
+    // The order of ERASED_TABLES is children before parents.
+    for (const table of ERASED_TABLES) await tx.delete(table).where(eq(table.userId, userId))
     await tx.insert(erasure).values({ userId, chainHead: head })
     return { chainHead: head ? Buffer.from(head).toString('hex') : null, alreadyErased: false }
   })

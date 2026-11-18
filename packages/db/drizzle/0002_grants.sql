@@ -29,11 +29,16 @@ grant select, insert, update on "user" to warren_auth;
 --> statement-breakpoint
 grant select, insert, update, delete on session, auth_account, verification to warren_auth;
 --> statement-breakpoint
--- Erasure: delete the derived rows and the key, write the tombstone, read the chain head.
+-- Erasure: delete the user's own rows and key, write the tombstone, read the chain head.
+-- These seven tables are the erasure set (ERASED_TABLES in src/tables.ts; a test compares).
 -- Column grants for what it only needs to find rows by.
-grant select (user_id) on user_key, mailbox, movement, movement_source, notice to warren_eraser;
+grant select (user_id) on
+  user_key, mailbox, movement, movement_source, notice, account, account_identifier
+  to warren_eraser;
 --> statement-breakpoint
-grant delete on user_key, mailbox, movement, movement_source, notice to warren_eraser;
+grant delete on
+  user_key, mailbox, movement, movement_source, notice, account, account_identifier
+  to warren_eraser;
 --> statement-breakpoint
 grant select (user_id, seq, chain_sha256) on event to warren_eraser;
 --> statement-breakpoint

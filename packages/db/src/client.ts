@@ -63,6 +63,16 @@ function internalsOf(database: Database): Internals {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**
+ * The one spelling of a user id: lower case, as Postgres prints a uuid. The id is also the
+ * associated data of the wrapped key and the seed of the chain, so every entry point (here,
+ * `eraseUser`, `verifyChain`, the operator scripts) goes through this, never a raw string.
+ */
+export function canonicalUserId(id: string): string {
+  if (!UUID.test(id)) throw new Error('user id must be a uuid')
+  return id.toLowerCase()
+}
+
+/**
  * A transaction as one user, without that user's key. Sets `app.user_id` with a bound
  * parameter and `is_local = true`: it lasts until this transaction ends and is gone before the
  * pooled connection serves anyone else. Never `SET`, never `set_config(..., false)`: the Neon
@@ -70,10 +80,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
  */
 export async function inUserContext<T>(
   database: Database,
-  userId: string,
+  id: string,
   fn: (tx: Tx) => Promise<T>,
 ): Promise<T> {
-  if (!UUID.test(userId)) throw new Error('user id must be a uuid')
+  const userId = canonicalUserId(id)
   const { db, role } = internalsOf(database)
   return db.transaction(async (tx) => {
     if (role) await tx.execute(sql`select set_config('role', ${role}, true)`)
@@ -104,29 +114,35 @@ export class UserErasedError extends Error {
 /**
  * What a callback gets for one user: the transaction, and that user's key to seal and open
  * personal data. The associated data of every sealed value names the user and the row.
+ * `seal` and `open` work on bytes (and strings: `open(...).toString('utf8')` reads one back);
+ * `json` is the one codec for structured values.
  */
 export type Scope = {
   tx: Tx
   userId: string
   seal(plaintext: Uint8Array | string, aad: string): Buffer
   open(sealed: Uint8Array, aad: string): Buffer
-  sealJson(value: unknown, aad: string): Buffer
-  openJson<T>(sealed: Uint8Array, aad: string): T
-  openText(sealed: Uint8Array, aad: string): string
+  json: {
+    seal(value: unknown, aad: string): Buffer
+    open<T>(sealed: Uint8Array, aad: string): T
+  }
   mailId(raw: Uint8Array): string
 }
 
 function scopeOf(tx: Tx, userId: string, sealer: Sealer): Scope {
-  const bytes = (v: Uint8Array | string) => (typeof v === 'string' ? Buffer.from(v, 'utf8') : v)
+  const seal: Scope['seal'] = (plaintext, aad) =>
+    sealer.seal(typeof plaintext === 'string' ? Buffer.from(plaintext, 'utf8') : plaintext, aad)
+  const open: Scope['open'] = (sealed, aad) => sealer.open(sealed, aad)
   return {
     tx,
     userId,
-    seal: (plaintext, aad) => sealer.seal(bytes(plaintext), aad),
-    open: sealer.open,
-    sealJson: (value, aad) => sealer.seal(Buffer.from(JSON.stringify(value), 'utf8'), aad),
-    openJson: <T>(sealed: Uint8Array, aad: string) =>
-      JSON.parse(sealer.open(sealed, aad).toString('utf8')) as T,
-    openText: (sealed, aad) => sealer.open(sealed, aad).toString('utf8'),
+    seal,
+    open,
+    json: {
+      seal: (value, aad) => seal(JSON.stringify(value), aad),
+      open: <T>(sealed: Uint8Array, aad: string) =>
+        JSON.parse(open(sealed, aad).toString('utf8')) as T,
+    },
     mailId: sealer.mailId,
   }
 }
@@ -157,17 +173,27 @@ async function dataKeyFor(tx: Tx, userId: string, masters: MasterKeys): Promise<
 }
 
 /**
- * The one door to a user's data. Opens a transaction as `userId`, loads and unwraps that
- * user's key (making it the first time), and runs `fn`. Row-level security then shows `fn`
- * only that user's rows, whatever it asks for.
+ * The advisory-lock purpose that orders erasure against everything else a user does. Every
+ * `asUser` holds it shared until its transaction ends; `eraseUser` holds it exclusively. So
+ * erasure waits for work in flight, and work that starts after it sees the tombstone.
+ */
+export const ERASURE_LOCK = 4200
+
+/**
+ * The one door to a user's data. Opens a transaction as the user, takes the erasure lock
+ * shared, loads and unwraps the user's key (making it the first time), and runs `fn`.
+ * Row-level security then shows `fn` only that user's rows, whatever it asks for. For a user
+ * who was erased it throws `UserErasedError`; it never makes them a new key.
  */
 export async function asUser<T>(
   database: Database,
-  userId: string,
+  id: string,
   fn: (scope: Scope) => Promise<T>,
 ): Promise<T> {
+  const userId = canonicalUserId(id)
   const { masters } = internalsOf(database)
   return inUserContext(database, userId, async (tx) => {
+    await lockUser(tx, userId, ERASURE_LOCK, 'shared')
     const dataKey = await dataKeyFor(tx, userId, masters)
     return fn(scopeOf(tx, userId, sealerFor(userId, dataKey)))
   })
@@ -178,9 +204,21 @@ export async function provisionUser(database: Database, userId: string): Promise
   await asUser(database, userId, async () => {})
 }
 
-/** One advisory lock per user and purpose, held until the transaction ends. */
-export async function lockUser(tx: Tx, userId: string, purpose: number): Promise<void> {
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${userId}::text, ${purpose}))`)
+/**
+ * One advisory lock per user and purpose, held until the transaction ends. `userId` must be
+ * canonical (it is hashed as text). Shared locks do not block each other, only an exclusive one.
+ */
+export async function lockUser(
+  tx: Tx,
+  userId: string,
+  purpose: number,
+  mode: 'exclusive' | 'shared' = 'exclusive',
+): Promise<void> {
+  await tx.execute(
+    mode === 'shared'
+      ? sql`select pg_advisory_xact_lock_shared(hashtextextended(${userId}::text, ${purpose}))`
+      : sql`select pg_advisory_xact_lock(hashtextextended(${userId}::text, ${purpose}))`,
+  )
 }
 
 /** Rows of a raw `tx.execute` result, whichever driver made it (node-postgres and PGlite differ in type, not shape). */

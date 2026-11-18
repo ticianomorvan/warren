@@ -2,7 +2,9 @@ import type { RawStore } from '@warren/core'
 import { sql } from 'drizzle-orm'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { asUser, inSystemContext, inUserContext, provisionUser, rowsOf } from '../src/client'
-import { createNoticeTenancy, createTenancy } from '../src/context'
+import { createTenancy } from '../src/context'
+import { createMailLog } from '../src/mail-log'
+import { createOutbox } from '../src/outbox'
 import * as system from '../src/system'
 import { seedFixtures } from '../src/tenancy-check'
 import { testDatabase } from './helpers'
@@ -100,6 +102,33 @@ describe('routing before a user exists', () => {
     await expect(t.pg.query('delete from unrouted_delivery')).rejects.toThrow(/append-only/)
   })
 
+  it('lists unrouted deliveries still to replay: none once a delivery is recorded under a user', async () => {
+    const stray = {
+      provider: 'resend',
+      providerId: 'em_replay',
+      receivedAt: new Date('2026-11-13T10:00:00Z'),
+    }
+    await system.recordUnrouted(t.app, stray)
+    const pending = async () =>
+      (await system.pendingUnrouted(t.owner)).filter((d) => d.providerId.startsWith('em_replay'))
+    expect(await pending()).toEqual([stray])
+    // The app role cannot read them: only the operator lists what to replay.
+    await expect(system.pendingUnrouted(t.app)).rejects.toThrow()
+    // A mailbox gets registered and the mail is replayed: it is recorded under the user.
+    await asUser(t.app, a, async (scope) => {
+      const id = scope.mailId(Buffer.from('replayed'))
+      await createMailLog(scope).recordMail({
+        mailId: id,
+        pathname: `u/${a}/mail/${id}.eml.sealed`,
+        bytes: 8,
+        provider: 'resend',
+        providerId: 'em_replay',
+        receivedAt: stray.receivedAt,
+      })
+    })
+    expect(await pending()).toEqual([])
+  })
+
   it('gives intake only the user it acts for: their mailboxes, a sealing store', async () => {
     const tenancy = createTenancy(t.app, store)
     const address = `b-${b.slice(0, 8)}@example.invalid`
@@ -121,16 +150,17 @@ describe('routing before a user exists', () => {
     ).rejects.toThrow()
   })
 
-  it('serves the legacy webhook through the same door', async () => {
-    const tenancy = createNoticeTenancy(t.app)
-    expect(await tenancy.userForWamid('wamid.a')).toBe(a)
-    const known = await tenancy.withOutbox(a, (o) =>
+  it('serves the legacy webhook with the one lookup, then the same door as everything else', async () => {
+    const withOutbox = <T>(user: string, fn: (o: ReturnType<typeof createOutbox>) => Promise<T>) =>
+      asUser(t.app, user, (scope) => fn(createOutbox(scope)))
+    expect(await system.userForWamid(t.app, 'wamid.a')).toBe(a)
+    const known = await withOutbox(a, (o) =>
       o.recordStatus({ wamid: 'wamid.a', status: 'read', errorCode: null, occurredAt: new Date() }),
     )
     expect(known).toBe(true)
     // B cannot record a status for A's message.
     expect(
-      await tenancy.withOutbox(b, (o) =>
+      await withOutbox(b, (o) =>
         o.recordStatus({
           wamid: 'wamid.a',
           status: 'failed',

@@ -124,7 +124,7 @@ describe('sealed columns', () => {
     if (!event) throw new Error('no event')
     await asUser(t.app, a, async (scope) => {
       expect(
-        scope.openJson<{ source: string }>(event.payload, `event:${event.id}:payload`).source,
+        scope.json.open<{ source: string }>(event.payload, `event:${event.id}:payload`).source,
       ).toBe('mail')
       // The same bytes under another row's name do not open: the row is part of the seal.
       expect(() => scope.open(event.payload, 'event:another-row:payload')).toThrow(SealError)

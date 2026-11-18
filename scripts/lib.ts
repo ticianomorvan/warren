@@ -1,6 +1,6 @@
 /** Shared by the operator scripts: arguments, and connections that go through `asUser`. */
 import { masterKeysFromEnv } from '@warren/core'
-import { createDatabase, createPool, type Database } from '@warren/db'
+import { canonicalUserId, createDatabase, createPool, type Database } from '@warren/db'
 
 const args = process.argv.slice(2)
 
@@ -31,13 +31,15 @@ export function positionals(valueFlags: readonly string[] = []): string[] {
   return out
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/** The user a command acts for: `--user <uuid>`. */
+/** The user a command acts for: `--user <uuid>`, in its canonical (lower-case) spelling. */
 export function userArg(): string {
   const id = flag('user')
-  if (!id || !UUID.test(id)) die('Pass --user <user id> (a uuid).')
-  return id
+  if (!id) die('Pass --user <user id> (a uuid).')
+  try {
+    return canonicalUserId(id)
+  } catch {
+    return die('Pass --user <user id> (a uuid).')
+  }
 }
 
 /** A database connection from an environment variable, with the master key for sealing. */

@@ -12,7 +12,15 @@ import {
   TEMPLATE_SET_VERSION,
 } from '@warren/core'
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
-import { type Database, inUserContext, lockUser, rowsOf, type Scope, type Tx } from './client'
+import {
+  canonicalUserId,
+  type Database,
+  inUserContext,
+  lockUser,
+  rowsOf,
+  type Scope,
+  type Tx,
+} from './client'
 import {
   account,
   accountIdentifier,
@@ -96,7 +104,7 @@ async function sourcesOf(
     list.push({
       mailId: r.mailId,
       templateId: r.templateId,
-      operation: scope.openJson<BankOperation>(r.operation, sourceAad(r.mailId)),
+      operation: scope.json.open<BankOperation>(r.operation, sourceAad(r.mailId)),
     })
     out.set(r.movementId, list)
   }
@@ -163,7 +171,7 @@ export function createLedger(scope: Scope): Ledger {
           id,
           kind: matched ? 'link' : 'movement',
           subject: movementId,
-          payload: scope.sealJson({ source: 'mail', ...source }, eventAad(id)),
+          payload: scope.json.seal({ source: 'mail', ...source }, eventAad(id)),
           actor: 'core',
         })
         .returning({ seq: event.seq })
@@ -186,7 +194,7 @@ export function createLedger(scope: Scope): Ledger {
         mailId: mail.mailId,
         movementId,
         templateId: mail.templateId,
-        operation: scope.sealJson(op, sourceAad(mail.mailId)),
+        operation: scope.json.seal(op, sourceAad(mail.mailId)),
         eventSeq: seq,
       })
       return { movementId, outcome: matched ? 'linked' : 'created', type: row.type }
@@ -215,7 +223,7 @@ export function createLedger(scope: Scope): Ledger {
               {
                 mailId: r.mailId,
                 templateId: r.templateId,
-                operation: scope.openJson<BankOperation>(
+                operation: scope.json.open<BankOperation>(
                   r.operation,
                   parseAad(r.mailId, TEMPLATE_SET_VERSION),
                 ),
@@ -304,7 +312,8 @@ export type ChainReport = {
  * bytes, each link from the one before it. Needs no key, so it holds after the key is gone.
  * Runs under the user's row-level security.
  */
-export async function verifyChain(database: Database, userId: string): Promise<ChainReport> {
+export async function verifyChain(database: Database, id: string): Promise<ChainReport> {
+  const userId = canonicalUserId(id)
   return inUserContext(database, userId, (tx) => verifyChainIn(tx, userId))
 }
 
