@@ -4,6 +4,7 @@ export {
   createAuthDatabase,
   type SetPasswordResult,
   setCredentialPassword,
+  userIdentity,
 } from './auth'
 export {
   asUser,
@@ -34,6 +35,7 @@ export {
   type MailStatusRow,
   mailCounts,
   recentMail,
+  verifiedMailOf,
 } from './mail-log'
 export { createOutbox, type NoticeRow, recentNotices } from './outbox'
 export * as schema from './schema'

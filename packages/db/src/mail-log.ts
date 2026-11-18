@@ -271,3 +271,47 @@ export async function mailCounts(scope: Scope): Promise<MailCounts> {
     .leftJoin(parse, eq(parse.mailId, inboundMail.mailId))
   return rows[0] ?? { mails: 0, verified: 0, rejected: 0, parsed: 0 }
 }
+
+/**
+ * A user's mail of one sender whose latest verdict is verified, oldest first, one row per mail,
+ * with the signed subject opened.
+ */
+export async function verifiedMailOf(scope: Scope, senderId: string): Promise<PendingParse[]> {
+  const { tx } = scope
+  const latest = tx
+    .selectDistinctOn([mailVerdict.mailId], {
+      mailId: mailVerdict.mailId,
+      id: mailVerdict.id,
+      verdict: mailVerdict.verdict,
+      senderId: mailVerdict.senderId,
+      subject: mailVerdict.subject,
+      signedDate: mailVerdict.signedDate,
+    })
+    .from(mailVerdict)
+    .orderBy(mailVerdict.mailId, desc(mailVerdict.id))
+    .as('latest')
+  const rows = await tx
+    .select({
+      mailId: latest.mailId,
+      pathname: blobFile.pathname,
+      subject: latest.subject,
+      signedDate: latest.signedDate,
+    })
+    .from(latest)
+    .innerJoin(blobFile, eq(blobFile.mailId, latest.mailId))
+    .where(and(eq(latest.verdict, 'verified'), eq(latest.senderId, senderId)))
+    .orderBy(latest.id)
+  return rows.flatMap((r) =>
+    r.signedDate
+      ? [
+          {
+            mailId: r.mailId,
+            pathname: r.pathname,
+            senderId,
+            subject: r.subject ? text(scope, r.subject, verdictAad(r.mailId, 'subject')) : '',
+            signedDate: r.signedDate,
+          },
+        ]
+      : [],
+  )
+}
