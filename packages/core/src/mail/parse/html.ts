@@ -20,7 +20,7 @@ export function labelValueRows(doc: Doc): Map<string, string> {
     if (cells.length !== 2 || row.querySelector('table')) continue
     const label = clean(cells[0]?.textContent)
     if (!label) continue
-    if (out.has(label)) throw new FieldError(`duplicate-label:${label}`)
+    if (out.has(label)) throw new FieldError('duplicate-label')
     out.set(label, clean(cells[1]?.textContent))
   }
   return out
@@ -39,7 +39,7 @@ export function alternatingRows(doc: Doc, tableSelector: string): Map<string, st
   const out = new Map<string, string>()
   for (let i = 0; i < texts.length; i += 2) {
     const label = texts[i] ?? ''
-    if (!label || out.has(label)) throw new FieldError(`duplicate-label:${label}`)
+    if (!label || out.has(label)) throw new FieldError('duplicate-label')
     out.set(label, texts[i + 1] ?? '')
   }
   return out

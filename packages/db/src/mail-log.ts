@@ -1,48 +1,65 @@
-import type { FinalVerdict, MailLog, MailVerdict, NewMail, ParseResult } from '@warren/core'
+import type {
+  FinalVerdict,
+  MailLog,
+  MailVerdict,
+  NewMail,
+  ParseResult,
+  PendingParse,
+} from '@warren/core'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
-import type { Db } from './client'
+import type { Scope } from './client'
 import { blobFile, inboundMail, mailDelivery, mailParse, mailVerdict } from './schema'
 
-export function createMailLog(db: Db): MailLog {
+// What is sealed here: a verdict's subject and detail, and a parse's operation. The associated
+// data names the user (added by the scope), the table, the mail and the column.
+const verdictAad = (mailId: string, column: 'subject' | 'detail') =>
+  `mail_verdict:${mailId}:${column}`
+const parseAad = (mailId: string, templateSetVersion: number) =>
+  `mail_parse:${mailId}:${templateSetVersion}:operation`
+
+const text = (scope: Scope, sealed: Uint8Array, aad: string) =>
+  scope.open(sealed, aad).toString('utf8')
+
+/** One user's mail log. Reads and writes run under that user's row-level security. */
+export function createMailLog(scope: Scope): MailLog {
+  const { tx } = scope
   return {
-    async findDelivery(provider, providerId) {
-      const rows = await db
-        .select({ sha256: mailDelivery.mailSha256 })
-        .from(mailDelivery)
-        .where(and(eq(mailDelivery.provider, provider), eq(mailDelivery.providerId, providerId)))
+    async hasMail(mailId) {
+      const rows = await tx
+        .select({ mailId: blobFile.mailId })
+        .from(blobFile)
+        .where(eq(blobFile.mailId, mailId))
         .limit(1)
-      return rows[0]?.sha256 ?? null
+      return rows.length > 0
     },
 
     async recordMail(mail: NewMail) {
-      await db.transaction(async (tx) => {
-        await tx
-          .insert(blobFile)
-          .values({
-            sha256: mail.sha256,
-            pathname: mail.pathname,
-            mime: 'message/rfc822',
-            bytes: mail.bytes,
-          })
-          .onConflictDoNothing()
-        await tx
-          .insert(inboundMail)
-          .values({ sha256: mail.sha256, receivedAt: mail.receivedAt })
-          .onConflictDoNothing()
-        await tx
-          .insert(mailDelivery)
-          .values({ provider: mail.provider, providerId: mail.providerId, mailSha256: mail.sha256 })
-          .onConflictDoNothing()
-      })
+      await tx
+        .insert(blobFile)
+        .values({
+          mailId: mail.mailId,
+          pathname: mail.pathname,
+          mime: 'message/rfc822',
+          bytes: mail.bytes,
+        })
+        .onConflictDoNothing()
+      await tx
+        .insert(inboundMail)
+        .values({ mailId: mail.mailId, receivedAt: mail.receivedAt })
+        .onConflictDoNothing()
+      await tx
+        .insert(mailDelivery)
+        .values({ provider: mail.provider, providerId: mail.providerId, mailId: mail.mailId })
+        .onConflictDoNothing()
     },
 
-    async finalVerdict(sha256): Promise<FinalVerdict | null> {
-      const rows = await db
+    async finalVerdict(mailId): Promise<FinalVerdict | null> {
+      const rows = await tx
         .select()
         .from(mailVerdict)
         .where(
           and(
-            eq(mailVerdict.mailSha256, sha256),
+            eq(mailVerdict.mailId, mailId),
             inArray(mailVerdict.verdict, ['verified', 'rejected']),
           ),
         )
@@ -55,15 +72,15 @@ export function createMailLog(db: Db): MailLog {
       return {
         verdict: 'verified',
         senderId: row.senderId,
-        subject: row.subject ?? '',
+        subject: row.subject ? text(scope, row.subject, verdictAad(mailId, 'subject')) : '',
         signedDate: row.signedDate,
       }
     },
 
-    async recordVerdict(sha256, verdict: MailVerdict, policyVersion) {
-      const base = { mailSha256: sha256, verdict: verdict.verdict, policyVersion }
+    async recordVerdict(mailId, verdict: MailVerdict, policyVersion) {
+      const base = { mailId, verdict: verdict.verdict, policyVersion }
       if (verdict.verdict === 'verified') {
-        await db.insert(mailVerdict).values({
+        await tx.insert(mailVerdict).values({
           ...base,
           senderId: verdict.senderId,
           fromAddress: verdict.fromAddress,
@@ -71,63 +88,70 @@ export function createMailLog(db: Db): MailLog {
           selector: verdict.selector,
           keyRecord: verdict.keyRecord,
           signedHeaders: verdict.signedHeaders,
-          subject: verdict.subject,
+          subject: scope.seal(verdict.subject, verdictAad(mailId, 'subject')),
           signedDate: verdict.signedDate,
         })
       } else {
-        await db.insert(mailVerdict).values({
+        // The From address is the bank's only once it matched an allow-listed sender. Before
+        // that it is whoever sent the mail (the user's own address, when they forward by hand),
+        // and this table is append-only and outlives erasure: that address goes sealed, into
+        // `detail`, which has nothing else to say for those reasons.
+        const matched = verdict.senderId !== undefined
+        const detail = 'detail' in verdict ? verdict.detail : undefined
+        const sealed = detail ?? (matched ? undefined : (verdict.fromAddress ?? undefined))
+        await tx.insert(mailVerdict).values({
           ...base,
           reason: verdict.reason,
-          detail: 'detail' in verdict ? (verdict.detail ?? null) : null,
-          fromAddress: verdict.fromAddress,
+          detail: sealed ? scope.seal(sealed, verdictAad(mailId, 'detail')) : null,
+          fromAddress: matched ? verdict.fromAddress : null,
         })
       }
     },
 
-    async hasParse(sha256, templateSetVersion) {
-      const rows = await db
+    async hasParse(mailId, templateSetVersion) {
+      const rows = await tx
         .select({ id: mailParse.id })
         .from(mailParse)
         .where(
-          and(
-            eq(mailParse.mailSha256, sha256),
-            eq(mailParse.templateSetVersion, templateSetVersion),
-          ),
+          and(eq(mailParse.mailId, mailId), eq(mailParse.templateSetVersion, templateSetVersion)),
         )
         .limit(1)
       return rows.length > 0
     },
 
-    async recordParse(sha256, templateSetVersion, result: ParseResult) {
-      await db
+    async recordParse(mailId, templateSetVersion, result: ParseResult) {
+      await tx
         .insert(mailParse)
         .values({
-          mailSha256: sha256,
+          mailId,
           templateSetVersion,
           status: result.status,
           templateId: result.templateId,
           templateVersion: result.templateVersion,
           reason: result.status === 'unparsed' ? result.reason : null,
-          operation: result.status === 'parsed' ? result.operation : null,
+          operation:
+            result.status === 'parsed'
+              ? scope.json.seal(result.operation, parseAad(mailId, templateSetVersion))
+              : null,
         })
         .onConflictDoNothing()
     },
 
-    async pendingParses(templateSetVersion) {
-      const rows = await db
+    async pendingParses(templateSetVersion): Promise<PendingParse[]> {
+      const rows = await tx
         .select({
-          sha256: mailVerdict.mailSha256,
+          mailId: mailVerdict.mailId,
           pathname: blobFile.pathname,
           senderId: mailVerdict.senderId,
           subject: mailVerdict.subject,
           signedDate: mailVerdict.signedDate,
         })
         .from(mailVerdict)
-        .innerJoin(blobFile, eq(blobFile.sha256, mailVerdict.mailSha256))
+        .innerJoin(blobFile, eq(blobFile.mailId, mailVerdict.mailId))
         .leftJoin(
           mailParse,
           and(
-            eq(mailParse.mailSha256, mailVerdict.mailSha256),
+            eq(mailParse.mailId, mailVerdict.mailId),
             eq(mailParse.templateSetVersion, templateSetVersion),
           ),
         )
@@ -137,10 +161,10 @@ export function createMailLog(db: Db): MailLog {
         r.senderId && r.signedDate
           ? [
               {
-                sha256: r.sha256,
+                mailId: r.mailId,
                 pathname: r.pathname,
                 senderId: r.senderId,
-                subject: r.subject ?? '',
+                subject: r.subject ? text(scope, r.subject, verdictAad(r.mailId, 'subject')) : '',
                 signedDate: r.signedDate,
               },
             ]
@@ -151,7 +175,7 @@ export function createMailLog(db: Db): MailLog {
 }
 
 export type MailStatusRow = {
-  sha256: string
+  mailId: string
   receivedAt: Date
   bytes: number
   verdict: string | null
@@ -166,26 +190,27 @@ export type MailStatusRow = {
   template: string | null
 }
 
-/** Latest mails with their current status, newest first. */
-export async function recentMail(db: Db, limit = 20): Promise<MailStatusRow[]> {
-  const latest = db
-    .selectDistinctOn([mailVerdict.mailSha256])
+/** The user's latest mails with their current status, newest first. */
+export async function recentMail(scope: Scope, limit = 20): Promise<MailStatusRow[]> {
+  const { tx } = scope
+  const latest = tx
+    .selectDistinctOn([mailVerdict.mailId])
     .from(mailVerdict)
-    .orderBy(mailVerdict.mailSha256, desc(mailVerdict.id))
+    .orderBy(mailVerdict.mailId, desc(mailVerdict.id))
     .as('latest')
-  const attempts = db
-    .select({ sha: mailVerdict.mailSha256, n: sql<number>`count(*)::int`.as('n') })
+  const attempts = tx
+    .select({ mailId: mailVerdict.mailId, n: sql<number>`count(*)::int`.as('n') })
     .from(mailVerdict)
-    .groupBy(mailVerdict.mailSha256)
+    .groupBy(mailVerdict.mailId)
     .as('attempts')
-  const parse = db
-    .selectDistinctOn([mailParse.mailSha256])
+  const parse = tx
+    .selectDistinctOn([mailParse.mailId])
     .from(mailParse)
-    .orderBy(mailParse.mailSha256, desc(mailParse.templateSetVersion))
+    .orderBy(mailParse.mailId, desc(mailParse.templateSetVersion))
     .as('parse')
-  return db
+  const rows = await tx
     .select({
-      sha256: inboundMail.sha256,
+      mailId: inboundMail.mailId,
       receivedAt: inboundMail.receivedAt,
       bytes: blobFile.bytes,
       verdict: latest.verdict,
@@ -200,10 +225,49 @@ export async function recentMail(db: Db, limit = 20): Promise<MailStatusRow[]> {
       template: parse.templateId,
     })
     .from(inboundMail)
-    .innerJoin(blobFile, eq(blobFile.sha256, inboundMail.sha256))
-    .leftJoin(latest, eq(latest.mailSha256, inboundMail.sha256))
-    .leftJoin(attempts, eq(attempts.sha, inboundMail.sha256))
-    .leftJoin(parse, eq(parse.mailSha256, inboundMail.sha256))
+    .innerJoin(blobFile, eq(blobFile.mailId, inboundMail.mailId))
+    .leftJoin(latest, eq(latest.mailId, inboundMail.mailId))
+    .leftJoin(attempts, eq(attempts.mailId, inboundMail.mailId))
+    .leftJoin(parse, eq(parse.mailId, inboundMail.mailId))
     .orderBy(desc(inboundMail.receivedAt))
     .limit(limit)
+  return rows.map((r) => ({
+    ...r,
+    subject: r.subject ? text(scope, r.subject, verdictAad(r.mailId, 'subject')) : null,
+    detail: r.detail ? text(scope, r.detail, verdictAad(r.mailId, 'detail')) : null,
+  }))
+}
+
+/** What the latest verdicts and parses add up to, for `pnpm mail:status`. */
+export type MailCounts = { mails: number; verified: number; rejected: number; parsed: number }
+
+export async function mailCounts(scope: Scope): Promise<MailCounts> {
+  const { tx } = scope
+  // The same "latest verdict, latest parse" as recentMail, counted by the database: nothing
+  // is opened, so a mailbox of any size is four numbers.
+  const latest = tx
+    .selectDistinctOn([mailVerdict.mailId], {
+      mailId: mailVerdict.mailId,
+      verdict: mailVerdict.verdict,
+    })
+    .from(mailVerdict)
+    .orderBy(mailVerdict.mailId, desc(mailVerdict.id))
+    .as('latest')
+  const parse = tx
+    .selectDistinctOn([mailParse.mailId], { mailId: mailParse.mailId, status: mailParse.status })
+    .from(mailParse)
+    .orderBy(mailParse.mailId, desc(mailParse.templateSetVersion))
+    .as('parse')
+  const rows = await tx
+    .select({
+      mails: sql<number>`count(*)::int`,
+      verified: sql<number>`(count(*) filter (where ${latest.verdict} = 'verified'))::int`,
+      rejected: sql<number>`(count(*) filter (where ${latest.verdict} = 'rejected'))::int`,
+      parsed: sql<number>`(count(*) filter (where ${parse.status} = 'parsed'))::int`,
+    })
+    .from(inboundMail)
+    .innerJoin(blobFile, eq(blobFile.mailId, inboundMail.mailId))
+    .leftJoin(latest, eq(latest.mailId, inboundMail.mailId))
+    .leftJoin(parse, eq(parse.mailId, inboundMail.mailId))
+  return rows[0] ?? { mails: 0, verified: 0, rejected: 0, parsed: 0 }
 }

@@ -1,13 +1,12 @@
-/** Lists the latest movements.  pnpm ledger:status [n] */
-import { createDb, createPool, recentMovements } from '@warren/db'
+/** Lists a user's latest movements.  pnpm ledger:status --user <id> [n] */
+import { asUser, recentMovements } from '@warren/db'
+import { connect, positionals, userArg } from './lib'
 
-const url = process.env.DATABASE_URL
-if (!url) {
-  console.error('Set DATABASE_URL (apps/web/.env.local is read automatically)')
-  process.exit(2)
-}
-const pool = createPool(url)
-const rows = await recentMovements(createDb(pool), Number(process.argv[2] ?? 20))
+const user = userArg()
+const { pool, database } = connect('DATABASE_URL')
+const rows = await asUser(database, user, (scope) =>
+  recentMovements(scope, Number(positionals(['user'])[0] ?? 20)),
+)
 await pool.end()
 
 if (rows.length === 0) console.log('No movements yet.')

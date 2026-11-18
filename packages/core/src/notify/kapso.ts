@@ -16,7 +16,7 @@ export interface WhatsAppSender {
 export type KapsoConfig = {
   apiKey: string
   phoneNumberId: string
-  /** Recipient, digits only. Warren writes to its owner and to nobody else. */
+  /** Recipient, digits only. Warren writes to one person and to nobody else. */
   to: string
   /** Approved template with one body variable, e.g. { name: 'movement_notice', language: 'es_AR' }. */
   template?: { name: string; language: string } | undefined

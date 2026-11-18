@@ -22,8 +22,8 @@ const debited: BankOperation = {
   reference: null,
   reason: null,
 }
-const src = (mailSha256: string, templateId: string, operation: BankOperation): MovementSource => ({
-  mailSha256,
+const src = (mailId: string, templateId: string, operation: BankOperation): MovementSource => ({
+  mailId,
   templateId,
   operation,
 })

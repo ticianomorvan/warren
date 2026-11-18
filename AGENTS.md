@@ -39,8 +39,8 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 ```
 apps/web        Next.js 16 app: webhooks today; later the PWA, auth and /api/mcp
 packages/core   Pure logic and ports: sender policy, DKIM, templates, ledger matching, notices
-packages/db     Drizzle schema, SQL migrations (triggers, roles), mail log, ledger, outbox
-scripts         Operator commands (mail:*, ledger:*, notice:*, github-settings.sh)
+packages/db     Drizzle schema, SQL migrations (roles, RLS, triggers), asUser, mail log, ledger, outbox
+scripts         Operator commands (mail:*, ledger:*, notice:*, mailbox:add, user:erase, db:tenancy-check, github-settings.sh)
 docs            architecture.md and docs/research/ (dated research, not legal advice)
 ```
 
@@ -84,5 +84,6 @@ Each slice has a proof that can fail. Details are in `docs/architecture.md`.
 12. Self-host kit: IMAP poller, filesystem and S3 stores, worker, Docker Compose.
 13. Before strangers sign up: legal review, data-protection registration, privacy policy.
 
-The WhatsApp/Kapso notifier and the single-owner assumptions in the current code are legacy;
-slices 1 and 3 remove them.
+Every row belongs to a user and the app reaches the database only through `asUser`; personal
+data is sealed under a per-user key (`packages/core/src/crypto`). The WhatsApp/Kapso notifier
+is legacy and slice 3 removes it; sign-in is the second step of slice 1.

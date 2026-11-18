@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { SENDERS } from '../src/mail/senders'
 import { type VerifyOptions, verifyBankMail } from '../src/mail/verify'
-import { failingResolver, makeSigner, message, OWNER, RECEIVED_AT, resolverFor } from './helpers'
+import { failingResolver, MAILBOX, makeSigner, message, RECEIVED_AT, resolverFor } from './helpers'
 
 const bank = makeSigner('bbva.com.ar')
 const other = makeSigner('evil.example')
@@ -10,7 +10,7 @@ let opts: VerifyOptions
 beforeAll(() => {
   opts = {
     senders: SENDERS,
-    ownerAddresses: [OWNER],
+    mailboxes: [MAILBOX],
     resolver: resolverFor({ [bank.dnsName]: bank.record, [other.dnsName]: other.record }),
     receivedAt: RECEIVED_AT,
     maxDateSkewMinutes: 120,
@@ -20,7 +20,7 @@ beforeAll(() => {
 const bytes = (s: string) => new TextEncoder().encode(s)
 
 describe('verifyBankMail', () => {
-  it('accepts a genuine bank mail addressed to the owner', async () => {
+  it('accepts a genuine bank mail addressed to the user', async () => {
     const v = await verifyBankMail(bytes(await bank.sign(message())), opts)
     expect(v).toMatchObject({
       verdict: 'verified',
@@ -62,12 +62,27 @@ describe('verifyBankMail', () => {
     })
   })
 
+  it('names the sender only once the From address matched the allow-list', async () => {
+    const stranger = await verifyBankMail(
+      bytes(await other.sign(message({ from: 'x@evil.example' }))),
+      opts,
+    )
+    expect(stranger).not.toHaveProperty('senderId')
+    const forged = await verifyBankMail(bytes(await other.sign(message())), opts)
+    expect(forged).toMatchObject({ reason: 'no-signature-from-sender', senderId: 'bbva-transfers' })
+    const dns = await verifyBankMail(bytes(await bank.sign(message())), {
+      ...opts,
+      resolver: failingResolver,
+    })
+    expect(dns).toMatchObject({ verdict: 'retry', senderId: 'bbva-transfers' })
+  })
+
   it('rejects genuine bank mail addressed to someone else, even with an unsigned To added', async () => {
     const signed = await bank.sign(message({ to: 'stranger@example.com' }))
-    const replayed = `To: ${OWNER}\r\n${signed}`
+    const replayed = `To: ${MAILBOX}\r\n${signed}`
     expect(await verifyBankMail(bytes(replayed), opts)).toMatchObject({
       verdict: 'rejected',
-      reason: 'not-addressed-to-owner',
+      reason: 'not-addressed-to-user',
     })
   })
 

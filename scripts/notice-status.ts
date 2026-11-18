@@ -1,13 +1,12 @@
-/** Lists the latest notices and where each one stands.  pnpm notice:status [n] */
-import { createDb, createPool, recentNotices } from '@warren/db'
+/** Lists a user's latest notices and where each one stands.  pnpm notice:status --user <id> [n] */
+import { asUser, recentNotices } from '@warren/db'
+import { connect, positionals, userArg } from './lib'
 
-const url = process.env.DATABASE_URL
-if (!url) {
-  console.error('Set DATABASE_URL (apps/web/.env.local is read automatically)')
-  process.exit(2)
-}
-const pool = createPool(url)
-const rows = await recentNotices(createDb(pool), Number(process.argv[2] ?? 20))
+const user = userArg()
+const { pool, database } = connect('DATABASE_URL')
+const rows = await asUser(database, user, (scope) =>
+  recentNotices(scope, Number(positionals(['user'])[0] ?? 20)),
+)
 await pool.end()
 
 if (rows.length === 0) console.log('No notices yet.')
