@@ -108,3 +108,19 @@ export async function eraseAuthUser(auth: Database, id: string): Promise<AuthEra
     return { sessions: sessions.length, accounts: accounts.length }
   })
 }
+
+/** A user's name and email, as `warren_auth`; null for a user that does not exist or is erased. */
+export async function userIdentity(
+  auth: Database,
+  id: string,
+): Promise<{ name: string; email: string } | null> {
+  const userId = canonicalUserId(id)
+  return inSystemContext(auth, async (tx) => {
+    const rows = await tx
+      .select({ name: user.name, email: user.email, erasedAt: user.erasedAt })
+      .from(user)
+      .where(eq(user.id, userId))
+    const row = rows[0]
+    return row && !row.erasedAt ? { name: row.name, email: row.email } : null
+  })
+}

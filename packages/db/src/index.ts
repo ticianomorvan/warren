@@ -4,6 +4,7 @@ export {
   createAuthDatabase,
   type SetPasswordResult,
   setCredentialPassword,
+  userIdentity,
 } from './auth'
 export {
   asUser,
