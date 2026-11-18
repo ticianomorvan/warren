@@ -406,7 +406,8 @@ export async function handleResendWebhook(
       providerId: event.emailId,
       receivedAt: mail.receivedAt,
     },
-    { notify: true },
+    // A retry after a long outage can bring day-old mail: the outbox would send it as news.
+    { notify: isNews(mail.receivedAt, deps.now?.() ?? new Date()) },
   )
   return { status: result.outcome === 'retry' ? 503 : 200, body: result }
 }

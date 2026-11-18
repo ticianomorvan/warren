@@ -481,6 +481,26 @@ describe('notices', () => {
     expect(ledger.options).toEqual([{ notify: true }])
   })
 
+  it('asks for no notice when a webhook retry brings mail older than the notice window', async () => {
+    const { deps, body, raw, ledger } = await setup(undefined, parsable())
+    const old = new Date(RECEIVED_AT.getTime() - (NOTICE_MAX_AGE_HOURS + 1) * 3_600_000)
+    const fetchFn = (async (url: string | URL | Request) =>
+      String(url).includes('api.resend.com')
+        ? Response.json({
+            id: 'em_1',
+            created_at: old.toISOString(),
+            raw: { download_url: 'https://cdn.example/raw/em_1' },
+          })
+        : new Response(raw)) as typeof fetch
+    await handleResendWebhook(
+      { ...deps, fetchFn, maxDateSkewMinutes: null },
+      body,
+      signedHeaders(body),
+    )
+    expect(ledger.recorded).toHaveLength(1)
+    expect(ledger.options).toEqual([{ notify: false }])
+  })
+
   it('passes on a request for no notice when a rebuild creates the movement', async () => {
     const ledger = await intake({ notify: false })
     expect(ledger.recorded).toHaveLength(1)
