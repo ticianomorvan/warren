@@ -1,6 +1,6 @@
 import { handleKapsoWebhook } from '@warren/core'
 import { env } from '@/lib/env'
-import { outbox, whatsAppSender } from '@/lib/notify'
+import { noticeTenancy, whatsAppSender } from '@/lib/notify'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,9 +14,15 @@ export async function POST(request: Request): Promise<Response> {
   const body = await request.text()
   try {
     const sender = whatsAppSender()
-    if (!sender) return Response.json({ error: 'not configured' }, { status: 503 })
+    const kapso = env.kapso()
+    if (!sender || !kapso) return Response.json({ error: 'not configured' }, { status: 503 })
     const result = await handleKapsoWebhook(
-      { outbox: outbox(), sender, webhookSecret: env.kapsoWebhookSecret() },
+      {
+        tenancy: noticeTenancy(),
+        sender,
+        senderUserId: kapso.userId,
+        webhookSecret: env.kapsoWebhookSecret(),
+      },
       body,
       {
         signature: request.headers.get('x-webhook-signature'),

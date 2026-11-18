@@ -1,4 +1,5 @@
 import { dkimVerify } from 'mailauth'
+import { addressesIn, headerValue } from './headers'
 import type { TxtResolver } from './resolver'
 import type { SenderPolicy } from './senders'
 
@@ -11,7 +12,7 @@ export type RejectReason =
   | 'body-length-limited'
   | 'header-not-signed'
   | 'weak-key'
-  | 'not-addressed-to-owner'
+  | 'not-addressed-to-user'
   | 'date-missing'
   | 'date-skew'
 
@@ -35,8 +36,8 @@ export type MailVerdict =
 
 export type VerifyOptions = {
   senders: readonly SenderPolicy[]
-  /** The owner's mailbox addresses. The signed To header must name one of them. */
-  ownerAddresses: readonly string[]
+  /** The user's mailbox addresses. The signed To header must name one of them. */
+  mailboxes: readonly string[]
   resolver: TxtResolver
   /** When the mail reached the mailbox provider. The signed Date must be close to it. */
   receivedAt: Date
@@ -51,31 +52,14 @@ const REASON_ORDER: RejectReason[] = [
   'body-length-limited',
   'weak-key',
   'header-not-signed',
-  'not-addressed-to-owner',
+  'not-addressed-to-user',
   'date-missing',
   'date-skew',
 ]
 
-function headerValue(lines: readonly string[], name: string): string | null {
-  const prefix = `${name}:`
-  for (const line of lines) {
-    if (line.slice(0, prefix.length).toLowerCase() === prefix) {
-      return line
-        .slice(prefix.length)
-        .replace(/\r?\n[ \t]+/g, ' ')
-        .trim()
-    }
-  }
-  return null
-}
-
-function addressesIn(value: string): string[] {
-  return [...value.matchAll(/[^\s<>,;:"()]+@[^\s<>,;:"()]+/g)].map((m) => m[0].toLowerCase())
-}
-
 /**
  * Decides whether raw mail bytes are a genuine, unmodified mail from an allow-listed bank
- * sender, addressed to the owner. Everything it reads comes from header lines the bank's
+ * sender, addressed to one of the user's mailboxes. Everything it reads comes from header lines the bank's
  * signature covers; unsigned headers (which anyone can add) are never consulted.
  */
 export async function verifyBankMail(raw: Uint8Array, opts: VerifyOptions): Promise<MailVerdict> {
@@ -99,7 +83,7 @@ export async function verifyBankMail(raw: Uint8Array, opts: VerifyOptions): Prom
     return { verdict: 'rejected', reason: 'no-signature-from-sender', fromAddress }
   }
 
-  const owners = opts.ownerAddresses.map((a) => a.toLowerCase())
+  const mailboxes = opts.mailboxes.map((a) => a.toLowerCase())
   let furthest: { reason: RejectReason; detail?: string } | null = null
   let sawTempError = false
   const fail = (reason: RejectReason, detail?: string) => {
@@ -141,8 +125,8 @@ export async function verifyBankMail(raw: Uint8Array, opts: VerifyOptions): Prom
     }
     const lines = sig.signingHeaders?.headers ?? []
     const to = headerValue(lines, 'to')
-    if (!to || !addressesIn(to).some((a) => owners.includes(a))) {
-      fail('not-addressed-to-owner')
+    if (!to || !addressesIn(to).some((a) => mailboxes.includes(a))) {
+      fail('not-addressed-to-user')
       continue
     }
     const dateValue = headerValue(lines, 'date')

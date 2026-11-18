@@ -1,6 +1,6 @@
 import { type Attempt, flushNotices, kapsoSender, type WhatsAppSender } from '@warren/core'
-import { createOutbox } from '@warren/db'
-import { db } from './db'
+import { asUser, createNoticeTenancy, createOutbox } from '@warren/db'
+import { database } from './db'
 import { env } from './env'
 
 let cached: WhatsAppSender | null | undefined
@@ -13,16 +13,22 @@ export function whatsAppSender(): WhatsAppSender | null {
   return cached
 }
 
-export const outbox = () => createOutbox(db())
+export const noticeTenancy = () => createNoticeTenancy(database())
 
-/** Sends the notices still owed. A failure here is logged and never fails the caller. */
-export async function sendOwedNotices(): Promise<Attempt[]> {
+/**
+ * Sends the notices still owed to `userId`, if they are the user the WhatsApp number belongs
+ * to; anyone else's wait for push. A failure here is logged and never fails the caller.
+ */
+export async function sendOwedNotices(userId: string): Promise<Attempt[]> {
   const sender = whatsAppSender()
-  if (!sender) return []
+  const kapso = env.kapso()
+  if (!sender || !kapso || kapso.userId !== userId) return []
   try {
-    const attempts = await flushNotices(outbox(), sender)
+    const attempts = await asUser(database(), userId, (scope) =>
+      flushNotices(createOutbox(scope), sender),
+    )
     for (const a of attempts) {
-      if (a.outcome === 'failed') console.warn('notice not sent:', a.mode, a.errorCode, a.detail)
+      if (a.outcome === 'failed') console.warn('notice not sent:', a.mode, a.errorCode)
     }
     return attempts
   } catch (error) {

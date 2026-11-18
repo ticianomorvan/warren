@@ -25,7 +25,7 @@ export type Attempt = { mode: AttemptMode; body: string } & SendResult
 
 export type OpenNotice = { noticeId: number; movement: NoticeMovement; history: AttemptRecord[] }
 
-/** The queue of notices owed to the owner. Append-only: every attempt is a new row. */
+/** The queue of one user's notices. Append-only: every attempt is a new row. */
 export interface Outbox {
   /**
    * Calls `handle` for each recent notice, oldest first, and records the attempt it returns.
@@ -68,7 +68,22 @@ export async function flushNotices(outbox: Outbox, sender: WhatsAppSender): Prom
   })
 }
 
-export type KapsoWebhookDeps = { outbox: Outbox; sender: WhatsAppSender; webhookSecret: string }
+/**
+ * How the legacy Kapso webhook reaches a user's outbox. The status names only a WhatsApp
+ * message id, so the user is found from it first (slice 3 deletes all of this).
+ */
+export interface NoticeTenancy {
+  userForWamid(wamid: string): Promise<string | null>
+  withOutbox<T>(userId: string, fn: (outbox: Outbox) => Promise<T>): Promise<T>
+}
+
+export type KapsoWebhookDeps = {
+  tenancy: NoticeTenancy
+  sender: WhatsAppSender
+  /** The one user whose notices go to the WhatsApp number. Others are recorded, not resent. */
+  senderUserId: string
+  webhookSecret: string
+}
 
 /**
  * Handles one Kapso webhook call: records delivery statuses of Warren's own messages, and
@@ -85,12 +100,21 @@ export async function handleKapsoWebhook(
   }
   const statuses = parseKapsoStatuses(body, headers.event)
   let recorded = 0
-  let failed = false
+  let failedForSender = false
   for (const status of statuses) {
-    if (!(await deps.outbox.recordStatus(status))) continue
+    const userId = await deps.tenancy.userForWamid(status.wamid)
+    if (!userId) continue
+    const known = await deps.tenancy.withOutbox(userId, (outbox) => outbox.recordStatus(status))
+    if (!known) continue
     recorded++
-    failed ||= status.status === 'failed'
+    failedForSender ||= status.status === 'failed' && userId === deps.senderUserId
   }
-  const resent = failed ? (await flushNotices(deps.outbox, deps.sender)).length : 0
+  const resent = failedForSender
+    ? (
+        await deps.tenancy.withOutbox(deps.senderUserId, (outbox) =>
+          flushNotices(outbox, deps.sender),
+        )
+      ).length
+    : 0
   return { status: 200, body: { recorded, resent } }
 }

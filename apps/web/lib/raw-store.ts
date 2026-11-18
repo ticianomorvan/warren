@@ -1,9 +1,12 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { get, put } from '@vercel/blob'
+import { del, get, list, put } from '@vercel/blob'
 import type { RawStore } from '@warren/core'
 
-/** Private Vercel Blob store. Pathnames contain the content hash, so overwriting is harmless. */
+/**
+ * Private Vercel Blob store. What goes in is already sealed with the user's key (see
+ * packages/db/src/context.ts), under `u/<user id>/`, so the store holds ciphertext only.
+ */
 const blobRawStore: RawStore = {
   async put(pathname, bytes, mime) {
     await put(pathname, Buffer.from(bytes), {
@@ -17,6 +20,15 @@ const blobRawStore: RawStore = {
     const blob = await get(pathname, { access: 'private' })
     if (!blob || blob.statusCode !== 200) return null
     return new Uint8Array(await new Response(blob.stream).arrayBuffer())
+  },
+  async deletePrefix(prefix) {
+    let deleted = 0
+    for (;;) {
+      const page = await list({ prefix, limit: 1000 })
+      if (page.blobs.length === 0) return deleted
+      await del(page.blobs.map((b) => b.url))
+      deleted += page.blobs.length
+    }
   },
 }
 
@@ -34,6 +46,18 @@ function fsRawStore(dir: string): RawStore {
       } catch {
         return null
       }
+    },
+    async deletePrefix(prefix) {
+      const target = join(dir, prefix)
+      const count = async (path: string): Promise<number> => {
+        const entries = await readdir(path, { withFileTypes: true }).catch(() => [])
+        let n = 0
+        for (const e of entries) n += e.isDirectory() ? await count(join(path, e.name)) : 1
+        return n
+      }
+      const n = await count(target)
+      await rm(target, { recursive: true, force: true })
+      return n
     },
   }
 }

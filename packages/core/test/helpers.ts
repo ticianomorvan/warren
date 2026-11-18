@@ -41,12 +41,12 @@ export const failingResolver: TxtResolver = async () => {
   throw Object.assign(new Error('timeout'), { code: 'ETIMEOUT' })
 }
 
-export const OWNER = 'owner@example.com'
+export const MAILBOX = 'user@example.com'
 
 export function message(over: { from?: string; to?: string; date?: string; body?: string } = {}) {
   return [
     `From: BBVA <${over.from ?? 'avisos@bbva.com.ar'}>`,
-    `To: ${over.to ?? OWNER}`,
+    `To: ${over.to ?? MAILBOX}`,
     'Subject: Realizaste una transferencia',
     `Date: ${over.date ?? 'Sat, 14 Nov 2026 10:00:00 -0300'}`,
     'Message-ID: <abc@bbva.com.ar>',

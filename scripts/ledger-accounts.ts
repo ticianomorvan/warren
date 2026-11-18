@@ -1,25 +1,24 @@
 /**
- * Adds the owner's accounts from a private file, then recomputes movements.
- *   pnpm ledger:accounts [.data/accounts.json]
+ * Adds a user's accounts from a private file, then recomputes their movements.
+ *   pnpm ledger:accounts --user <id> [.data/accounts.json]
  * The file is a JSON array of { id, kind, name, currency, institution, identifiers: [{ scheme, value }] }.
  * It holds account numbers, so it stays out of the repository. Runs as the database owner,
- * because the app is not allowed to decide which accounts are the owner's.
+ * because the app is not allowed to decide which accounts are a user's. The owner is not bound
+ * by row-level security, so everything it does names the user.
  */
 import { readFile } from 'node:fs/promises'
 import type { AccountSeed } from '@warren/core'
-import { createDb, createPool, reprojectMovements, seedAccounts } from '@warren/db'
+import { asUser, reprojectMovements, seedAccounts } from '@warren/db'
+import { connect, positionals, userArg } from './lib'
 
-const url = process.env.DATABASE_URL_MIGRATIONS
-if (!url) {
-  console.error('Set DATABASE_URL_MIGRATIONS (apps/web/.env.local is read automatically)')
-  process.exit(2)
-}
+const user = userArg()
 const seeds = JSON.parse(
-  await readFile(process.argv[2] ?? '.data/accounts.json', 'utf8'),
+  await readFile(positionals(['user'])[0] ?? '.data/accounts.json', 'utf8'),
 ) as AccountSeed[]
-const pool = createPool(url)
-const db = createDb(pool)
-await seedAccounts(db, seeds)
-const changed = await reprojectMovements(db)
+const { pool, database } = connect('DATABASE_URL_MIGRATIONS')
+const changed = await asUser(database, user, async (scope) => {
+  await seedAccounts(scope, seeds)
+  return reprojectMovements(scope)
+})
 await pool.end()
 console.log(`${seeds.length} accounts in file; ${changed} movements changed type`)

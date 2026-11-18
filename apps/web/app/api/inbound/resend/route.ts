@@ -19,7 +19,8 @@ export async function POST(request: Request): Promise<Response> {
       signature: request.headers.get('svix-signature'),
     })
     // Also on a redelivery, so a notice that could not go out earlier gets another try.
-    if (result.status === 200) await sendOwedNotices()
+    const userId = result.body.userId
+    if (result.status === 200 && typeof userId === 'string') await sendOwedNotices(userId)
     return Response.json(result.body, { status: result.status })
   } catch (error) {
     // Logged without mail content. A 500 makes Resend retry later.

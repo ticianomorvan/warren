@@ -1,21 +1,19 @@
-import { fileURLToPath } from 'node:url'
-import { PGlite } from '@electric-sql/pglite'
 import type { MailVerdict, NewMail } from '@warren/core'
-import { drizzle } from 'drizzle-orm/pglite'
-import { migrate } from 'drizzle-orm/pglite/migrator'
+import { sql } from 'drizzle-orm'
 import { beforeAll, describe, expect, it } from 'vitest'
-import type { Db } from '../src/client'
-import { createMailLog, recentMail } from '../src/mail-log'
-import * as schema from '../src/schema'
+import { asUser, inUserContext, type Scope } from '../src/client'
+import { createMailLog, mailCounts, recentMail } from '../src/mail-log'
+import { sha, testDatabase } from './helpers'
 
-const pg = new PGlite()
-const db = drizzle(pg, { schema }) as unknown as Db
-const log = createMailLog(db)
+let t: Awaited<ReturnType<typeof testDatabase>>
+let user: string
+const as = <T>(fn: (scope: Scope) => Promise<T>) => asUser(t.app, user, fn)
+const log = <T>(fn: (log: ReturnType<typeof createMailLog>) => Promise<T>) =>
+  as((scope) => fn(createMailLog(scope)))
 
-const sha = (c: string) => c.repeat(64)
 const mail = (c: string, providerId: string): NewMail => ({
-  sha256: sha(c),
-  pathname: `raw/mail/${sha(c)}.eml`,
+  mailId: sha(c),
+  pathname: `u/x/mail/${sha(c)}.eml.sealed`,
   bytes: 1234,
   provider: 'resend',
   providerId,
@@ -34,67 +32,81 @@ const verified: MailVerdict = {
 }
 
 beforeAll(async () => {
-  await migrate(drizzle(pg), {
-    migrationsFolder: fileURLToPath(new URL('../drizzle', import.meta.url)),
-  })
+  t = await testDatabase()
+  user = await t.newUser('mail')
 })
 
 describe('mail log', () => {
   it('records a mail once, however many times it is delivered', async () => {
-    await log.recordMail(mail('a', 'em_1'))
-    await log.recordMail(mail('a', 'em_1'))
-    await log.recordMail(mail('a', 'em_2'))
-    expect(await log.findDelivery('resend', 'em_1')).toBe(sha('a'))
-    expect(await log.findDelivery('resend', 'em_2')).toBe(sha('a'))
-    expect(await log.findDelivery('resend', 'nope')).toBeNull()
-    const { rows } = await pg.query<{ n: number }>('select count(*)::int n from inbound_mail')
+    await log((l) => l.recordMail(mail('a', 'em_1')))
+    await log((l) => l.recordMail(mail('a', 'em_1')))
+    await log((l) => l.recordMail(mail('a', 'em_2')))
+    expect(await log((l) => l.findDelivery('resend', 'em_1'))).toBe(sha('a'))
+    expect(await log((l) => l.findDelivery('resend', 'em_2'))).toBe(sha('a'))
+    expect(await log((l) => l.findDelivery('resend', 'nope'))).toBeNull()
+    const { rows } = await t.pg.query<{ n: number }>('select count(*)::int n from inbound_mail')
     expect(rows[0]?.n).toBe(1)
   })
 
   it('treats retry as not final, verified and rejected as final', async () => {
-    await log.recordVerdict(
-      sha('a'),
-      { verdict: 'retry', reason: 'dns-temperror', fromAddress: null },
-      1,
+    await log((l) =>
+      l.recordVerdict(
+        sha('a'),
+        { verdict: 'retry', reason: 'dns-temperror', fromAddress: null },
+        1,
+      ),
     )
-    expect(await log.finalVerdict(sha('a'))).toBeNull()
-    await log.recordVerdict(sha('a'), verified, 1)
-    expect(await log.finalVerdict(sha('a'))).toEqual({
+    expect(await log((l) => l.finalVerdict(sha('a')))).toBeNull()
+    await log((l) => l.recordVerdict(sha('a'), verified, 1))
+    expect(await log((l) => l.finalVerdict(sha('a')))).toEqual({
       verdict: 'verified',
       senderId: 'bbva-transfers',
       subject: 'Realizaste una transferencia',
       signedDate: new Date('2026-11-14T13:00:00Z'),
     })
 
-    await log.recordMail(mail('b', 'em_3'))
-    await log.recordVerdict(
-      sha('b'),
-      {
-        verdict: 'rejected',
-        reason: 'date-skew',
-        fromAddress: 'avisos@bbva.com.ar',
-        detail: '900 min',
-      },
-      1,
+    await log((l) => l.recordMail(mail('b', 'em_3')))
+    await log((l) =>
+      l.recordVerdict(
+        sha('b'),
+        {
+          verdict: 'rejected',
+          reason: 'date-skew',
+          fromAddress: 'avisos@bbva.com.ar',
+          detail: '900 min',
+        },
+        1,
+      ),
     )
-    expect(await log.finalVerdict(sha('b'))).toEqual({ verdict: 'rejected' })
+    expect(await log((l) => l.finalVerdict(sha('b')))).toEqual({ verdict: 'rejected' })
   })
 
-  it('lists each mail with its latest status', async () => {
-    const rows = await recentMail(db)
-    const a = rows.find((r) => r.sha256 === sha('a'))
-    const b = rows.find((r) => r.sha256 === sha('b'))
-    expect(a).toMatchObject({ verdict: 'verified', senderId: 'bbva-transfers', attempts: 2 })
+  it('lists each mail with its latest status, opening the sealed fields', async () => {
+    const rows = await as((scope) => recentMail(scope))
+    const a = rows.find((r) => r.mailId === sha('a'))
+    const b = rows.find((r) => r.mailId === sha('b'))
+    expect(a).toMatchObject({
+      verdict: 'verified',
+      senderId: 'bbva-transfers',
+      subject: 'Realizaste una transferencia',
+      attempts: 2,
+    })
     expect(b).toMatchObject({
       verdict: 'rejected',
       reason: 'date-skew',
       detail: '900 min',
       attempts: 1,
     })
+    expect(await as((scope) => mailCounts(scope))).toEqual({
+      mails: 2,
+      verified: 1,
+      rejected: 1,
+      parsed: 0,
+    })
   })
 
   it('records one parse per mail and template set, and lists what is pending', async () => {
-    expect((await log.pendingParses(1)).map((p) => p.sha256)).toEqual([sha('a')])
+    expect((await log((l) => l.pendingParses(1))).map((p) => p.mailId)).toEqual([sha('a')])
     const operation = {
       kind: 'transfer_out' as const,
       amount: '3.77',
@@ -112,26 +124,37 @@ describe('mail log', () => {
       templateVersion: 1,
       operation,
     }
-    await log.recordParse(sha('a'), 1, parsed)
-    await log.recordParse(sha('a'), 1, { ...parsed, operation: { ...operation, amount: '9.99' } })
-    expect(await log.hasParse(sha('a'), 1)).toBe(true)
-    expect(await log.hasParse(sha('a'), 2)).toBe(false)
-    expect(await log.pendingParses(1)).toEqual([])
-    expect((await log.pendingParses(2)).map((p) => p.pathname)).toEqual([
-      `raw/mail/${sha('a')}.eml`,
-    ])
-    const { rows } = await pg.query<{ amount: string }>(
-      "select operation->>'amount' amount from mail_parse",
+    await log((l) => l.recordParse(sha('a'), 1, parsed))
+    await log((l) =>
+      l.recordParse(sha('a'), 1, { ...parsed, operation: { ...operation, amount: '9.99' } }),
     )
-    expect(rows).toEqual([{ amount: '3.77' }])
-    expect((await recentMail(db)).find((r) => r.sha256 === sha('a'))).toMatchObject({
+    expect(await log((l) => l.hasParse(sha('a'), 1))).toBe(true)
+    expect(await log((l) => l.hasParse(sha('a'), 2))).toBe(false)
+    expect(await log((l) => l.pendingParses(1))).toEqual([])
+    const pending = await log((l) => l.pendingParses(2))
+    expect(pending).toMatchObject([
+      {
+        mailId: sha('a'),
+        pathname: `u/x/mail/${sha('a')}.eml.sealed`,
+        subject: 'Realizaste una transferencia',
+      },
+    ])
+    // The stored operation is ciphertext, not JSON.
+    const { rows } = await t.pg.query<{ op: Uint8Array }>('select operation as op from mail_parse')
+    expect(rows).toHaveLength(1)
+    expect(Buffer.from(rows[0]?.op ?? []).includes(Buffer.from('3.77'))).toBe(false)
+    expect(
+      (await as((scope) => recentMail(scope))).find((r) => r.mailId === sha('a')),
+    ).toMatchObject({
       parse: 'parsed',
       template: 'bbva.transfer-sent',
     })
   })
 
-  it('refuses a malformed hash', async () => {
-    await expect(log.recordMail({ ...mail('c', 'em_9'), sha256: 'XYZ' })).rejects.toThrow()
+  it('refuses a malformed mail id', async () => {
+    await expect(
+      log((l) => l.recordMail({ ...mail('c', 'em_9'), mailId: 'XYZ' })),
+    ).rejects.toThrow()
   })
 })
 
@@ -146,21 +169,17 @@ describe('append-only enforcement', () => {
     "update mail_parse set status = 'unparsed'",
     'delete from mail_parse',
   ])('blocks: %s', async (statement) => {
-    await expect(pg.exec(statement)).rejects.toThrow(/append-only/)
+    await expect(t.pg.exec(statement)).rejects.toThrow(/append-only/)
   })
 
   it('lets warren_app append and read, and nothing else', async () => {
-    await pg.exec('set role warren_app')
-    try {
-      await log.recordMail(mail('d', 'em_4'))
-      expect(await log.findDelivery('resend', 'em_4')).toBe(sha('d'))
-      await expect(pg.exec('drop table mail_verdict')).rejects.toThrow(/must be owner/)
-      await expect(pg.exec('alter table mail_verdict disable trigger all')).rejects.toThrow(
-        /must be owner/,
-      )
-      await expect(pg.exec('create table x (a int)')).rejects.toThrow(/permission denied/)
-    } finally {
-      await pg.exec('reset role')
-    }
+    const attempt = (statement: string) =>
+      inUserContext(t.app, user, (tx) => tx.execute(sql.raw(statement)))
+    await log((l) => l.recordMail(mail('d', 'em_4')))
+    expect(await log((l) => l.findDelivery('resend', 'em_4'))).toBe(sha('d'))
+    await expect(attempt('drop table mail_verdict')).rejects.toThrow()
+    await expect(attempt('alter table mail_verdict disable trigger all')).rejects.toThrow()
+    await expect(attempt('create table x (a int)')).rejects.toThrow()
+    await expect(attempt('delete from mail_verdict')).rejects.toThrow()
   })
 })

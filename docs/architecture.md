@@ -62,9 +62,11 @@ DKIM is checked; templates parse the mail; a hash-chained ledger records the mov
 outbox sends a notice (currently WhatsApp through Kapso). `packages/core` reaches I/O through
 ports, so the notice sender is one adapter.
 
-Single-owner assumptions to remove: the owner address list in `apps/web/lib/env.ts`, the
-app-unwritable `account` table, one global hash chain, and no user column in
-`packages/db/src/schema.ts`.
+Slice 1, step 1 (the database) has removed most single-owner assumptions: every row has a
+`user_id`, the hash chain is per user, mail is routed by the `To` header to the user who
+registered that mailbox, and personal data is sealed under a per-user key. What remains is
+sign-in (step 2) and the Kapso notifier, which reaches one number and serves one user until
+slice 3 deletes it.
 
 ## Design
 
@@ -118,17 +120,29 @@ Each slice names its research file and a proof that can fail. Read the file befo
    squash merge. `SECURITY.md`, `TRADEMARK.md`, `LICENSE` (MIT).
    Research: `research/repository.md`.
    Proof: the ruleset lists the rule; a pull request without sign-off fails the DCO check.
-1. **Users** (`research/code.md` sections 1 and 5). Better Auth; `user_id` and RLS policies on
-   every table; global keys made per user; `asUser(db, id, fn)` sets `app.user_id` per
-   transaction and is the only way the app reaches the database; the chain trigger locks and
-   links per user; the recipient address resolves to a user through a `SECURITY DEFINER`
-   function. Personal fields and raw mail are encrypted under a per-user key, stored wrapped by
-   a master key from the environment (no cloud KMS, per the no-vendor rule); the chain hashes
-   the ciphertext, so deleting a user's key erases their data without breaking anyone's chain.
-   Existing rows become user 1.
-   Proof: a tenancy test as the app role reads zero of user A's rows as user B; CI fails if a
-   table with `user_id` has no policy; erasing a test user leaves the other chains verifying;
-   the same isolation test passes against a Neon preview branch through the pooler.
+1. **Users** (`research/code.md` sections 1 and 5). Two steps, each one pull request.
+   Step 1, the database baseline: the single-owner migrations are replaced by a baseline in
+   which users, row-level security and sealing exist from the first migration (production's
+   ledger is rebuilt from its raw mail with `pnpm mail:reingest`, not migrated). `user_id` and
+   RLS policies on every table; every primary, unique and foreign key made per user, so two
+   users can share a counterparty's account number and neither can learn the other has it;
+   `asUser(db, id, fn)` sets `app.user_id` per transaction and is the only way the app reaches
+   the database; the chain trigger locks and links per user; the recipient address resolves to
+   a user through a `SECURITY DEFINER` function over a `mailbox` table that only the operator
+   writes. Personal fields and raw mail are encrypted with AES-256-GCM under a per-user key,
+   stored wrapped by a master key from the environment (no cloud KMS, per the no-vendor rule);
+   a mail's identity is an HMAC under that key; the chain hashes the ciphertext, so erasing a
+   user (a dedicated `warren_eraser` role deletes their key, derived rows and files) leaves
+   every chain verifying. Better Auth's four tables belong to their own role, `warren_auth`,
+   and `warren_app` has no grant on them.
+   Step 2, sign-in: Better Auth (email and password), sign-up, sign-in and sign-out pages, and
+   a signed-in home that shows the user's movement count.
+   Proof, step 1: a tenancy test as the app role reads zero of user A's rows as user B on every
+   table; CI fails if a table with `user_id` has no policy or a key that does not start with
+   `user_id`; erasing a test user leaves the other chains verifying; `pnpm db:tenancy-check`
+   passes against a Neon branch through the pooler, and fails with one policy dropped.
+   Proof, step 2: in a browser, a new account signs up and signs in and sees no movements,
+   while user 1 sees theirs.
 2. **Card purchases.** Port "Compra aprobada"; reparse stored mail.
    Proof: `pnpm mail:parse-pending && pnpm mail:status` shows them parsed; each remaining
    unparsed row is named.

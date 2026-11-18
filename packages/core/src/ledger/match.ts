@@ -1,7 +1,7 @@
 import type { BankOperation } from '../mail/parse'
 
 /** One mail's account of an operation, as stored with the movement it belongs to. */
-export type MovementSource = { mailSha256: string; templateId: string; operation: BankOperation }
+export type MovementSource = { mailId: string; templateId: string; operation: BankOperation }
 
 export type Candidate = { movementId: string; sources: MovementSource[] }
 

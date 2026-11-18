@@ -8,11 +8,11 @@ import {
   parseMoney,
 } from '../src/mail/parse/fields'
 import { CBU, CUIT, htmlMessage, transferNoticeHtml, transferSentHtml } from './fixtures'
-import { OWNER } from './helpers'
+import { MAILBOX } from './helpers'
 
 const SIGNED = new Date('2026-11-14T13:00:00Z')
 const parse = (subject: string, html: string) =>
-  parseBankMail(new TextEncoder().encode(htmlMessage(subject, html, OWNER)), {
+  parseBankMail(new TextEncoder().encode(htmlMessage(subject, html, MAILBOX)), {
     senderId: 'bbva-transfers',
     subject,
     signedDate: SIGNED,
@@ -129,7 +129,7 @@ describe('template choice', () => {
       reason: 'no-template',
     })
     const other = await parseBankMail(
-      new TextEncoder().encode(htmlMessage(SENT, transferSentHtml(), OWNER)),
+      new TextEncoder().encode(htmlMessage(SENT, transferSentHtml(), MAILBOX)),
       {
         senderId: 'bbva-cards',
         subject: SENT,
@@ -141,7 +141,7 @@ describe('template choice', () => {
   it('decodes an encoded Subject before matching', async () => {
     const encoded = `=?UTF-8?B?${Buffer.from(SENT).toString('base64')}?=`
     const r = await parseBankMail(
-      new TextEncoder().encode(htmlMessage(SENT, transferSentHtml(), OWNER)),
+      new TextEncoder().encode(htmlMessage(SENT, transferSentHtml(), MAILBOX)),
       {
         senderId: 'bbva-transfers',
         subject: encoded,

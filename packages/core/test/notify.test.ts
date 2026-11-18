@@ -9,6 +9,7 @@ import {
   handleKapsoWebhook,
   kapsoSender,
   type NoticeMovement,
+  type NoticeTenancy,
   noticeOneLine,
   noticeText,
   type OpenNotice,
@@ -115,7 +116,7 @@ function fakeFetch(status: number, json: unknown) {
 const config = { apiKey: 'key', phoneNumberId: '111', to: '5490000000000' }
 
 describe('kapsoSender', () => {
-  it('sends text to the owner and returns the message id', async () => {
+  it('sends text to the recipient and returns the message id', async () => {
     const { calls, fetchFn } = fakeFetch(200, { messages: [{ id: 'wamid.A' }] })
     const result = await kapsoSender({ ...config, fetchFn }).sendText('hola')
     expect(result).toEqual({ outcome: 'sent', wamid: 'wamid.A' })
@@ -239,12 +240,24 @@ class MemoryOutbox implements Outbox {
     if (attempt) this.attempts.push(attempt)
     return attempt ? [attempt] : []
   }
+  knows(wamid: string) {
+    return this.attempts.some((a) => a.outcome === 'sent' && a.wamid === wamid)
+  }
   async recordStatus(status: DeliveryStatus) {
-    const known = this.attempts.some((a) => a.outcome === 'sent' && a.wamid === status.wamid)
+    const known = this.knows(status.wamid)
     if (known) this.statuses.push(status)
     return known
   }
 }
+
+/** A tenancy over one user's outbox: a wamid belongs to the user only if the outbox sent it. */
+const tenancyOf = (outbox: MemoryOutbox, userId = 'u1'): NoticeTenancy => ({
+  userForWamid: async (wamid) => (outbox.knows(wamid) ? userId : null),
+  withOutbox: async (id, fn) => {
+    expect(id).toBe(userId)
+    return fn(outbox)
+  },
+})
 
 function scriptedSender(text: SendResult[], template?: SendResult[]): WhatsAppSender {
   return {
@@ -286,7 +299,7 @@ describe('flushNotices', () => {
     const outbox = new MemoryOutbox(sent)
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }], [])
     await flushNotices(outbox, sender)
-    const deps = { outbox, sender, webhookSecret: SECRET }
+    const deps = { tenancy: tenancyOf(outbox), sender, senderUserId: 'u1', webhookSecret: SECRET }
     const bad = await handleKapsoWebhook(deps, failedEvent, {
       signature: 'bad',
       event: 'whatsapp.message.failed',
@@ -300,10 +313,28 @@ describe('flushNotices', () => {
     expect(outbox.attempts.at(-1)).toMatchObject({ mode: 'template', outcome: 'sent' })
   })
 
+  it("records another user's failure but does not resend through the owner's WhatsApp", async () => {
+    const outbox = new MemoryOutbox(sent)
+    const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }], [])
+    await flushNotices(outbox, sender)
+    const result = await handleKapsoWebhook(
+      { tenancy: tenancyOf(outbox, 'u2'), sender, senderUserId: 'u1', webhookSecret: SECRET },
+      failedEvent,
+      { signature: sign(failedEvent), event: 'whatsapp.message.failed' },
+    )
+    expect(result.body).toEqual({ recorded: 1, resent: 0 })
+    expect(outbox.attempts).toHaveLength(1)
+  })
+
   it('ignores statuses of messages it did not send', async () => {
     const outbox = new MemoryOutbox(sent)
     const result = await handleKapsoWebhook(
-      { outbox, sender: scriptedSender([]), webhookSecret: SECRET },
+      {
+        tenancy: tenancyOf(outbox),
+        sender: scriptedSender([]),
+        senderUserId: 'u1',
+        webhookSecret: SECRET,
+      },
       failedEvent,
       { signature: sign(failedEvent), event: 'whatsapp.message.failed' },
     )
