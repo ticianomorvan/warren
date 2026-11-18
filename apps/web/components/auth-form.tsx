@@ -25,7 +25,7 @@ export function AuthForm({ mode, minPassword }: { mode: Mode; minPassword: numbe
     setPending(true)
     setError(null)
     try {
-      const { error: failed } =
+      const { data, error: failed } =
         mode === 'sign-in'
           ? await authClient.signIn.email({ email, password })
           : await authClient.signUp.email({
@@ -34,10 +34,15 @@ export function AuthForm({ mode, minPassword }: { mode: Mode; minPassword: numbe
               password,
             })
       if (failed) {
-        setError(messageFor(mode, failed, minPassword))
+        // The signed query of an agent's connection lasts 10 minutes; past that the server says so.
+        const expired = (failed as { error?: unknown }).error === 'invalid_signature'
+        setError(expired ? t.consent.invalid : messageFor(mode, failed, minPassword))
         setPending(false)
         return
       }
+      // In the middle of an agent's connection the response says where to go next (the consent
+      // page, or back to the agent) and the client follows it: do not also go home.
+      if ((data as { redirect?: boolean } | null)?.redirect) return
       router.replace('/')
       router.refresh()
     } catch {

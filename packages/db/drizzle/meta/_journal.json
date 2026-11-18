@@ -71,6 +71,13 @@
       "when": 1795033358296,
       "tag": "0009_push_only",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795043859708,
+      "tag": "0010_oauth",
+      "breakpoints": true
     }
   ]
 }

@@ -39,6 +39,12 @@ describe('guardSession', () => {
     expect(away.headers.get('location')).toBe('http://localhost:3000/')
   })
 
+  it("lets a signed-in person reach /sign-in when an agent's signed query sends them there", async () => {
+    const auth = lookup({ session: { user: { id: 'u' } } })
+    const res = await guardSession(request('/sign-in?client_id=x&exp=1&sig=abc'), auth)
+    expect(res.headers.get('location')).toBeNull()
+  })
+
   it('copies the cookies of a refreshed session onto the response, redirect or not', async () => {
     const refreshed = [
       'better-auth.session_token=new; Path=/; HttpOnly',

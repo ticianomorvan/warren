@@ -1,9 +1,13 @@
+import { cimd } from '@better-auth/cimd'
+import { fetchClientMetadataResource as fetchOverNode } from '@better-auth/cimd/node'
 import { drizzleAdapter } from '@better-auth/drizzle-adapter'
+import { mcp } from '@better-auth/mcp'
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, type SignupPolicy } from '@warren/core'
 import { authSchema } from '@warren/db'
 import { APIError, betterAuth } from 'better-auth'
 import { createAuthMiddleware } from 'better-auth/api'
 import { nextCookies } from 'better-auth/next-js'
+import { jwt } from 'better-auth/plugins'
 
 export type AuthSettings = {
   /** A Drizzle database over the auth tables, connected as warren_auth. */
@@ -18,6 +22,11 @@ export type AuthSettings = {
    * `asUser` makes it on first use too, so a failure here is not fatal.
    */
   onUserCreated: (userId: string) => Promise<void>
+  /**
+   * How a client's metadata document is fetched. Defaults to the Node transport that resolves the
+   * host once, refuses non-public addresses and does not follow redirects; a test passes a fake.
+   */
+  fetchClientMetadataResource?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
   /** Receives what Better Auth logs at warn level or above. Defaults to the console. */
   log?: (level: 'debug' | 'info' | 'warn' | 'error', message: string, ...args: unknown[]) => void
 }
@@ -30,6 +39,31 @@ const SIGNUP_CLOSED = { message: 'signup_closed' } as const
  * account. Tighter than Better Auth's default for them (3 per 10 seconds is 18 a minute).
  */
 const CREDENTIAL_ROUTE_LIMIT = { window: 60, max: 5 } as const
+
+/** The one scope a token carries until slice 11 adds more. */
+export const LEDGER_READ_SCOPE = 'ledger:read'
+
+/** Access tokens live this long, in seconds; a refresh token renews them. */
+export const ACCESS_TOKEN_SECONDS = 15 * 60
+
+/**
+ * Whose client ids may connect: a client's `client_id` is a URL Warren fetches, so only these
+ * hosts are ever fetched. Extending the list is slice 11.
+ */
+export const CLIENT_ID_HOSTS: readonly string[] = ['claude.ai', 'claude.com']
+
+/** The MCP endpoint, which is also the audience of every access token (RFC 8707). */
+export const mcpResourceUrl = (baseURL: string) => new URL('/api/mcp', baseURL).href
+
+/** True for an https client id on one of `CLIENT_ID_HOSTS`. Checked before any fetch. */
+function clientIdAllowed(clientId: string): boolean {
+  try {
+    const url = new URL(clientId)
+    return url.protocol === 'https:' && CLIENT_ID_HOSTS.includes(url.hostname)
+  } catch {
+    return false
+  }
+}
 
 /**
  * Email and password only: no outbound mail exists yet, so no verification and no reset (the
@@ -120,7 +154,52 @@ export function createAuth(settings: AuthSettings) {
         },
       },
     },
-    plugins: [nextCookies()],
+    // Closed over HTTP outright, so each holds even if a plugin's own check changes: the session
+    // JWT endpoint, and every route that makes, changes, lists or deletes an OAuth client.
+    disabledPaths: [
+      '/token',
+      '/oauth2/register',
+      '/oauth2/create-client',
+      '/oauth2/update-client',
+      '/oauth2/delete-client',
+      '/oauth2/get-client',
+      '/oauth2/get-clients',
+      '/oauth2/client/rotate-secret',
+      // Deleting a consent does not revoke refresh tokens, so it is no disconnect; slice 11 adds a
+      // real one. Until then nobody edits consents over HTTP.
+      '/oauth2/update-consent',
+      '/oauth2/delete-consent',
+    ],
+    plugins: [
+      // The JWT plugin signs access tokens; its private keys are encrypted at rest with a key
+      // derived from `secret` (its default), and kept in `jwks`.
+      // No session JWTs: by default every page gets one (`GET /token`, and a `set-auth-jwt` header
+      // on get-session), signed with the same key as the access tokens.
+      jwt({ disableSettingJwtHeader: true }),
+      mcp({
+        loginPage: '/sign-in',
+        consentPage: '/oauth/consent',
+        resource: mcpResourceUrl(settings.baseURL),
+        scopes: [LEDGER_READ_SCOPE, 'offline_access'],
+        // Public clients only (no secret exists for a metadata-document client): no client_credentials.
+        grantTypes: ['authorization_code', 'refresh_token'],
+        // Nobody registers, edits, lists or deletes a client over HTTP: a client exists only as a
+        // metadata document from an allowed host. Without this, any signed-in user could create
+        // one with their own redirect URI and so get a token around the allow-list below.
+        clientPrivileges: () => false,
+        accessTokenExpiresIn: ACCESS_TOKEN_SECONDS,
+        // Strict rotation: a refresh token works once. The plugin's default lets the old one be
+        // replayed for 30 seconds to recover a lost response; a client that loses one signs in again.
+        refreshTokenReuseInterval: 0,
+      }),
+      // No Dynamic Client Registration: a client is its own metadata document, from an allowed host.
+      cimd({
+        fetchClientMetadataResource: settings.fetchClientMetadataResource ?? fetchOverNode,
+        metadataProfile: 'mcp-2026-07-28',
+        isMetadataDocumentUrlAllowed: clientIdAllowed,
+      }),
+      nextCookies(),
+    ],
   })
   users = {
     findUserById: async (id) => (await instance.$context).internalAdapter.findUserById(id),

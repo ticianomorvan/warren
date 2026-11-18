@@ -26,6 +26,9 @@ export type SessionLookup = {
 export async function guardSession(request: NextRequest, auth: SessionLookup) {
   const { pathname } = request.nextUrl
   const isPublic = PUBLIC_PAGES.includes(pathname)
+  // An agent's sign-in (`prompt=login`, or a stale `max_age`) sends even a signed-in person to
+  // /sign-in with a signed query; sending them home would drop the connection.
+  const resumesAgent = pathname === '/sign-in' && request.nextUrl.searchParams.has('sig')
   let session: unknown = null
   let cookies: string[] = []
   if (getSessionCookie(request) !== null) {
@@ -42,7 +45,7 @@ export async function guardSession(request: NextRequest, auth: SessionLookup) {
   const response =
     !session && !isPublic
       ? NextResponse.redirect(new URL('/sign-in', request.url))
-      : session && isPublic
+      : session && isPublic && !resumesAgent
         ? NextResponse.redirect(new URL('/', request.url))
         : NextResponse.next()
   for (const cookie of cookies) response.headers.append('set-cookie', cookie)

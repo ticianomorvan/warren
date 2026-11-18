@@ -2,7 +2,21 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import type { Pool } from 'pg'
 import { canonicalUserId, type Database, inSystemContext } from './client'
-import { authAccount, rateLimit, session, user, verification } from './schema'
+import {
+  authAccount,
+  jwks,
+  oauthAccessToken,
+  oauthClient,
+  oauthClientAssertion,
+  oauthClientResource,
+  oauthConsent,
+  oauthRefreshToken,
+  oauthResource,
+  rateLimit,
+  session,
+  user,
+  verification,
+} from './schema'
 
 /**
  * What Better Auth sees of the database: its tables, and nothing else. The keys of the renamed
@@ -16,6 +30,15 @@ export const authSchema = {
   auth_account: authAccount,
   verification,
   rate_limit: rateLimit,
+  // The OAuth plugins' models, under their own names (see schema.ts).
+  jwks,
+  oauthClient,
+  oauthResource,
+  oauthClientResource,
+  oauthRefreshToken,
+  oauthAccessToken,
+  oauthConsent,
+  oauthClientAssertion,
 }
 
 export function createAuthDatabase(pool: Pool) {
@@ -64,8 +87,8 @@ export async function setCredentialPassword(
 export type AuthErasure = { sessions: number; accounts: number }
 
 /**
- * The auth side of erasing a user, as `warren_auth`: deletes their sessions, their credentials
- * and any pending verification for their email, marks the user row erased, and scrubs its
+ * The auth side of erasing a user, as `warren_auth`: deletes their sessions, their credentials,
+ * their OAuth tokens and consents, and any pending verification for their email, marks the user row erased, and scrubs its
  * email, name and image. The row itself stays, because every `user_id` points at it; its email
  * becomes `erased+<id>@invalid` so the unique constraint holds and the address is free again.
  * Safe to run again. Returns null when there is no such user.
@@ -92,6 +115,11 @@ export async function eraseAuthUser(auth: Database, id: string): Promise<AuthEra
         emailVerified: false,
       })
       .where(eq(user.id, userId))
+    // What lets an agent act for the user: tokens first (an access token points at its refresh
+    // token), then their consent. Nothing is left that a still-valid JWT could be renewed from.
+    await tx.delete(oauthAccessToken).where(eq(oauthAccessToken.userId, userId))
+    await tx.delete(oauthRefreshToken).where(eq(oauthRefreshToken.userId, userId))
+    await tx.delete(oauthConsent).where(eq(oauthConsent.userId, userId))
     const sessions = await tx
       .delete(session)
       .where(eq(session.userId, userId))
