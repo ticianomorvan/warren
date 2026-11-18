@@ -8,6 +8,8 @@ import {
   matchMovement,
   mergeSources,
   type ParsedMail,
+  type PendingMail,
+  type RecordOptions,
   type RecordOutcome,
   TEMPLATE_SET_VERSION,
 } from '@warren/core'
@@ -25,6 +27,7 @@ import {
   account,
   accountIdentifier,
   event,
+  inboundMail,
   mailParse,
   movement,
   movementSource,
@@ -115,7 +118,7 @@ async function sourcesOf(
 export function createLedger(scope: Scope): Ledger {
   const { tx } = scope
   return {
-    async recordMailOperation(mail: ParsedMail): Promise<RecordOutcome> {
+    async recordMailOperation(mail: ParsedMail, options: RecordOptions): Promise<RecordOutcome> {
       // One recording at a time per user, so two mails of one operation cannot both create a
       // movement. Taken before any insert, so the order of `seq` is the order of the chain.
       await lockUserExclusive(tx, scope.userId, 4202)
@@ -187,8 +190,9 @@ export function createLedger(scope: Scope): Ledger {
           .where(and(eq(movement.userId, scope.userId), eq(movement.id, movementId)))
       } else {
         await tx.insert(movement).values({ id: movementId, ...row })
-        // A movement first seen in a mail is news for the user; a later mail of it is not.
-        await tx.insert(notice).values({ movementId })
+        // A movement first seen in a mail is news for the user; a later mail of it is not, and
+        // neither is one a rebuild or an import recreates (`notify: false`).
+        if (options.notify) await tx.insert(notice).values({ movementId })
       }
       await tx.insert(movementSource).values({
         mailId: mail.mailId,
@@ -200,14 +204,19 @@ export function createLedger(scope: Scope): Ledger {
       return { movementId, outcome: matched ? 'linked' : 'created', type: row.type }
     },
 
-    async pendingMailOperations(): Promise<ParsedMail[]> {
+    async pendingMailOperations(): Promise<PendingMail[]> {
       const rows = await tx
         .select({
           mailId: mailParse.mailId,
           templateId: mailParse.templateId,
           operation: mailParse.operation,
+          receivedAt: inboundMail.receivedAt,
         })
         .from(mailParse)
+        .innerJoin(
+          inboundMail,
+          and(eq(inboundMail.userId, mailParse.userId), eq(inboundMail.mailId, mailParse.mailId)),
+        )
         .leftJoin(movementSource, eq(movementSource.mailId, mailParse.mailId))
         .where(
           and(
@@ -223,6 +232,7 @@ export function createLedger(scope: Scope): Ledger {
               {
                 mailId: r.mailId,
                 templateId: r.templateId,
+                receivedAt: r.receivedAt,
                 operation: scope.json.open<BankOperation>(
                   r.operation,
                   parseAad(r.mailId, TEMPLATE_SET_VERSION),

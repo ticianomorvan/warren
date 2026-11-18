@@ -59,11 +59,10 @@ async function feed(user: string, raw: string) {
       templateVersion: 1,
       operation: op,
     })
-    await createLedger(scope).recordMailOperation({
-      mailId,
-      templateId: 'bbva.transfer-sent',
-      operation: op,
-    })
+    await createLedger(scope).recordMailOperation(
+      { mailId, templateId: 'bbva.transfer-sent', operation: op },
+      { notify: true },
+    )
     const outbox = createOutbox(scope)
     for (const n of await outbox.owed()) {
       if (n.history.length > 0) continue

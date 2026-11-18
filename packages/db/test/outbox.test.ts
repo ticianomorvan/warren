@@ -45,7 +45,10 @@ const record = (c: string, templateId: string, operation: BankOperation) =>
       providerId: `em_${c}`,
       receivedAt: new Date('2026-11-14T17:10:00Z'),
     })
-    return createLedger(scope).recordMailOperation({ mailId: sha(c), templateId, operation })
+    return createLedger(scope).recordMailOperation(
+      { mailId: sha(c), templateId, operation },
+      { notify: true },
+    )
   })
 
 const seen: OpenNotice[] = []
