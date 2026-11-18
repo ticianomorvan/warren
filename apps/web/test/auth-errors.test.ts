@@ -6,6 +6,10 @@ describe('messageFor', () => {
   it('says registration is closed only on the sign-up form', () => {
     const closed = { status: 403, message: 'signup_closed' }
     expect(messageFor('sign-up', closed, 10)).toBe(t.errors.signupClosed)
+    // Any other 403, such as an untrusted origin, must not pass for a closed sign-up.
+    expect(messageFor('sign-up', { status: 403, message: 'Invalid origin' }, 10)).toBe(
+      t.errors.generic,
+    )
     expect(messageFor('sign-in', closed, 10)).toBe(t.errors.generic)
     expect(messageFor('sign-in', { status: 403 }, 10)).toBe(t.errors.generic)
   })

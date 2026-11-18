@@ -9,14 +9,15 @@ type AuthError = {
 }
 
 /**
- * Only the sign-up form may say sign-up is closed: there a 403 means exactly that. Sign-in says
+ * Only the sign-up form may say sign-up is closed, and only for the gate's own refusal. Sign-in says
  * nothing more than that it failed, so a refusal there never tells a stranger anything about
  * which emails exist or which are allowed.
  */
 export function messageFor(mode: Mode, error: AuthError, minPassword: number): string {
   if (error.status === 429) return t.errors.tooManyAttempts
   if (mode === 'sign-up') {
-    if (error.status === 403 || error.message === 'signup_closed') return t.errors.signupClosed
+    // Only our own refusal: another 403 (an origin Better Auth does not trust) is a setup error.
+    if (error.message === 'signup_closed') return t.errors.signupClosed
     switch (error.code) {
       case 'USER_ALREADY_EXISTS':
       case 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL':
