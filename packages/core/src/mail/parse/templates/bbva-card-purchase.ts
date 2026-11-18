@@ -52,15 +52,20 @@ function valueRows(doc: Doc): string[] {
   throw new FieldError(found.length > 0 ? 'layout' : 'date')
 }
 
-/** The card's last four: the one standalone 4-digit run in the paragraph after the heading. */
+/**
+ * The card's last four, from the paragraph after the heading: it must hold exactly one standalone
+ * 4-digit run, right after "terminada en" (the wording of all 25 stored mails, 2026-11-18), so a
+ * year or an amount is never taken for a card.
+ */
 function cardLastFour(doc: Doc): string {
   const paragraphs = [...doc.querySelectorAll('p')]
   const at = paragraphs.findIndex((p) => text(p) === HEADING)
   if (at < 0) throw new FieldError('heading')
   const intro = paragraphs.slice(at + 1).find((p) => text(p) !== '')
   const runs = text(intro).match(/\b\d{4}\b/g) ?? []
-  if (runs.length !== 1 || !runs[0]) throw new FieldError('card')
-  return runs[0]
+  const card = text(intro).match(/\bterminada en (\d{4})\b/i)?.[1]
+  if (runs.length !== 1 || !card) throw new FieldError('card')
+  return card
 }
 
 /**

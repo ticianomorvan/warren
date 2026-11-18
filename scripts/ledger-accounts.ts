@@ -22,4 +22,4 @@ const changed = await asUser(database, user, async (scope) => {
   return reprojectMovements(scope)
 })
 await pool.end()
-console.log(`${seeds.length} accounts in file; ${changed} movements changed type`)
+console.log(`${seeds.length} accounts in file; ${changed} movements changed type or account`)

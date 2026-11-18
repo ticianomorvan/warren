@@ -215,6 +215,12 @@ describe('bbva card purchase', () => {
       'schema-fail:card',
     )
   })
+  it('never takes a year or an amount for the card', async () => {
+    const year = 'Hola, se aprobó tu primera compra del año 2026.'
+    expect(await reason(cardPurchaseHtml({ intro: year }))).toBe('schema-fail:card')
+    const amount = 'Hola, se aprobó un pago de $ 1500,00.'
+    expect(await reason(cardPurchaseHtml({ intro: amount }))).toBe('schema-fail:card')
+  })
   it('fails closed on a changed value table', async () => {
     expect(await reason(cardPurchaseHtml({ extraRows: cardValueRow('4 cuotas') }))).toBe(
       'schema-fail:layout',

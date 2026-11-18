@@ -286,13 +286,19 @@ export async function seedAccounts(scope: Scope, seeds: readonly AccountSeed[]):
 
 /**
  * Recomputes every movement row of the user from its sources and the current accounts. Needed
- * after accounts change, since "own transfer" depends on them. Returns how many changed type.
+ * after accounts change, since "own transfer" and a card's account depend on them. Returns how
+ * many rows changed type or account.
  */
 export async function reprojectMovements(scope: Scope): Promise<number> {
   const { tx, userId } = scope
   await lockUserExclusive(tx, userId, 4202)
   const rows = await tx
-    .select({ id: movement.id, type: movement.type, seq: movement.lastEventSeq })
+    .select({
+      id: movement.id,
+      type: movement.type,
+      accountId: movement.accountId,
+      seq: movement.lastEventSeq,
+    })
     .from(movement)
     .where(eq(movement.userId, userId))
   const sources = await sourcesOf(
@@ -302,7 +308,7 @@ export async function reprojectMovements(scope: Scope): Promise<number> {
   let changed = 0
   for (const r of rows) {
     const next = await projection(scope, sources.get(r.id) ?? [], r.seq)
-    if (next.type !== r.type) changed++
+    if (next.type !== r.type || next.accountId !== r.accountId) changed++
     await tx
       .update(movement)
       .set(next)
