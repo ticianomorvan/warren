@@ -1,3 +1,4 @@
+export { authSchema, createAuthDatabase, setCredentialPassword } from './auth'
 export {
   asUser,
   canonicalUserId,
@@ -14,6 +15,7 @@ export {
   type ChainReport,
   createLedger,
   type MovementRow,
+  movementCount,
   recentMovements,
   reprojectMovements,
   seedAccounts,

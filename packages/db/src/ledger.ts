@@ -308,6 +308,12 @@ export async function recentMovements(scope: Scope, limit = 20): Promise<Movemen
   return rows.map((r) => ({ ...r.movement, sources: r.sources }))
 }
 
+/** How many movements the user has. */
+export async function movementCount(scope: Scope): Promise<number> {
+  const rows = await scope.tx.select({ n: sql<number>`count(*)::int` }).from(movement)
+  return rows[0]?.n ?? 0
+}
+
 export type ChainReport = {
   ok: boolean
   events: number

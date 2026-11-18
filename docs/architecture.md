@@ -62,11 +62,11 @@ DKIM is checked; templates parse the mail; a hash-chained ledger records the mov
 outbox sends a notice (currently WhatsApp through Kapso). `packages/core` reaches I/O through
 ports, so the notice sender is one adapter.
 
-Slice 1, step 1 (the database) has removed most single-owner assumptions: every row has a
-`user_id`, the hash chain is per user, mail is routed by the `To` header to the user who
-registered that mailbox, and personal data is sealed under a per-user key. What remains is
-sign-in (step 2) and the Kapso notifier, which reaches one number and serves one user until
-slice 3 deletes it.
+Slice 1 has removed the single-owner assumptions: every row has a `user_id`, the hash chain is
+per user, mail is routed by the `To` header to the user who registered that mailbox, personal
+data is sealed under a per-user key, and people sign in with Better Auth (email and password;
+sign-up is gated by an operator's allow-list until slice 13). What remains is the Kapso
+notifier, which reaches one number and serves one user until slice 3 deletes it.
 
 ## Design
 

@@ -37,10 +37,10 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 ## Layout
 
 ```
-apps/web        Next.js 16 app: webhooks today; later the PWA, auth and /api/mcp
+apps/web        Next.js 16 app: webhooks, sign-up/sign-in/home and /api/auth; later the PWA and /api/mcp
 packages/core   Pure logic and ports: sender policy, DKIM, templates, ledger matching, notices
 packages/db     Drizzle schema, SQL migrations (roles, RLS, triggers), asUser, mail log, ledger, outbox
-scripts         Operator commands (mail:*, ledger:*, notice:*, mailbox:add, user:erase, db:tenancy-check, github-settings.sh)
+scripts         Operator commands (mail:*, ledger:*, notice:*, mailbox:add, user:set-password, user:erase, db:tenancy-check, github-settings.sh)
 docs            architecture.md and docs/research/ (dated research, not legal advice)
 ```
 
@@ -86,4 +86,5 @@ Each slice has a proof that can fail. Details are in `docs/architecture.md`.
 
 Every row belongs to a user and the app reaches the database only through `asUser`; personal
 data is sealed under a per-user key (`packages/core/src/crypto`). The WhatsApp/Kapso notifier
-is legacy and slice 3 removes it; sign-in is the second step of slice 1.
+is legacy and slice 3 removes it. Sign-in (Better Auth, as `warren_auth`) is done; sign-up stays
+closed to strangers (`WARREN_SIGNUP_EMAILS`) until slice 13.

@@ -21,6 +21,7 @@
     "mail:reingest": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/mail-reingest.ts",
     "mailbox:add": "tsx --env-file-if-exists=apps/web/.env.local scripts/mailbox-add.ts",
     "mail:replay-unrouted": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/mail-replay-unrouted.ts",
+    "user:set-password": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/user-set-password.ts",
     "user:erase": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/user-erase.ts",
     "mail:parse-pending": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/mail-parse-pending.ts",
     "ledger:accounts": "tsx --env-file-if-exists=apps/web/.env.local scripts/ledger-accounts.ts",

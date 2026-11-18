@@ -9,11 +9,12 @@ with. It never moves money, types credentials or places trades.
 (design and the slice plan, which supersedes earlier plans), [`CONTRIBUTING.md`](CONTRIBUTING.md).
 Licence: MIT. The name is covered by [`TRADEMARK.md`](TRADEMARK.md).
 
-> The sections below describe the pipeline as it stands after the first step of slice 1: every
-> row belongs to a user, Postgres row-level security keeps users apart, and personal data is
-> sealed under a per-user key. There is no sign-in yet (the next step), so users and their
-> mailboxes are made by the operator. The WhatsApp notices through Kapso are legacy: they are
-> replaced by a web app and push notices in slice 3.
+> The sections below describe the pipeline as it stands after the second step of slice 1: every
+> row belongs to a user, Postgres row-level security keeps users apart, personal data is
+> sealed under a per-user key, and people can sign in with email and password. Sign-up is closed
+> to strangers (an operator's allow-list), and mailboxes are still registered by the operator.
+> The WhatsApp notices through Kapso are legacy: they are replaced by a web app and push
+> notices in slice 3.
 
 ## Rules the code keeps
 
@@ -66,6 +67,20 @@ nobody can open, and every chain still verifies. Each table is tagged once in
 tests compare the tags with the eraser's real grants, policies and triggers. Neon's history keeps the wrapped key for its history
 window. Better Auth's tables are reachable only by their own role, `warren_auth`.
 
+**Sign-in.** Better Auth, with email and password only: no mail is sent yet, so there is no
+verification and no reset. It connects as its own role, `warren_auth` (`DATABASE_URL_AUTH`), and
+`app/api/auth/[...all]` serves it. `proxy.ts` sends anyone without a session to `/sign-in`, and
+checks the session against the database, not just the cookie. Pages: sign-up, sign-in, and a home
+that shows the signed-in user's movement count through `asUser`; every string is in
+`apps/web/lib/strings.ts`. **Sign-up is closed to strangers** until slice 13: only emails in
+`WARREN_SIGNUP_EMAILS` (comma separated; unset means nobody) can create an account. The gate is
+a Better Auth database hook, so no route skips it. Because nothing is mailed yet, an allow-listed
+address belongs to whoever signs up with it first: list an address when its owner is about to sign
+up, and take it off afterwards. A new user's data key is made at sign-up (and by `asUser` on first
+use otherwise). `pnpm user:set-password --user <id>` gives a user a password, or replaces it, for
+the user made by hand at the reset or anyone who forgot: it reads the password from stdin, never
+an argument.
+
 **Notices (legacy, removed in slice 3).** A movement first seen in a mail owes its user one notice,
 queued in the same transaction that creates the movement. The WhatsApp channel reaches one number,
 so it serves one user (`WARREN_KAPSO_USER_ID`); the notices of anyone else wait for push. The text is built by plain code from the
@@ -77,10 +92,10 @@ is configured. Kapso reports delivery to `POST /api/inbound/kapso`, signed with
 (`user_for_wamid`) finds the user first.
 
 ```
-apps/web        Next.js app; today only the inbound webhooks (Resend mail, Kapso delivery)
+apps/web        Next.js app: sign-up, sign-in and home pages, /api/auth, the inbound webhooks (Resend mail, Kapso delivery)
 packages/core   Sender policy, DKIM verification, templates, matching, notices, sealing (I/O via ports)
 packages/db     Drizzle schema, SQL migrations (roles, RLS, triggers), asUser, mail log, ledger, outbox
-scripts         mail:*, ledger:*, notice:*, mailbox:add, user:erase and db:tenancy-check commands
+scripts         mail:*, ledger:*, notice:*, mailbox:add, user:set-password, user:erase and db:tenancy-check commands
 ```
 
 ## Commands
@@ -103,6 +118,7 @@ pnpm mail:parse-pending --user <id>   # parse stored mail under the current temp
                                       # a movement it records owes a notice only if its mail is under 24 h old
 pnpm mail:reingest --user <id> --from <archive url>   # replay an old database's raw mail into the new ledger
 pnpm mail:replay-unrouted [--dry-run]   # run mail that arrived before its mailbox existed through intake
+pnpm user:set-password --user <id>   # set or replace a password (read from stdin; connects as warren_auth)
 pnpm user:erase --user <id> --confirm   # destroy a user's key and derived data (as warren_eraser)
 ```
 
@@ -124,8 +140,10 @@ query.
 2. **Vercel**: create the project from your machine, since deploys run from GitHub Actions
    and not from Vercel's Git integration: `pnpm dlx vercel link` at the repository root,
    then set Root Directory to `apps/web` in the project settings. Create a private Blob
-   store and connect it. Set `DATABASE_URL`, `WARREN_MASTER_KEY` (see `.env.example`; keep a copy
-   outside Vercel: without it every user's sealed data is unreadable), `RESEND_API_KEY` and
+   store and connect it. Set `DATABASE_URL`, `DATABASE_URL_AUTH`, `WARREN_MASTER_KEY` (see
+   `.env.example`; keep a copy outside Vercel: without it every user's sealed data is
+   unreadable), `BETTER_AUTH_SECRET` (32+ random characters), `BETTER_AUTH_URL` (the app's public
+   origin, `https://...`), `WARREN_SIGNUP_EMAILS` (who may sign up), `RESEND_API_KEY` and
    `RESEND_WEBHOOK_SECRET` for Production. In GitHub, add the secrets `VERCEL_TOKEN` and
    `DATABASE_URL_MIGRATIONS`, and the variables `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`
    (both are in `.vercel/project.json` after linking). Every push to `main` that passes
@@ -133,7 +151,8 @@ query.
 3. **Resend**: note the receiving address (`<anything>@<id>.resend.app`). Add a webhook for
    `email.received` pointing to `https://<deployment>/api/inbound/resend` and copy its
    signing secret into Vercel.
-4. **A user and a mailbox.** Until sign-in exists, make the user row and register the address
+4. **A user and a mailbox.** Sign up at `/sign-up` with an allow-listed email (or, for a user
+   made by hand, `pnpm user:set-password --user <id>`), then register the address
    their bank mail is addressed to: `pnpm mailbox:add --user <id> you@example.com`. Mail to an
    address nobody registered is dropped, noted without content, until `pnpm
    mail:replay-unrouted` runs it again once the mailbox exists.
