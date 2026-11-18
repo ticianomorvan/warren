@@ -69,16 +69,12 @@ export async function flushNotices(outbox: Outbox, sender: WhatsAppSender): Prom
 }
 
 /**
- * How the legacy Kapso webhook reaches a user's outbox. The status names only a WhatsApp
- * message id, so the user is found from it first (slice 3 deletes all of this).
+ * The legacy Kapso webhook (slice 3 deletes it). A status names only a WhatsApp message id, so
+ * the user is found from it first (`userForWamid`), then their outbox is opened.
  */
-export interface NoticeTenancy {
+export type KapsoWebhookDeps = {
   userForWamid(wamid: string): Promise<string | null>
   withOutbox<T>(userId: string, fn: (outbox: Outbox) => Promise<T>): Promise<T>
-}
-
-export type KapsoWebhookDeps = {
-  tenancy: NoticeTenancy
   sender: WhatsAppSender
   /** The one user whose notices go to the WhatsApp number. Others are recorded, not resent. */
   senderUserId: string
@@ -102,19 +98,16 @@ export async function handleKapsoWebhook(
   let recorded = 0
   let failedForSender = false
   for (const status of statuses) {
-    const userId = await deps.tenancy.userForWamid(status.wamid)
+    const userId = await deps.userForWamid(status.wamid)
     if (!userId) continue
-    const known = await deps.tenancy.withOutbox(userId, (outbox) => outbox.recordStatus(status))
+    const known = await deps.withOutbox(userId, (outbox) => outbox.recordStatus(status))
     if (!known) continue
     recorded++
     failedForSender ||= status.status === 'failed' && userId === deps.senderUserId
   }
   const resent = failedForSender
-    ? (
-        await deps.tenancy.withOutbox(deps.senderUserId, (outbox) =>
-          flushNotices(outbox, deps.sender),
-        )
-      ).length
+    ? (await deps.withOutbox(deps.senderUserId, (outbox) => flushNotices(outbox, deps.sender)))
+        .length
     : 0
   return { status: 200, body: { recorded, resent } }
 }

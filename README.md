@@ -59,8 +59,11 @@ for that transaction alone, and loads the user's data key; row-level security th
 callback only that user's rows. Personal columns (event payloads, parsed operations, verdict
 subjects, notice texts) and raw mail are sealed with AES-256-GCM under a random per-user key,
 which is stored wrapped by `WARREN_MASTER_KEY`. Erasing a user (`pnpm user:erase`) destroys their
-key and deletes their derived rows and files; their append-only rows stay as ciphertext nobody
-can open, and every chain still verifies. Neon's history keeps the wrapped key for its history
+key and deletes everything of theirs that is in clear (movements, sources, notices, mailboxes,
+account names and identifiers) and their files; their append-only rows stay as ciphertext
+nobody can open, and every chain still verifies. Each table is tagged once in
+`packages/db/src/tables.ts` (erased with the user, or kept with a reviewed list of columns), and
+tests compare the tags with the eraser's real grants, policies and triggers. Neon's history keeps the wrapped key for its history
 window. Better Auth's tables are reachable only by their own role, `warren_auth`.
 
 **Notices (legacy, removed in slice 3).** A movement first seen in a mail owes its user one notice,
@@ -98,6 +101,7 @@ pnpm mail:verify some.eml --mailbox you@example.com --any-date   # check a saved
 pnpm mail:parse-pending --user <id>   # parse stored mail under the current templates; needs Blob access:
                                       #   pnpm dlx vercel env pull .vercel/.env.development.local
 pnpm mail:reingest --user <id> --from <archive url>   # replay an old database's raw mail into the new ledger
+pnpm mail:replay-unrouted [--dry-run]   # run mail that arrived before its mailbox existed through intake
 pnpm user:erase --user <id> --confirm   # destroy a user's key and derived data (as warren_eraser)
 ```
 
@@ -130,7 +134,8 @@ query.
    signing secret into Vercel.
 4. **A user and a mailbox.** Until sign-in exists, make the user row and register the address
    their bank mail is addressed to: `pnpm mailbox:add --user <id> you@example.com`. Mail to an
-   address nobody registered is dropped, noted without content.
+   address nobody registered is dropped, noted without content, until `pnpm
+   mail:replay-unrouted` runs it again once the mailbox exists.
 5. **Gmail**: add the Resend address under Settings → Forwarding (Resend shows the
    confirmation mail under Receiving). Create a filter `from:(avisos@bbva.com.ar OR
    avisos-bbva-ar@bbva.com)` → Forward to that address.
@@ -146,7 +151,12 @@ migrated. The deploy runs `pnpm db:migrate` on every merge, so do these in one s
 2. Drop the `public` and `drizzle` schemas (`drop schema public cascade; drop schema drizzle
    cascade; create schema public;`). The roles stay.
 3. Merge, so the baseline migrates. Set the passwords of `warren_auth` and `warren_eraser`,
-   `WARREN_MASTER_KEY`, and make the user row and mailbox for user 1.
+   `WARREN_MASTER_KEY`, and make the user row for user 1. **Add the mailbox immediately**
+   (`pnpm mailbox:add --user <id> <address>`): from the migration until then, the live webhook
+   finds no mailbox and drops each mail it receives, keeping only that something arrived.
+   Then run `pnpm mail:replay-unrouted`, which fetches those deliveries from Resend again and
+   runs them through intake (idempotent; `--dry-run` lists them first). One that Resend can no
+   longer return is reported and stays listed.
 4. `pnpm mail:reingest --user <id> --from <archive url>` replays the archive's raw mail through
    the new intake and prints the archive's verified and parsed counts against the new ledger,
    naming every mail that differs. Re-add the accounts with `pnpm ledger:accounts --user <id>`.

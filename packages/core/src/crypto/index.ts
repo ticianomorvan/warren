@@ -85,7 +85,10 @@ export type MasterKeys = { current: number; keys: ReadonlyMap<number, Buffer> }
 
 function keyFromBase64(name: string, value: string): Buffer {
   const key = Buffer.from(value, 'base64')
-  if (key.byteLength !== KEY_BYTES) throw new SealError(`${name} must be 32 bytes, base64`)
+  // Canonical, padded base64 only: a value cut short at its padding would still decode.
+  if (key.byteLength !== KEY_BYTES || key.toString('base64') !== value) {
+    throw new SealError(`${name} must be 32 bytes, base64`)
+  }
   return key
 }
 
@@ -101,7 +104,10 @@ export function masterKeysFromEnv(env: Record<string, string | undefined>): Mast
   if (!Number.isInteger(current) || current < 1) throw new SealError('bad master key version')
   const keys = new Map<number, Buffer>([[current, keyFromBase64('WARREN_MASTER_KEY', raw)]])
   for (const pair of (env.WARREN_MASTER_KEY_PREVIOUS ?? '').split(',').filter(Boolean)) {
-    const [version, value] = pair.trim().split('=')
+    // Split on the first '=' only: base64 padding is made of '=' signs.
+    const eq = pair.indexOf('=')
+    const version = eq === -1 ? '' : pair.slice(0, eq).trim()
+    const value = eq === -1 ? '' : pair.slice(eq + 1).trim()
     const n = Number(version)
     if (!value || !Number.isInteger(n) || n < 1 || keys.has(n)) {
       throw new SealError('bad WARREN_MASTER_KEY_PREVIOUS')

@@ -7,9 +7,9 @@ import {
   flushNotices,
   formatAmount,
   handleKapsoWebhook,
+  type KapsoWebhookDeps,
   kapsoSender,
   type NoticeMovement,
-  type NoticeTenancy,
   noticeOneLine,
   noticeText,
   type OpenNotice,
@@ -251,7 +251,10 @@ class MemoryOutbox implements Outbox {
 }
 
 /** A tenancy over one user's outbox: a wamid belongs to the user only if the outbox sent it. */
-const tenancyOf = (outbox: MemoryOutbox, userId = 'u1'): NoticeTenancy => ({
+const tenancyOf = (
+  outbox: MemoryOutbox,
+  userId = 'u1',
+): Pick<KapsoWebhookDeps, 'userForWamid' | 'withOutbox'> => ({
   userForWamid: async (wamid) => (outbox.knows(wamid) ? userId : null),
   withOutbox: async (id, fn) => {
     expect(id).toBe(userId)
@@ -299,7 +302,7 @@ describe('flushNotices', () => {
     const outbox = new MemoryOutbox(sent)
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }], [])
     await flushNotices(outbox, sender)
-    const deps = { tenancy: tenancyOf(outbox), sender, senderUserId: 'u1', webhookSecret: SECRET }
+    const deps = { ...tenancyOf(outbox), sender, senderUserId: 'u1', webhookSecret: SECRET }
     const bad = await handleKapsoWebhook(deps, failedEvent, {
       signature: 'bad',
       event: 'whatsapp.message.failed',
@@ -318,7 +321,7 @@ describe('flushNotices', () => {
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }], [])
     await flushNotices(outbox, sender)
     const result = await handleKapsoWebhook(
-      { tenancy: tenancyOf(outbox, 'u2'), sender, senderUserId: 'u1', webhookSecret: SECRET },
+      { ...tenancyOf(outbox, 'u2'), sender, senderUserId: 'u1', webhookSecret: SECRET },
       failedEvent,
       { signature: sign(failedEvent), event: 'whatsapp.message.failed' },
     )
@@ -330,7 +333,7 @@ describe('flushNotices', () => {
     const outbox = new MemoryOutbox(sent)
     const result = await handleKapsoWebhook(
       {
-        tenancy: tenancyOf(outbox),
+        ...tenancyOf(outbox),
         sender: scriptedSender([]),
         senderUserId: 'u1',
         webhookSecret: SECRET,

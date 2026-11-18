@@ -20,12 +20,13 @@
  */
 import {
   defaultTxtResolver,
+  type IntakeDeps,
   intakeForUser,
   SENDERS,
   sha256Hex,
   type TxtResolver,
 } from '@warren/core'
-import { asUser, createPool, mailCounts, recentMail, userContext } from '@warren/db'
+import { asUser, createPool, createTenancy, mailCounts, recentMail } from '@warren/db'
 import { rawStore } from '../apps/web/lib/raw-store'
 import { connect, die, flag, userArg } from './lib'
 
@@ -72,10 +73,14 @@ const resolver: TxtResolver = async (name, rrtype) => {
   const record = archived.get(name.toLowerCase())
   return record ? [[record]] : defaultTxtResolver(name, rrtype)
 }
-const deps = { resolver, senders: SENDERS, maxDateSkewMinutes: 120 }
-
 const { pool, database } = connect('DATABASE_URL')
 const files = rawStore()
+const deps: IntakeDeps = {
+  tenancy: createTenancy(database, files),
+  resolver,
+  senders: SENDERS,
+  maxDateSkewMinutes: 120,
+}
 /** For each archived mail: its id in the new ledger (null when the raw file is gone), and what intake said. */
 const replayed = new Map<string, { mailId: string | null; note: string }>()
 
@@ -88,14 +93,12 @@ for (const mail of mails) {
   const own = deliveries.filter((d) => d.mail_sha256 === mail.sha256)
   const list = own.length > 0 ? own : [{ provider: 'reingest', provider_id: mail.sha256 }]
   for (const [i, d] of list.entries()) {
-    const result = await asUser(database, user, async (scope) =>
-      intakeForUser(deps, await userContext(scope, files), {
-        raw,
-        provider: d.provider,
-        providerId: d.provider_id,
-        receivedAt: mail.received_at,
-      }),
-    )
+    const result = await intakeForUser(deps, user, {
+      raw,
+      provider: d.provider,
+      providerId: d.provider_id,
+      receivedAt: mail.received_at,
+    })
     if (i === 0 && result.mailId) {
       const note = [result.outcome, result.reason ?? result.parseReason].filter(Boolean).join(': ')
       replayed.set(mail.sha256, { mailId: result.mailId, note })

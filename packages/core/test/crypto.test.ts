@@ -94,6 +94,33 @@ describe('master keys', () => {
     ).toThrow(SealError)
   })
 
+  it('reads older keys whose base64 ends in = padding, splitting on the first = only', () => {
+    // Every 32-byte key is 43 base64 characters and one '=': the padding is part of the value.
+    expect(OLD_MASTER.endsWith('=')).toBe(true)
+    const old = masterKeysFromEnv({ WARREN_MASTER_KEY: OLD_MASTER })
+    const dataKey = newDataKey()
+    const { wrapped } = wrapDataKey(old, 'user-a', dataKey)
+    const rotated = masterKeysFromEnv({
+      WARREN_MASTER_KEY: MASTER,
+      WARREN_MASTER_KEY_VERSION: '3',
+      WARREN_MASTER_KEY_PREVIOUS: ` 1=${OLD_MASTER} , 2=${MASTER}`,
+    })
+    expect([...rotated.keys.keys()].sort()).toEqual([1, 2, 3])
+    expect(rotated.keys.get(1)?.equals(Buffer.from(OLD_MASTER, 'base64'))).toBe(true)
+    expect(unwrapDataKey(rotated, 'user-a', wrapped, 1).equals(dataKey)).toBe(true)
+    // A key whose padding was lost is refused, not quietly accepted.
+    expect(() =>
+      masterKeysFromEnv({
+        WARREN_MASTER_KEY: MASTER,
+        WARREN_MASTER_KEY_VERSION: '2',
+        WARREN_MASTER_KEY_PREVIOUS: `1=${OLD_MASTER.replace(/=+$/, '')}`,
+      }),
+    ).toThrow(/32 bytes/)
+    expect(() =>
+      masterKeysFromEnv({ WARREN_MASTER_KEY: MASTER, WARREN_MASTER_KEY_PREVIOUS: 'nonsense' }),
+    ).toThrow(/PREVIOUS/)
+  })
+
   it('refuses a missing or wrongly sized key', () => {
     expect(() => masterKeysFromEnv({})).toThrow(/WARREN_MASTER_KEY/)
     expect(() => masterKeysFromEnv({ WARREN_MASTER_KEY: 'AAAA' })).toThrow(/32 bytes/)

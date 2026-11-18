@@ -1,5 +1,5 @@
 import { type Attempt, flushNotices, kapsoSender, type WhatsAppSender } from '@warren/core'
-import { asUser, createNoticeTenancy, createOutbox } from '@warren/db'
+import { asUser, createOutbox, system } from '@warren/db'
 import { database } from './db'
 import { env } from './env'
 
@@ -13,7 +13,12 @@ export function whatsAppSender(): WhatsAppSender | null {
   return cached
 }
 
-export const noticeTenancy = () => createNoticeTenancy(database())
+/** How the Kapso status webhook finds a user from a message id, then reaches their outbox. */
+export const kapsoLookup = () => ({
+  userForWamid: (wamid: string) => system.userForWamid(database(), wamid),
+  withOutbox: <T>(userId: string, fn: (outbox: ReturnType<typeof createOutbox>) => Promise<T>) =>
+    asUser(database(), userId, (scope) => fn(createOutbox(scope))),
+})
 
 /**
  * Sends the notices still owed to `userId`, if they are the user the WhatsApp number belongs

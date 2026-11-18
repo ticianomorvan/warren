@@ -5,6 +5,7 @@ import type { Ledger, ParsedMail } from '../src/ledger'
 import {
   type FinalVerdict,
   handleResendWebhook,
+  intakeRawMail,
   type MailLog,
   type NewMail,
   type PendingParse,
@@ -12,6 +13,7 @@ import {
   type RawStore,
   type ResendWebhookDeps,
   rawMailPathname,
+  replayUnrouted,
   type Tenancy,
   type UserContext,
   userFilesPrefix,
@@ -37,8 +39,8 @@ class MemoryLog implements MailLog {
   mails = new Map<string, NewMail>()
   deliveries = new Map<string, string>()
   verdicts: { mailId: string; verdict: MailVerdict }[] = []
-  async findDelivery(provider: string, providerId: string) {
-    return this.deliveries.get(`${provider}:${providerId}`) ?? null
+  async hasMail(mailId: string) {
+    return this.mails.has(mailId)
   }
   async recordMail(mail: NewMail) {
     if (!this.mails.has(mail.mailId)) this.mails.set(mail.mailId, mail)
@@ -103,6 +105,11 @@ const OTHER = '22222222-2222-4222-8222-222222222222'
 /** In-memory tenancy: each user has their own key, log, ledger and files. */
 class MemoryTenancy implements Tenancy {
   files = new Map<string, Uint8Array>()
+  /** True while a `withUser` callback runs: file and network I/O must never happen then. */
+  inTx = false
+  /** Where a file was stored or a DNS key fetched, with whether a transaction was open. */
+  io: { what: string; inTx: boolean }[] = []
+  puts = 0
   unrouted: { provider: string; providerId: string; receivedAt: Date }[] = []
   users = new Map<string, { key: Buffer; log: MemoryLog; ledger: MemoryLedger }>()
   constructor(readonly mailboxes: Record<string, string>) {
@@ -125,7 +132,11 @@ class MemoryTenancy implements Tenancy {
     const { key, log, ledger } = this.user(userId)
     const sealer = sealerFor(userId, key)
     const store: RawStore = {
-      put: async (p, b) => void this.files.set(p, sealer.seal(b, `blob:${p}`)),
+      put: async (p, b) => {
+        this.io.push({ what: 'put', inTx: this.inTx })
+        this.puts++
+        this.files.set(p, sealer.seal(b, `blob:${p}`))
+      },
       get: async (p) => {
         const sealed = this.files.get(p)
         return sealed ? sealer.open(sealed, `blob:${p}`) : null
@@ -139,7 +150,12 @@ class MemoryTenancy implements Tenancy {
     const mailboxes = Object.entries(this.mailboxes)
       .filter(([, id]) => id === userId)
       .map(([address]) => address)
-    return fn({ userId, store, log, ledger, mailboxes, mailId: sealer.mailId })
+    this.inTx = true
+    try {
+      return await fn({ userId, store, log, ledger, mailboxes, mailId: sealer.mailId })
+    } finally {
+      this.inTx = false
+    }
   }
 }
 
@@ -161,9 +177,13 @@ async function setup(resolver?: TxtResolver, unsigned = message()) {
     if (u === 'https://cdn.example/raw/em_1') return new Response(raw)
     return new Response('not found', { status: 404 })
   }) as typeof fetch
+  const dns = resolver ?? resolverFor({ [bank.dnsName]: bank.record })
   const deps: ResendWebhookDeps = {
     tenancy,
-    resolver: resolver ?? resolverFor({ [bank.dnsName]: bank.record }),
+    resolver: async (name, rrtype) => {
+      tenancy.io.push({ what: 'dns', inTx: tenancy.inTx })
+      return dns(name, rrtype)
+    },
     senders: SENDERS,
     maxDateSkewMinutes: 120,
     webhookSecret: SECRET,
@@ -329,6 +349,58 @@ describe('handleResendWebhook', () => {
     expect(await tenancy.withUser(USER, (ctx) => parsePending(ctx))).toEqual([])
   })
 
+  it('opens no transaction around file or DNS work', async () => {
+    const { deps, body, tenancy } = await setup()
+    await handleResendWebhook(deps, body, signedHeaders(body))
+    expect(tenancy.io.map((e) => e.what)).toEqual(['put', 'dns'])
+    expect(tenancy.io.every((e) => !e.inTx)).toBe(true)
+  })
+
+  it('stores a mail once: a redelivery does not seal and upload it again', async () => {
+    const { deps, body, tenancy, mailId } = await setup()
+    await handleResendWebhook(deps, body, signedHeaders(body))
+    const path = rawMailPathname(USER, mailId)
+    const stored = tenancy.files.get(path)
+    expect(tenancy.puts).toBe(1)
+    // Resend redelivers the same event, and a second delivery of the same mail has a new id.
+    await handleResendWebhook(deps, body, signedHeaders(body, 'msg_retry'))
+    expect(tenancy.puts).toBe(1)
+    expect(tenancy.files.get(path)).toBe(stored)
+  })
+
+  it('is repaired by running it again when it stopped after storing the file', async () => {
+    const { deps, body, tenancy, log } = await setup()
+    const record = log.recordMail.bind(log)
+    log.recordMail = async () => {
+      throw new Error('database went away')
+    }
+    await expect(handleResendWebhook(deps, body, signedHeaders(body))).rejects.toThrow(
+      /database went away/,
+    )
+    expect(tenancy.files.size).toBe(1)
+    expect(log.mails.size).toBe(0)
+    log.recordMail = record
+    const res = await handleResendWebhook(deps, body, signedHeaders(body, 'msg_2'))
+    expect(res.body.outcome).toBe('verified')
+    expect(log.mails.size).toBe(1)
+    expect(log.verdicts).toHaveLength(1)
+  })
+
+  it('is repaired by running it again when it stopped after recording the mail', async () => {
+    const { deps, body, log } = await setup()
+    const verdict = log.recordVerdict.bind(log)
+    log.recordVerdict = async () => {
+      throw new Error('crashed before the verdict')
+    }
+    await expect(handleResendWebhook(deps, body, signedHeaders(body))).rejects.toThrow(/crashed/)
+    expect(log.mails.size).toBe(1)
+    expect(log.verdicts).toHaveLength(0)
+    log.recordVerdict = verdict
+    const res = await handleResendWebhook(deps, body, signedHeaders(body, 'msg_2'))
+    expect(res.body.outcome).toBe('verified')
+    expect(log.verdicts).toHaveLength(1)
+  })
+
   it("deletes one user's files by prefix and no one else's", async () => {
     const { deps, body, tenancy } = await setup()
     await handleResendWebhook(deps, body, signedHeaders(body))
@@ -339,4 +411,51 @@ describe('handleResendWebhook', () => {
     expect(gone).toBe(1)
     expect([...tenancy.files.keys()]).toEqual([`u/${OTHER}/mail/keep.eml.sealed`])
   })
+})
+
+describe('replayUnrouted', () => {
+  it('runs mail that was unrouted through intake once its mailbox exists, and says what it did', async () => {
+    const { deps, raw, tenancy, log } = await setup()
+    // The mailbox was not registered when the mail first arrived.
+    const before = new MemoryTenancy({})
+    expect(await intakeRawMail({ ...deps, tenancy: before }, input(raw))).toEqual({
+      outcome: 'unrouted',
+    })
+    expect(before.unrouted).toHaveLength(1)
+
+    const fetched: string[] = []
+    const fetchMail = async (id: string) => {
+      fetched.push(id)
+      return { raw, receivedAt: RECEIVED_AT }
+    }
+    const pending = [{ provider: 'resend', providerId: 'em_1' }]
+    const first = await replayUnrouted(deps, pending, fetchMail)
+    expect(first).toEqual([{ provider: 'resend', providerId: 'em_1', outcome: 'verified' }])
+    expect(log.mails.size).toBe(1)
+    expect(tenancy.unrouted).toEqual([])
+
+    // Again: same delivery, so a duplicate and no second record.
+    const second = await replayUnrouted(deps, pending, fetchMail)
+    expect(second[0]?.outcome).toBe('duplicate')
+    expect(log.verdicts).toHaveLength(1)
+  })
+
+  it('leaves a delivery that cannot be fetched for the next run', async () => {
+    const { deps } = await setup()
+    const out = await replayUnrouted(
+      deps,
+      [{ provider: 'resend', providerId: 'em_gone' }],
+      async () => {
+        throw new Error('Resend API 404')
+      },
+    )
+    expect(out).toEqual([{ provider: 'resend', providerId: 'em_gone', outcome: 'failed' }])
+  })
+})
+
+const input = (raw: Uint8Array) => ({
+  raw,
+  provider: 'resend',
+  providerId: 'em_1',
+  receivedAt: RECEIVED_AT,
 })

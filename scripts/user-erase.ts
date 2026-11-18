@@ -1,5 +1,6 @@
 /**
- * Erases a user: deletes their key, mailboxes, movements, movement sources and notices, writes
+ * Erases a user: deletes their key, mailboxes, accounts and identifiers, movements, movement
+ * sources and notices (the erasure set, packages/db/src/tables.ts), writes
  * the tombstone, then deletes their files. Their append-only rows stay as ciphertext no one can
  * open. Every other user's chain still verifies. Marking the user row itself erased, and
  * ending their sessions, belongs to the auth side (warren_auth).

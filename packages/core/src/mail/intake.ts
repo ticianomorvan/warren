@@ -4,6 +4,7 @@ import { type ParseResult, parseBankMail, TEMPLATE_SET_VERSION, type VerifiedMai
 import {
   fetchReceivedMail,
   parseReceivedEvent,
+  type ReceivedMail,
   verifyResendWebhook,
   type WebhookHeaders,
 } from './resend'
@@ -12,8 +13,10 @@ import { SENDER_POLICY_VERSION, type SenderPolicy } from './senders'
 import { type MailVerdict, verifyBankMail } from './verify'
 
 /**
- * Where raw files live (Vercel Blob in production). Same pathname always means same bytes.
- * Every store used for mail is per user: it seals what it writes and opens what it reads.
+ * Where raw files live (Vercel Blob in production). Every store used for mail is per user: it
+ * seals what it writes and opens what it reads. A put under an existing pathname replaces the
+ * file with a fresh seal (new nonce) of the same bytes, so intake looks in the log first and
+ * puts a mail's file only once.
  */
 export interface RawStore {
   put(pathname: string, bytes: Uint8Array, mime: string): Promise<void>
@@ -38,8 +41,8 @@ export type PendingParse = VerifiedMail & { mailId: string; pathname: string }
 
 /** Append-only record of one user's mail, verification attempts and parses. Writes are idempotent. */
 export interface MailLog {
-  /** The mail a provider delivery was recorded under, if any. */
-  findDelivery(provider: string, providerId: string): Promise<string | null>
+  /** Whether this mail was recorded. A recorded mail's file was stored before it was recorded. */
+  hasMail(mailId: string): Promise<boolean>
   recordMail(mail: NewMail): Promise<void>
   /** The 'verified' or 'rejected' verdict, once the mail has one. */
   finalVerdict(mailId: string): Promise<FinalVerdict | null>
@@ -54,7 +57,10 @@ export interface MailLog {
 /** Everything intake may touch for one user, inside that user's database transaction. */
 export type UserContext = {
   userId: string
-  /** Seals what it writes and opens what it reads, under the user's key. */
+  /**
+   * Seals what it writes and opens what it reads, under the user's key. It holds the key, not
+   * the connection: it keeps working after the transaction ends, so file I/O stays outside.
+   */
   store: RawStore
   log: MailLog
   ledger: Ledger
@@ -77,6 +83,7 @@ export interface Tenancy {
     providerId: string
     receivedAt: Date
   }): Promise<void>
+  /** One short transaction as the user. Do no network or file I/O inside `fn`. */
   withUser<T>(userId: string, fn: (ctx: UserContext) => Promise<T>): Promise<T>
 }
 
@@ -121,14 +128,10 @@ async function route(deps: IntakeDeps, raw: Uint8Array): Promise<string | null> 
   return null
 }
 
-/**
- * Stores the bytes first, then records, then verifies, all as one user. A crash at any point
- * is repaired by running the same call again: each step is a no-op when already done.
- */
-export async function intakeRawMail(
-  deps: IntakeDeps,
-  input: { raw: Uint8Array; provider: string; providerId: string; receivedAt: Date },
-): Promise<IntakeResult> {
+export type MailInput = { raw: Uint8Array; provider: string; providerId: string; receivedAt: Date }
+
+/** Routes the mail to its user and runs intake for them; mail nobody claims is noted, not read. */
+export async function intakeRawMail(deps: IntakeDeps, input: MailInput): Promise<IntakeResult> {
   const userId = await route(deps, input.raw)
   if (!userId) {
     await deps.tenancy.recordUnrouted({
@@ -138,61 +141,127 @@ export async function intakeRawMail(
     })
     return { outcome: 'unrouted' }
   }
-  return deps.tenancy.withUser(userId, (ctx) => intakeForUser(deps, ctx, input))
+  return intakeForUser(deps, userId, input)
 }
 
-/** The same intake for a user already known, e.g. when replaying archived mail. */
+/**
+ * Intake for a user already known (also used to replay archived mail). Three steps, so no
+ * database transaction is open while the file is stored or the bank's DNS key is fetched:
+ *
+ *   1. a short transaction: the mail's id, whether it is already recorded, the mailboxes;
+ *   2. outside any transaction: store the sealed file (only if it was not recorded), then
+ *      a short transaction records the mail and reads its verdict; then verify (DNS);
+ *   3. a short transaction: the verdict, the parse and the ledger.
+ *
+ * The file is stored before the mail is recorded, so a recorded mail always has its file. Every
+ * step is a no-op when already done, so a crash anywhere is repaired by running the same call
+ * again.
+ */
 export async function intakeForUser(
-  deps: Pick<IntakeDeps, 'resolver' | 'senders' | 'maxDateSkewMinutes'>,
-  ctx: UserContext,
-  input: { raw: Uint8Array; provider: string; providerId: string; receivedAt: Date },
+  deps: IntakeDeps,
+  userId: string,
+  input: MailInput,
 ): Promise<IntakeResult> {
-  const mailId = ctx.mailId(input.raw)
-  const pathname = rawMailPathname(ctx.userId, mailId)
-  const user = { userId: ctx.userId, mailId }
-  await ctx.store.put(pathname, input.raw, 'message/rfc822')
-  await ctx.log.recordMail({
-    mailId,
-    pathname,
-    bytes: input.raw.byteLength,
-    provider: input.provider,
-    providerId: input.providerId,
-    receivedAt: input.receivedAt,
-  })
-
-  let final = await ctx.log.finalVerdict(mailId)
-  if (
-    final &&
-    (final.verdict === 'rejected' || (await ctx.log.hasParse(mailId, TEMPLATE_SET_VERSION)))
-  ) {
-    return { ...user, outcome: 'duplicate' }
-  }
-  if (!final) {
-    const verdict = await verifyBankMail(input.raw, {
-      senders: deps.senders,
+  const { tenancy } = deps
+  const first = await tenancy.withUser(userId, async (ctx) => {
+    const mailId = ctx.mailId(input.raw)
+    return {
+      mailId,
+      store: ctx.store,
       mailboxes: ctx.mailboxes,
-      resolver: deps.resolver,
-      receivedAt: input.receivedAt,
-      maxDateSkewMinutes: deps.maxDateSkewMinutes,
-    })
-    await ctx.log.recordVerdict(mailId, verdict, SENDER_POLICY_VERSION)
-    if (verdict.verdict !== 'verified') {
-      return { ...user, outcome: verdict.verdict, reason: verdict.reason }
+      recorded: await ctx.log.hasMail(mailId),
     }
-    final = verdict
-  }
-
-  const parsed = await parseBankMail(input.raw, final)
-  await ctx.log.recordParse(mailId, TEMPLATE_SET_VERSION, parsed)
-  if (parsed.status === 'unparsed') {
-    return { ...user, outcome: 'verified', parse: 'unparsed', parseReason: parsed.reason }
-  }
-  const recorded = await ctx.ledger.recordMailOperation({
-    mailId,
-    templateId: parsed.templateId,
-    operation: parsed.operation,
   })
-  return { ...user, outcome: 'verified', parse: 'parsed', movement: recorded.outcome }
+  const { mailId, store, mailboxes } = first
+  const pathname = rawMailPathname(userId, mailId)
+  const user = { userId, mailId }
+
+  if (!first.recorded) await store.put(pathname, input.raw, 'message/rfc822')
+  const final = await tenancy.withUser(userId, async (ctx) => {
+    await ctx.log.recordMail({
+      mailId,
+      pathname,
+      bytes: input.raw.byteLength,
+      provider: input.provider,
+      providerId: input.providerId,
+      receivedAt: input.receivedAt,
+    })
+    const settled = await ctx.log.finalVerdict(mailId)
+    const parsed = settled ? await ctx.log.hasParse(mailId, TEMPLATE_SET_VERSION) : false
+    return { settled, done: settled?.verdict === 'rejected' || parsed }
+  })
+  if (final.done) return { ...user, outcome: 'duplicate' }
+
+  const verdict = final.settled
+    ? null
+    : await verifyBankMail(input.raw, {
+        senders: deps.senders,
+        mailboxes,
+        resolver: deps.resolver,
+        receivedAt: input.receivedAt,
+        maxDateSkewMinutes: deps.maxDateSkewMinutes,
+      })
+
+  return tenancy.withUser(userId, async (ctx): Promise<IntakeResult> => {
+    if (verdict) await ctx.log.recordVerdict(mailId, verdict, SENDER_POLICY_VERSION)
+    const settled = final.settled ?? (verdict?.verdict === 'verified' ? verdict : null)
+    if (!settled || settled.verdict !== 'verified') {
+      return {
+        ...user,
+        outcome: verdict?.verdict ?? 'rejected',
+        ...(verdict && verdict.verdict !== 'verified' ? { reason: verdict.reason } : {}),
+      }
+    }
+    const parsed = await parseBankMail(input.raw, settled)
+    await ctx.log.recordParse(mailId, TEMPLATE_SET_VERSION, parsed)
+    if (parsed.status === 'unparsed') {
+      return { ...user, outcome: 'verified', parse: 'unparsed', parseReason: parsed.reason }
+    }
+    const recorded = await ctx.ledger.recordMailOperation({
+      mailId,
+      templateId: parsed.templateId,
+      operation: parsed.operation,
+    })
+    return { ...user, outcome: 'verified', parse: 'parsed', movement: recorded.outcome }
+  })
+}
+
+export type ReplayResult = {
+  provider: string
+  providerId: string
+  outcome: IntakeResult['outcome'] | 'failed'
+}
+
+/**
+ * Runs deliveries that were once unrouted through intake again, after their mailbox was
+ * registered. Each is fetched from the provider again (nothing of the mail was kept), with its
+ * original arrival time. Marks nothing: a delivery that now routes is recorded under its user,
+ * and the operator's list of unrouted deliveries leaves out any with a recorded delivery, so
+ * running this twice does the work once. A delivery that cannot be fetched is reported and
+ * left for the next run.
+ */
+export async function replayUnrouted(
+  deps: IntakeDeps,
+  deliveries: readonly { provider: string; providerId: string }[],
+  fetchMail: (providerId: string) => Promise<ReceivedMail>,
+): Promise<ReplayResult[]> {
+  const out: ReplayResult[] = []
+  for (const d of deliveries) {
+    if (d.provider !== 'resend') continue
+    try {
+      const mail = await fetchMail(d.providerId)
+      const result = await intakeRawMail(deps, {
+        raw: mail.raw,
+        provider: d.provider,
+        providerId: d.providerId,
+        receivedAt: mail.receivedAt,
+      })
+      out.push({ provider: d.provider, providerId: d.providerId, outcome: result.outcome })
+    } catch {
+      out.push({ provider: d.provider, providerId: d.providerId, outcome: 'failed' })
+    }
+  }
+  return out
 }
 
 /**
