@@ -134,6 +134,30 @@ describe('the meta test: the catalog says every table is covered', () => {
     expect(failures(await checkStructure(t.app))).toEqual([])
   })
 
+  it('fails when the app role may delete beyond the settings, or a setting loses its delete', async () => {
+    const ddl = (s: string) => inSystemContext(t.owner, (tx) => tx.execute(sql.raw(s)))
+    expect(failures(await checkStructure(t.app))).toEqual([])
+    await ddl('grant delete on notice_status to warren_app')
+    try {
+      expect(failures(await checkStructure(t.app)).join('\n')).toContain(
+        'warren_app delete notice_status',
+      )
+    } finally {
+      await ddl('revoke delete on notice_status from warren_app')
+    }
+    await ddl('drop policy push_subscription_delete on push_subscription')
+    try {
+      expect(failures(await checkStructure(t.app)).join('\n')).toContain(
+        'missing push_subscription:delete',
+      )
+    } finally {
+      await ddl(
+        'create policy push_subscription_delete on push_subscription as permissive for delete to warren_app using (user_id = app_user_id())',
+      )
+    }
+    expect(failures(await checkStructure(t.app))).toEqual([])
+  })
+
   it('fails when the app role is given a grant on an auth table', async () => {
     const ddl = (s: string) => inSystemContext(t.owner, (tx) => tx.execute(sql.raw(s)))
     await ddl('grant select on session to warren_app')

@@ -57,6 +57,12 @@ const tenantWithUpdate = (table: string) => [
   pgPolicy(`${table}_update`, { for: 'update', to: warrenApp, using: mine, withCheck: mine }),
 ]
 
+/** For a table that is a setting, not a record: the app may also delete its own rows. */
+const tenantWithDelete = (table: string) => [
+  ...tenant(table),
+  pgPolicy(`${table}_delete`, { for: 'delete', to: warrenApp, using: mine }),
+]
+
 /**
  * What the erasure role may remove: only the rows of the user being erased. A table that uses
  * this must also be in `ERASED_TABLES` (tables.ts), have the grants in 0002 and the
@@ -571,6 +577,32 @@ export const notice = pgTable(
 ).enableRLS()
 
 /**
+ * A browser that may be pushed to. A setting, not a record, so it is mutable like `user_key`:
+ * `warren_app` may delete its own rows (turning notifications off, or the push service saying
+ * the subscription is gone) and erasure deletes them. `endpoint` is a bearer URL and, with the
+ * two keys, is sealed. `endpoint_key` finds a subscription without opening it, so subscribing
+ * twice from one browser is one row.
+ */
+export const pushSubscription = pgTable(
+  'push_subscription',
+  {
+    userId: userId(),
+    id: uuid('id').notNull().defaultRandom(),
+    endpointKey: text('endpoint_key').notNull(),
+    endpoint: bytea('endpoint').notNull(),
+    p256dh: bytea('p256dh').notNull(),
+    auth: bytea('auth').notNull(),
+    createdAt: now('created_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    unique('push_subscription_endpoint_unique').on(t.userId, t.endpointKey),
+    ...tenantWithDelete('push_subscription'),
+    ...erasable('push_subscription'),
+  ],
+).enableRLS()
+
+/**
  * One row per attempt at sending a notice. Append-only. `body` and `detail` are sealed.
  * `notice_id` has no foreign key: erasing a user deletes their notices but must leave
  * this row, which is append-only, standing as ciphertext.
@@ -590,17 +622,24 @@ export const noticeAttempt = pgTable(
     errorCode: integer('error_code'),
     retryable: boolean('retryable'),
     detail: bytea('detail'),
+    /** Push only: the subscription it went to. No foreign key: the row outlives the subscription. */
+    subscriptionId: uuid('subscription_id'),
+    /** Push only: the push service's HTTP status, when it answered. */
+    statusCode: integer('status_code'),
     attemptedAt: now('attempted_at'),
   },
   (t) => [
     primaryKey({ columns: [t.userId, t.id] }),
     unique('notice_attempt_wamid_unique').on(t.userId, t.wamid),
-    check('notice_attempt_mode', sql`${t.mode} in ('text','template')`),
+    check('notice_attempt_mode', sql`${t.mode} in ('text','template','push')`),
     check('notice_attempt_outcome', sql`${t.outcome} in ('sent','failed')`),
+    // A sent attempt names the WhatsApp message or the subscription it reached, and has no
+    // `retryable`; a failed one has `retryable`. Push attempts, and only they, name a subscription.
     check(
       'notice_attempt_shape',
-      sql`(${t.outcome} = 'sent') = (${t.wamid} is not null and ${t.retryable} is null)`,
+      sql`(${t.outcome} = 'sent') = ((${t.wamid} is not null or ${t.subscriptionId} is not null) and ${t.retryable} is null)`,
     ),
+    check('notice_attempt_push', sql`(${t.mode} = 'push') = (${t.subscriptionId} is not null)`),
     index('notice_attempt_notice_ix').on(t.userId, t.noticeId, t.id),
     ...tenant('notice_attempt'),
   ],

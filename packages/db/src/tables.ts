@@ -17,6 +17,7 @@ import {
   notice,
   noticeAttempt,
   noticeStatus,
+  pushSubscription,
   rateLimit,
   session,
   unroutedDelivery,
@@ -70,6 +71,7 @@ export const ERASED_TABLES = [
   accountIdentifier,
   account,
   mailbox,
+  pushSubscription,
   userKey,
 ] as const
 
@@ -78,6 +80,12 @@ export const ERASED_TABLES = [
  * be rebuilt from the append-only tables. Every other tenant table is insert-only for it.
  */
 export const MUTABLE_TABLES = [movement] as const
+
+/**
+ * Tenant tables `warren_app` may delete from (a grant and a delete policy): settings, not
+ * records. Every other tenant table is insert-only for it.
+ */
+export const DELETABLE_TABLES = [pushSubscription] as const
 
 type Kept<T extends PgTable> = {
   table: T
@@ -176,6 +184,8 @@ export const KEPT_TABLES: readonly Kept<PgTable>[] = [
       'wamid',
       'errorCode',
       'retryable',
+      'subscriptionId',
+      'statusCode',
       'attemptedAt',
     ],
   }),

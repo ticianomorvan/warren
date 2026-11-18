@@ -39,6 +39,7 @@ const DERIVED = [
   'notice',
   'mailbox',
   'user_key',
+  'push_subscription',
   'account',
   'account_identifier',
 ]

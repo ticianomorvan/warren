@@ -14,6 +14,7 @@ import {
   TEMPLATE_SET_VERSION,
 } from '@warren/core'
 import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import {
   canonicalUserId,
   type Database,
@@ -334,6 +335,73 @@ export async function recentMovements(scope: Scope, limit = 20): Promise<Movemen
     .orderBy(sql`${movement.date} desc, ${movement.lastEventSeq} desc`)
     .limit(limit)
   return rows.map((r) => ({ ...r.movement, sources: r.sources }))
+}
+
+export type MovementListItem = {
+  id: string
+  /** yyyy-mm-dd */
+  date: string
+  time: string | null
+  type: 'own_transfer' | 'unclassified' | 'card_purchase'
+  direction: 'in' | 'out'
+  /** Decimal string, as stored. */
+  amount: string
+  currency: string
+  /** The merchant of a card purchase, or the other party of a transfer. */
+  counterpartyName: string | null
+  accountName: string | null
+  counterAccountName: string | null
+  cardLastFour: string | null
+}
+
+export type MovementPage = { items: MovementListItem[]; next: string | null }
+
+const CURSOR = /^(\d{4}-\d{2}-\d{2})_(\d{1,15})$/
+
+/**
+ * One page of the user's movements, newest first (the order of `recentMovements`), with the
+ * names of the accounts. `cursor` is the `next` of the page before, or null for the first
+ * page; one that is not a cursor is taken as null. Keyset paging: a page costs the same
+ * however far in it is.
+ */
+export async function listMovements(
+  scope: Scope,
+  cursor: string | null,
+  limit = 25,
+): Promise<MovementPage> {
+  const own = alias(account, 'own')
+  const counter = alias(account, 'counter')
+  const after = cursor ? CURSOR.exec(cursor) : null
+  const rows = await scope.tx
+    .select({ movement, own: own.name, counter: counter.name })
+    .from(movement)
+    .leftJoin(own, eq(own.id, movement.accountId))
+    .leftJoin(counter, eq(counter.id, movement.counterAccountId))
+    .where(
+      after
+        ? sql`(${movement.date}, ${movement.lastEventSeq}) < (${after[1]}::date, ${Number(after[2])})`
+        : undefined,
+    )
+    .orderBy(sql`${movement.date} desc, ${movement.lastEventSeq} desc`)
+    .limit(limit + 1)
+  const page = rows.slice(0, limit)
+  const last = page.at(-1)?.movement
+  return {
+    items: page.map(({ movement: m, own: ownName, counter: counterName }) => ({
+      id: m.id,
+      date: m.date,
+      time: m.time,
+      type: m.type as MovementListItem['type'],
+      direction: m.direction as MovementListItem['direction'],
+      amount: m.amount,
+      currency: m.currency,
+      counterpartyName: m.counterpartyName,
+      accountName: ownName,
+      counterAccountName: counterName,
+      cardLastFour: m.cardLastFour,
+    })),
+    next: rows.length > limit && last ? `${last.date}_${last.lastEventSeq}` : null,
+  }
 }
 
 /** How many movements the user has. */

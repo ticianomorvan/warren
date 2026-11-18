@@ -1,5 +1,6 @@
 export {
   type AuthErasure,
+  allowAction,
   authSchema,
   createAuthDatabase,
   type SetPasswordResult,
@@ -22,6 +23,9 @@ export { type ErasureDatabases, type ErasureReport, eraseUser } from './erase'
 export {
   type ChainReport,
   createLedger,
+  listMovements,
+  type MovementListItem,
+  type MovementPage,
   type MovementRow,
   movementCount,
   recentMovements,
@@ -38,5 +42,6 @@ export {
   verifiedMailOf,
 } from './mail-log'
 export { createOutbox, type NoticeRow, recentNotices } from './outbox'
+export { createPushStore, MAX_SUBSCRIPTIONS } from './push'
 export * as schema from './schema'
 export * as system from './system'
