@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { newDataKey, open, SealError, seal } from '@warren/core'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { asUser } from '../src/client'
@@ -67,10 +67,10 @@ async function feed(user: string, raw: string) {
     for (const n of await outbox.owed()) {
       if (n.history.length > 0) continue
       await outbox.recordAttempt(n.noticeId, {
-        mode: 'text',
+        mode: 'push',
         body: `Transferencia enviada a ${NAME}`,
+        subscriptionId: randomUUID(),
         outcome: 'sent',
-        wamid: `wamid.${user.slice(0, 8)}.${n.noticeId}`,
       })
     }
     return mailId

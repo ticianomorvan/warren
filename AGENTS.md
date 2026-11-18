@@ -37,7 +37,7 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 ## Layout
 
 ```
-apps/web        Next.js 16 app: webhooks, sign-up/sign-in/home and /api/auth; later the PWA and /api/mcp
+apps/web        Next.js 16 app: webhooks, sign-up/sign-in/home, /api/auth, the installable web app, push and /movements; later /api/mcp
 packages/core   Pure logic and ports: sender policy, DKIM, templates, ledger matching, notices
 packages/db     Drizzle schema, SQL migrations (roles, RLS, triggers), asUser, mail log, ledger, outbox
 scripts         Operator commands (mail:*, ledger:*, notice:*, mailbox:add, user:set-password, user:erase, db:tenancy-check, github-settings.sh)
@@ -72,7 +72,7 @@ Each slice has a proof that can fail. Details are in `docs/architecture.md`.
 0. Gate: this repository's rules, checks and settings.
 1. Users: Better Auth, `user_id` and row-level security everywhere, per-user hash chain and keys.
 2. Card purchases: a template for "Compra aprobada"; reparse stored mail.
-3. PWA and push; delete the Kapso (WhatsApp) code.
+3. PWA and push; the former WhatsApp notifier is deleted. Done.
 4. Agent spike: `/api/mcp` with OAuth and one read tool.
 5. Advice kit, first cut: profile, general parameterised knowledge base with dated facts, two MCP prompts, fact tools, evals.
 6. Onboarding by forwarding: per-user address, Gmail confirmation, filter helper.
@@ -85,6 +85,6 @@ Each slice has a proof that can fail. Details are in `docs/architecture.md`.
 13. Before strangers sign up: legal review, data-protection registration, privacy policy.
 
 Every row belongs to a user and the app reaches the database only through `asUser`; personal
-data is sealed under a per-user key (`packages/core/src/crypto`). The WhatsApp/Kapso notifier
-is legacy and slice 3 removes it. Sign-in (Better Auth, as `warren_auth`) is done; sign-up stays
+data is sealed under a per-user key (`packages/core/src/crypto`). Each notice is pushed (Web Push, VAPID)
+to every browser its user has subscribed. Sign-in (Better Auth, as `warren_auth`) is done; sign-up stays
 closed to strangers (`WARREN_SIGNUP_EMAILS`) until slice 13.

@@ -6,7 +6,7 @@ import { createLedger, seedAccounts } from './ledger'
 import { createMailLog } from './mail-log'
 import { createOutbox } from './outbox'
 import { createPushStore } from './push'
-import { erasure, user } from './schema'
+import { erasure, noticeAttempt, user } from './schema'
 import * as system from './system'
 import {
   AUTH_TABLES as AUTH,
@@ -484,17 +484,21 @@ export async function seedFixtures(
     const outbox = createOutbox(scope)
     const [owed] = await outbox.owed()
     if (!owed) throw new Error('recording the movement made no notice')
+    const [stored] = await outbox.subscriptions()
+    if (!stored) throw new Error('adding a subscription stored none')
     await outbox.recordAttempt(owed.noticeId, {
-      mode: 'text',
+      mode: 'push',
       body: 'hola',
+      subscriptionId: stored.id,
       outcome: 'sent',
-      wamid: `wamid.${tag}`,
     })
-    await outbox.recordStatus({
+    // An attempt of the former WhatsApp notifier: history that nothing writes any more.
+    await scope.tx.insert(noticeAttempt).values({
+      noticeId: owed.noticeId,
+      mode: 'text',
+      outcome: 'sent',
+      body: scope.seal('hola', `notice_attempt:${owed.noticeId}:body`),
       wamid: `wamid.${tag}`,
-      status: 'delivered',
-      errorCode: null,
-      occurredAt: new Date('2026-11-14T17:11:00Z'),
     })
   })
 }

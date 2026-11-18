@@ -76,7 +76,3 @@ export function noticePushPayload(noticeId: number, m: NoticeMovement): PushPayl
   const [title = '', ...rest] = noticeLines(m)
   return { title, body: rest.join('\n'), tag: `notice-${noticeId}`, url: '/movements' }
 }
-
-/** Template parameters cannot hold line breaks or runs of spaces. */
-export const noticeOneLine = (m: NoticeMovement) =>
-  noticeLines(m).join(' · ').replace(/\s+/g, ' ').slice(0, 900)

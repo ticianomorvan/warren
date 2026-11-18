@@ -43,8 +43,8 @@ lint rule checks.
 
 - Running an agent loop or a model on Warren's bill. Warren is what other people's agents
   connect to. There is no in-app chat.
-- WhatsApp and a chat runtime. The existing Kapso notifier, its webhook route and its settings
-  are deleted in slice 3.
+- WhatsApp and a chat runtime. The former WhatsApp notifier, its webhook route and its settings
+  were deleted in slice 3.
 - "Connect Gmail" by OAuth. `gmail.readonly` is a restricted scope: verification plus a yearly
   outside security assessment, and test-mode tokens expire in 7 days. Forwarding needs neither
   and gives Warren no inbox access.
@@ -59,14 +59,15 @@ lint rule checks.
 A single-owner pipeline: a Gmail filter forwards bank alerts to a Resend inbound address; the
 webhook (`apps/web/app/api/inbound/resend/route.ts`) stores the raw mail in Blob and Postgres;
 DKIM is checked; templates parse the mail; a hash-chained ledger records the movement; an
-outbox sends a notice (currently WhatsApp through Kapso). `packages/core` reaches I/O through
-ports, so the notice sender is one adapter.
+outbox pushes a notice (Web Push) to every browser the user has subscribed. `packages/core`
+reaches I/O through ports, so the notice sender is one adapter.
 
 Slice 1 has removed the single-owner assumptions: every row has a `user_id`, the hash chain is
 per user, mail is routed by the `To` header to the user who registered that mailbox, personal
 data is sealed under a per-user key, and people sign in with Better Auth (email and password;
-sign-up is gated by an operator's allow-list until slice 13). What remains is the Kapso
-notifier, which reaches one number and serves one user until slice 3 deletes it.
+sign-up is gated by an operator's allow-list until slice 13). Slice 3 is done in shape: notices
+are pushed to each user's own browsers, with an installable web app and a movements page, and
+the former WhatsApp notifier (which reached one number and served one user) is deleted.
 
 ## Design
 
@@ -149,10 +150,10 @@ Each slice names its research file and a proof that can fail. Read the file befo
 2. **Card purchases.** Port "Compra aprobada"; reparse stored mail.
    Proof: `pnpm mail:parse-pending && pnpm mail:status` shows them parsed; each remaining
    unparsed row is named.
-3. **PWA and push, Kapso out.** Manifest, service worker, push adapter, movements page; delete
-   the Kapso code.
+3. **PWA and push, WhatsApp out.** Manifest, service worker, push adapter, movements page; the
+   former WhatsApp code is deleted (done). Old attempt rows stay as history.
    Proof: a real purchase raises a push on an Android phone and appears in the app;
-   `grep -ri kapso` is empty.
+   the vendor name of the former notifier appears nowhere in the repository.
 4. **Agent spike.** `/api/mcp` with OAuth and one read tool.
    Proof: "my last five movements" answered in a Claude app and in Claude Code; `curl` without a
    token gets 401 with `resource_metadata`; user B's token returns none of user A's rows. Tools

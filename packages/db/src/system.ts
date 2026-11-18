@@ -7,9 +7,9 @@ import { mailbox, unroutedDelivery } from './schema'
  * through `asUser`. Keep this file small: each function is a hole in "no query without a user".
  */
 
-type LookupFunction = 'user_for_mailbox' | 'user_for_wamid'
+type LookupFunction = 'user_for_mailbox'
 
-/** Calls one of the two `security definer` lookups, which return a user id or null. */
+/** Calls a `security definer` lookup, which returns a user id or null. */
 async function lookup(tx: Tx, fn: LookupFunction, key: string): Promise<string | null> {
   const rows = rowsOf<{ id: string | null }>(
     await tx.execute(sql`select ${sql.identifier(fn)}(${key}) as id`),
@@ -20,15 +20,6 @@ async function lookup(tx: Tx, fn: LookupFunction, key: string): Promise<string |
 /** The user who registered this address, or null. A `security definer` function reads the table. */
 export async function userForMailbox(database: Database, address: string): Promise<string | null> {
   return inSystemContext(database, (tx) => lookup(tx, 'user_for_mailbox', address))
-}
-
-/**
- * The user a WhatsApp message id belongs to. This is the whole of the legacy Kapso shim: the
- * status webhook names only a message id, so a user is found from it before anything else.
- * Slice 3 deletes it, with its SQL function.
- */
-export async function userForWamid(database: Database, wamid: string): Promise<string | null> {
-  return inSystemContext(database, (tx) => lookup(tx, 'user_for_wamid', wamid))
 }
 
 /** Notes a delivery nobody claimed. No content: only the provider's id and when it arrived. */

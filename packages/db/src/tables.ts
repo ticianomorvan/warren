@@ -16,7 +16,6 @@ import {
   movementSource,
   notice,
   noticeAttempt,
-  noticeStatus,
   pushSubscription,
   rateLimit,
   session,
@@ -188,11 +187,6 @@ export const KEPT_TABLES: readonly Kept<PgTable>[] = [
       'statusCode',
       'attemptedAt',
     ],
-  }),
-  kept({
-    table: noticeStatus,
-    sealed: [],
-    clear: ['userId', 'wamid', 'status', 'errorCode', 'occurredAt', 'recordedAt'],
   }),
   // The tombstone: when, and the head of the chain.
   kept({ table: erasure, sealed: [], clear: ['userId', 'chainHead', 'erasedAt'] }),

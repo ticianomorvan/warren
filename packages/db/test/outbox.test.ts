@@ -4,6 +4,7 @@ import { asUser, type Scope } from '../src/client'
 import { createLedger, seedAccounts } from '../src/ledger'
 import { createMailLog } from '../src/mail-log'
 import { createOutbox, recentNotices } from '../src/outbox'
+import { noticeAttempt } from '../src/schema'
 import { sha, testDatabase } from './helpers'
 
 let t: Awaited<ReturnType<typeof testDatabase>>
@@ -50,6 +51,8 @@ const record = (c: string, templateId: string, operation: BankOperation) =>
       { notify: true },
     )
   })
+
+const SUBSCRIPTION = '6f1f8f0e-5b1c-4c1e-9d55-2c6f3a7a1b10'
 
 const seen: OpenNotice[] = []
 /** What flushNotices does, with a scripted answer: read what is owed, record `attempt` for each. */
@@ -101,7 +104,12 @@ describe('outbox', () => {
   })
 
   it('hands over the movement with account names and records the attempt', async () => {
-    const made = await drain({ mode: 'text', body: 'hola', outcome: 'sent', wamid: 'wamid.A' })
+    const made = await drain({
+      mode: 'push',
+      body: 'hola',
+      subscriptionId: SUBSCRIPTION,
+      outcome: 'sent',
+    })
     expect(made).toHaveLength(1)
     expect(seen.at(-1)).toMatchObject({
       history: [],
@@ -115,44 +123,35 @@ describe('outbox', () => {
     })
     await drain(null)
     expect(seen.at(-1)?.history).toEqual([
-      { mode: 'text', failed: false, errorCode: null, retryable: false },
+      { mode: 'push', failed: false, retryable: false, subscriptionId: SUBSCRIPTION },
     ])
     // The text that was sent sits in the table as ciphertext.
     const { rows } = await t.pg.query<{ body: Uint8Array }>('select body from notice_attempt')
     expect(Buffer.from(rows[0]?.body ?? []).includes(Buffer.from('hola'))).toBe(false)
   })
 
-  it('reopens a notice when WhatsApp reports the message as failed', async () => {
-    const status = { wamid: 'wamid.A', errorCode: 131047, occurredAt: new Date() }
-    expect(await outbox((o) => o.recordStatus({ ...status, status: 'failed' }))).toBe(true)
-    expect(await outbox((o) => o.recordStatus({ ...status, status: 'failed' }))).toBe(true)
-    expect(
-      await outbox((o) => o.recordStatus({ ...status, wamid: 'wamid.other', status: 'read' })),
-    ).toBe(false)
-    await drain({
-      mode: 'template',
-      body: 'hola',
-      outcome: 'failed',
-      errorCode: null,
-      retryable: true,
-      detail: 'http-503',
-    })
-    expect(seen.at(-1)?.history).toEqual([
-      { mode: 'text', failed: true, errorCode: 131047, retryable: false },
-    ])
+  it('reads attempts of the former WhatsApp notifier as legacy history', async () => {
+    await as((scope) =>
+      scope.tx.insert(noticeAttempt).values({
+        noticeId: seen.at(-1)?.noticeId ?? 0,
+        mode: 'template',
+        outcome: 'failed',
+        body: scope.seal('hola', `notice_attempt:${seen.at(-1)?.noticeId}:body`),
+        errorCode: 131047,
+        retryable: false,
+      }),
+    )
     await drain(null)
-    expect(seen.at(-1)?.history).toHaveLength(2)
-    expect(seen.at(-1)?.history[1]).toEqual({
-      mode: 'template',
-      failed: true,
-      errorCode: null,
-      retryable: true,
-    })
+    expect(seen.at(-1)?.history).toEqual([
+      { mode: 'push', failed: false, retryable: false, subscriptionId: SUBSCRIPTION },
+      { mode: 'legacy', failed: true, retryable: false },
+    ])
     expect((await as((scope) => recentNotices(scope)))[0]).toMatchObject({
       attempts: 2,
       lastMode: 'template',
       lastOutcome: 'failed',
-      lastDetail: 'http-503',
+      lastSubscription: null,
+      lastStatus: null,
     })
   })
 
@@ -161,6 +160,5 @@ describe('outbox', () => {
       /append-only/,
     )
     await expect(t.pg.query('delete from notice')).rejects.toThrow(/append-only/)
-    await expect(t.pg.query('delete from notice_status')).rejects.toThrow(/append-only/)
   })
 })

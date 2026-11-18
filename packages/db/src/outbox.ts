@@ -9,11 +9,10 @@ import { asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Scope } from './client'
 import { createPushStore } from './push'
-import { account, movement, notice, noticeAttempt, noticeStatus } from './schema'
+import { account, movement, notice, noticeAttempt } from './schema'
 
-// Sealed: a notice attempt's text and the provider's detail. The scope adds the user.
-const attemptAad = (noticeId: number, column: 'body' | 'detail') =>
-  `notice_attempt:${noticeId}:${column}`
+// Sealed: a notice attempt's text. The scope adds the user.
+const attemptAad = (noticeId: number) => `notice_attempt:${noticeId}:body`
 
 /** One user's outbox. */
 export function createOutbox(scope: Scope): Outbox {
@@ -32,15 +31,9 @@ export function createOutbox(scope: Scope): Outbox {
         .orderBy(asc(notice.id))
       if (open.length === 0) return []
 
-      const failures = tx
-        .select({ wamid: noticeStatus.wamid, errorCode: noticeStatus.errorCode })
-        .from(noticeStatus)
-        .where(eq(noticeStatus.status, 'failed'))
-        .as('failures')
       const attempts = await tx
-        .select({ attempt: noticeAttempt, failedWamid: failures.wamid, code: failures.errorCode })
+        .select()
         .from(noticeAttempt)
-        .leftJoin(failures, eq(failures.wamid, noticeAttempt.wamid))
         .where(
           inArray(
             noticeAttempt.noticeId,
@@ -49,15 +42,13 @@ export function createOutbox(scope: Scope): Outbox {
         )
         .orderBy(asc(noticeAttempt.id))
       const history = new Map<number, AttemptRecord[]>()
-      for (const { attempt, failedWamid, code } of attempts) {
+      for (const attempt of attempts) {
         const list = history.get(attempt.noticeId) ?? []
-        const reported = failedWamid !== null
         list.push({
-          mode: attempt.mode as AttemptRecord['mode'],
-          failed: attempt.outcome === 'failed' || reported,
-          errorCode: reported ? code : attempt.errorCode,
-          // A failure WhatsApp reports after accepting the message is final for that mode.
-          retryable: reported ? false : (attempt.retryable ?? false),
+          // Old rows are `text` or `template`: the former WhatsApp notifier. Nothing writes them now.
+          mode: attempt.mode === 'push' ? 'push' : 'legacy',
+          failed: attempt.outcome === 'failed',
+          retryable: attempt.retryable ?? false,
           ...(attempt.subscriptionId ? { subscriptionId: attempt.subscriptionId } : {}),
         })
         history.set(attempt.noticeId, list)
@@ -85,55 +76,26 @@ export function createOutbox(scope: Scope): Outbox {
     },
 
     async recordAttempt(noticeId, attempt) {
-      const body = scope.seal(attempt.body, attemptAad(noticeId, 'body'))
-      if (attempt.mode === 'push') {
-        // `gone` is a failure that will not repeat: the subscription is deleted with it.
-        const sent = attempt.outcome === 'sent'
-        await tx.insert(noticeAttempt).values({
-          noticeId,
-          mode: 'push',
-          outcome: sent ? 'sent' : 'failed',
-          body,
-          subscriptionId: attempt.subscriptionId,
-          ...(sent
-            ? {}
-            : {
-                retryable: attempt.outcome === 'failed' && attempt.retryable,
-                statusCode: attempt.status,
-              }),
-        })
-        return
-      }
+      const body = scope.seal(attempt.body, attemptAad(noticeId))
+      // `gone` is a failure that will not repeat: the subscription is deleted with it.
+      const sent = attempt.outcome === 'sent'
       await tx.insert(noticeAttempt).values({
         noticeId,
-        mode: attempt.mode,
-        outcome: attempt.outcome,
+        mode: 'push',
+        outcome: sent ? 'sent' : 'failed',
         body,
-        ...(attempt.outcome === 'sent'
-          ? { wamid: attempt.wamid }
+        subscriptionId: attempt.subscriptionId,
+        ...(sent
+          ? {}
           : {
-              errorCode: attempt.errorCode,
-              retryable: attempt.retryable,
-              detail: attempt.detail
-                ? scope.seal(attempt.detail, attemptAad(noticeId, 'detail'))
-                : null,
+              retryable: attempt.outcome === 'failed' && attempt.retryable,
+              statusCode: attempt.status,
             }),
       })
     },
 
     subscriptions: () => createPushStore(scope).list(),
     dropSubscription: (id) => createPushStore(scope).drop(id),
-
-    async recordStatus(status) {
-      const known = await tx
-        .select({ id: noticeAttempt.id })
-        .from(noticeAttempt)
-        .where(eq(noticeAttempt.wamid, status.wamid))
-        .limit(1)
-      if (!known[0]) return false
-      await tx.insert(noticeStatus).values(status).onConflictDoNothing()
-      return true
-    },
   }
 }
 
@@ -143,8 +105,10 @@ export type NoticeRow = {
   attempts: number
   lastMode: string | null
   lastOutcome: string | null
-  lastDetail: string | null
-  delivery: string | null
+  /** The subscription of the last attempt, as a short id. Never its endpoint. */
+  lastSubscription: string | null
+  /** The push service's HTTP status of the last attempt, when it answered. */
+  lastStatus: number | null
 }
 
 /** The user's latest notices with where each one stands, newest first. */
@@ -159,28 +123,14 @@ export async function recentNotices(scope: Scope, limit = 20): Promise<NoticeRow
       .where(eq(noticeAttempt.noticeId, n.id))
       .orderBy(asc(noticeAttempt.id))
     const last = attempts.at(-1)
-    const statuses = last?.wamid
-      ? await tx
-          .select({ status: noticeStatus.status })
-          .from(noticeStatus)
-          .where(eq(noticeStatus.wamid, last.wamid))
-          .orderBy(asc(noticeStatus.occurredAt))
-      : []
-    const detail = last?.detail
-      ? scope.open(last.detail, attemptAad(n.id, 'detail')).toString('utf8')
-      : null
     out.push({
       noticeId: n.id,
       createdAt: n.createdAt,
       attempts: attempts.length,
       lastMode: last?.mode ?? null,
       lastOutcome: last?.outcome ?? null,
-      lastDetail: last
-        ? (detail ??
-          (last.errorCode ? `code ${last.errorCode}` : null) ??
-          (last.statusCode ? `http ${last.statusCode}` : null))
-        : null,
-      delivery: statuses.map((s) => s.status).join(' → ') || null,
+      lastSubscription: last?.subscriptionId?.slice(0, 8) ?? null,
+      lastStatus: last?.statusCode ?? null,
     })
   }
   return out

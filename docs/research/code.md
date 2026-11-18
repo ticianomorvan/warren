@@ -19,7 +19,7 @@ Tags: VERIFIED = primary page or file read today (URL given). LOCAL = I ran it t
 9. **MCP results.** Return `structuredContent` plus the same JSON as text. Amounts as decimal strings with `currency` and a `display` string built by one shared formatter. Cursor pagination (`limit` default 50, max 200, `next_cursor`, `truncated`, a hint on how to narrow). Hard cap per response well under 25,000 tokens. Errors as `isError: true` with a fix. Put the advice kit behind resources and tools, and prompts for user-run flows; no behavioural orders in tool descriptions.
 10. **Evals in three tiers.** (a) Free, every CI run: in-process MCP client against a PGlite-seeded ledger, golden outputs, schema checks, size checks, cross-tenant check, `review_by` staleness check. (b) Free: recorded agent transcripts replayed in CI plus a grounding checker (`packages/core/src/eval/grounding.ts`) that fails if a number or date in an answer is not in a tool result. (c) Paid, nightly or by label: promptfoo with its MCP provider, cached, with a spend cap.
 11. **Redaction command.** `scripts/mail-redact.ts` (`pnpm mail:redact in.eml`) with fixtures under `packages/core/test/fixtures/mail/<bank>/<template>/`. Reuse `fakeCbu` and `fakeCuit` from `packages/core/test/fixtures.ts`. Parser tests read the redacted body. Verification tests re-sign the redacted mail with `makeSigner` from `packages/core/test/helpers.ts`, using the d=, s= and h= recorded in a sidecar file. Add a fixture lint in CI.
-12. **Logs and error reports without PII.** Today `apps/web/lib/notify.ts` line 25 logs `a.detail` from Kapso (provider text, may hold a phone number); the other `console.error` calls log only `error.message`, which can still echo input. Log ids, codes and template names only. If Sentry is added: `dataCollection`/`sendDefaultPii` off, `httpBodies: []`, `beforeSend` that drops request data and `user`, no values in messages. Vercel Hobby keeps runtime logs 1 hour, Pro 1 day.
+12. **Logs and error reports without PII.** The former WhatsApp notifier logged provider text (it could hold a phone number); push logs only status codes. The other `console.error` calls log only `error.message`, which can still echo input. Log ids, codes and template names only. If Sentry is added: `dataCollection`/`sendDefaultPii` off, `httpBodies: []`, `beforeSend` that drops request data and `user`, no values in messages. Vercel Hobby keeps runtime logs 1 hour, Pro 1 day.
 13. **Language.** Store `locale` per user. Use next-intl without locale routing (locale from user profile or cookie, via `i18n/request.ts`) for the web app. For notices and MCP text, replace the Spanish literals in `packages/core/src/notify/text.ts` with per-locale message functions in core, and format money with `Intl.NumberFormat`, which takes decimal strings exactly (LOCAL).
 14. **Self-host seams.** Add a `MailSource` port next to `RawStore`: Resend webhook (today), IMAP poller with imapflow, optional `smtp-server` receiver, and file upload. Add S3 and filesystem `RawStore` implementations (the dev-only `fsRawStore` already exists in `apps/web/lib/raw-store.ts`). Guard `attachDatabasePool` in `apps/web/lib/db.ts` behind a Vercel check. Set `output: 'standalone'` and `outputFileTracingRoot` in `apps/web/next.config.ts`. Do not choose MinIO.
 
@@ -275,15 +275,15 @@ Steps:
 
 Append-only or derived, all keyed by nothing user-specific yet:
 
-| Table or store                              | PII in it                                                                 |
-| ------------------------------------------- | ------------------------------------------------------------------------- |
-| Blob raw mail (`blob_file`, `inbound_mail`) | whole mail: names, CBU, CUIT, amounts, signed To address                  |
-| `mail_verdict`                              | `from_address`, `subject`, `detail`                                       |
-| `mail_parse.operation` (jsonb)              | counterparty name, CBU, CUIT, amount, reference                           |
-| `event.payload` (jsonb)                     | same operation data                                                       |
-| `movement`, `movement_source.operation`     | same, plus owner's account labels                                         |
-| `account`, `account_identifier`             | account names and CBUs                                                    |
-| `notice_attempt.body`, `detail`             | the sent WhatsApp text and provider detail (may contain the phone number) |
+| Table or store                              | PII in it                                                              |
+| ------------------------------------------- | ---------------------------------------------------------------------- |
+| Blob raw mail (`blob_file`, `inbound_mail`) | whole mail: names, CBU, CUIT, amounts, signed To address               |
+| `mail_verdict`                              | `from_address`, `subject`, `detail`                                    |
+| `mail_parse.operation` (jsonb)              | counterparty name, CBU, CUIT, amount, reference                        |
+| `event.payload` (jsonb)                     | same operation data                                                    |
+| `movement`, `movement_source.operation`     | same, plus owner's account labels                                      |
+| `account`, `account_identifier`             | account names and CBUs                                                 |
+| `notice_attempt.body`, `detail`             | the sent notice text; old rows: provider detail of the former notifier |
 
 ### Recommended design
 
@@ -294,9 +294,9 @@ Append-only or derived, all keyed by nothing user-specific yet:
 5. **Erasure job** for user U, in order: delete `user_key` row; delete derived rows; delete blobs under `u/<U>/`; delete `notice` text columns by making `notice_attempt.body` encrypted too; delete the user and sessions in Better Auth tables; write a tombstone row (`user_id`, date, chain head hash) so the log shows when and what was shredded. Neon history keeps the wrapped key for up to the history window, so state in the policy: "erased within N days of the request, where N is the history window".
 6. **Export.** `GET /export` streams JSON Lines of decrypted events, plus movements as CSV, plus a manifest with the chain head and a `verify-export` command in the repo that recomputes the chain from the exported ciphertext hashes. Art. 14 allows a free request every six months; rate limit to match, and do not charge.
 7. **Response time.** Art. 16 gives five working days for suppression. Make the erasure job self-serve in settings so the clock is moot.
-8. **Retention.** Raw mail: keep only as long as re-parsing needs it; offer a per-user setting (for example 13 months) and a job that deletes older blobs; events are kept until erasure. Sessions and OAuth tokens follow Better Auth expiry. Delivery logs from Kapso are in `notice_status` (no PII beyond wamid).
+8. **Retention.** Raw mail: keep only as long as re-parsing needs it; offer a per-user setting (for example 13 months) and a job that deletes older blobs; events are kept until erasure. Sessions and OAuth tokens follow Better Auth expiry. The former WhatsApp delivery log (`notice_status`) was dropped in slice 3.
 9. **Logs and errors.**
-   - Log ids, template ids, status codes, durations. Never log mail fields, names, amounts, CBU, `a.detail` text from Kapso, or the `To` address.
+   - Log ids, template ids, status codes, durations. Never log mail fields, names, amounts, CBU, provider text, or the `To` address.
    - Do not put values in URLs (Vercel logs record path and search params).
    - Sentry (if used): `dataCollection` with `httpBodies: []`, `userInfo` false or only an opaque id, `beforeSend` dropping `request.data`, `request.cookies`, `user.email`, `extra`; `beforeBreadcrumb` returning null for console and fetch breadcrumbs; add `forwarded` to the denylist; region choice (EU or US) is a cross-border transfer decision under art. 12.
    - Add a unit test that throws an error whose message contains a fake CBU and checks the `beforeSend` output has none.
@@ -327,7 +327,7 @@ Open legal choice (needs counsel): crypto-shredding vs forgettable payload. Desi
 - Web app: next-intl without locale routing. Locale = `user.locale` for signed-in pages, `Accept-Language` for the marketing page (`@formatjs/intl-localematcher`, as the Next.js guide shows). If SEO for the landing page matters, add `/en` and `/es` routes only for public pages (then use `[lang]` and `next/root-params` for those).
 - Message catalogs (`es-AR.json`, `en.json`) live in a package both web and core import, so notices and MCP text share them. Use ICU messages for plurals (`Intl.PluralRules` is native). Keep catalogs small; type the keys.
 - Notices (`packages/core/src/notify/text.ts`): today `noticeLines` hard-codes Spanish ("Transferencia entre tus cuentas", "a"/"de"). Change to `noticeLines(m, locale)` using catalog entries. Money and dates from one `formatMoney(amount, currency, locale)` built on `Intl.NumberFormat` with the decimal string. Keep the rule "plain code builds the text; no model".
-- WhatsApp approved templates are per language and registered with Meta; store `locale` on the notice row so a resend picks the right template. UNVERIFIED: Kapso's template-language handling. Not read.
+- Push notices carry the text of the notice, so a `locale` on the notice row decides their language.
 - MCP tool output: return both machine fields (`amount: "1500.00"`, `currency`, `date`) and `display` strings in the user's locale, from the same formatter. Tool names and schema field names stay English and stable; only `display` and error hints are localised. The agent answers in the user's language by itself.
 - Test: a table of `(amount, currency, locale) -> expected` strings including NBSP, 4-digit grouping, large values; and a test that `Intl.NumberFormat` receives strings, never numbers (lint rule or a wrapper that throws on `number`).
 - Docs: README and docs site in both; keep one source file for bank names and template ids that is language-neutral.
@@ -379,10 +379,9 @@ Open legal choice (needs counsel): crypto-shredding vs forgettable payload. Desi
 - Inspect AI's support for mock models or log replay (page silent); promptfoo's ability to run with no model at all (page silent). The free tiers in Q3 do not rely on either.
 - Output size limits for ChatGPT apps. Not found in OpenAI pages read. Claude limits are from Anthropic's page (150,000 characters hosted, 25,000 tokens in Claude Code).
 - How Claude Code or Claude connectors treat `title`-less tools or very large `inputSchema`s (issue-tracker reports only).
-- The EDPB blockchain guidelines primary text (PDF not readable here); only secondary summaries seen. Whether crypto-shredding meets Ley 25.326 art. 16 suppression, whether Warren must register a database (art. 21), and whether storing data with US vendors (Sentry, Vercel, Resend, Kapso) meets art. 12. All need counsel.
+- The EDPB blockchain guidelines primary text (PDF not readable here); only secondary summaries seen. Whether crypto-shredding meets Ley 25.326 art. 16 suppression, whether Warren must register a database (art. 21), and whether storing data with US vendors (Sentry, Vercel, Resend) meets art. 12. All need counsel.
 - Resend inbound retention, size limits and raw-message access (the introduction page is silent). Needed for the erasure policy.
 - Vercel Blob region and whether Blob history or backups outlive a delete. Not read.
-- Kapso template language handling for English notices.
 - Whether the IMAP path (Gmail or other provider) keeps the signed bytes intact. Needs the integration test above.
 - A standalone Docker build of `apps/web` (traced externals `mailauth`, `pg`, `linkedom`, `postal-mime`). Not built here; I did not change the repository.
 - That `mcp-handler` 2.4.0 runs unmodified outside Vercel (it is stateless per its README, but I did not run it self-hosted).

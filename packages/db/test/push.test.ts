@@ -150,14 +150,14 @@ describe('notices over push, through the database', () => {
     await as((s) => createPushStore(s).add(laptop))
     await record(1)
     const push = memoryPushSender()
-    const made = await flushNotices(withOutbox, { push })
+    const made = await flushNotices(withOutbox, push)
     expect(made).toHaveLength(2)
     expect(push.sent.map((s) => s.payload.title)).toEqual([
       'Compra con tarjeta …1234',
       'Compra con tarjeta …1234',
     ])
     expect(push.sent[0]?.payload.url).toBe('/movements')
-    expect(await flushNotices(withOutbox, { push })).toHaveLength(0)
+    expect(await flushNotices(withOutbox, push)).toHaveLength(0)
     const { rows } = await t.pg.query<{ mode: string; outcome: string; body: Uint8Array }>(
       "select mode, outcome, body from notice_attempt where mode = 'push'",
     )
@@ -179,12 +179,12 @@ describe('notices over push, through the database', () => {
           : { outcome: 'sent' }
         : { outcome: 'failed', retryable: false, status: 400 },
     )
-    await flushNotices(withOutbox, { push })
-    await flushNotices(withOutbox, { push })
+    await flushNotices(withOutbox, push)
+    await flushNotices(withOutbox, push)
     expect(push.sent.filter((s) => s.subscription.endpoint === phone.endpoint)).toHaveLength(1)
     expect(push.sent.filter((s) => s.subscription.endpoint === laptop.endpoint)).toHaveLength(2)
     answer = 'ok'
-    await flushNotices(withOutbox, { push })
+    await flushNotices(withOutbox, push)
     const { rows } = await t.pg.query<{
       outcome: string
       retryable: boolean | null
@@ -206,7 +206,7 @@ describe('notices over push, through the database', () => {
     const push = memoryPushSender((s) =>
       s.endpoint === phone.endpoint ? { outcome: 'gone', status: 410 } : { outcome: 'sent' },
     )
-    await flushNotices(withOutbox, { push })
+    await flushNotices(withOutbox, push)
     expect(await as((s) => createPushStore(s).has(phone.endpoint))).toBe(false)
     expect(await as((s) => createPushStore(s).has(laptop.endpoint))).toBe(true)
     const { rows } = await t.pg.query<{ status_code: number; retryable: boolean }>(
@@ -219,9 +219,9 @@ describe('notices over push, through the database', () => {
     await as((s) => createPushStore(s).remove(laptop.endpoint))
     await record(4)
     const push = memoryPushSender()
-    expect(await flushNotices(withOutbox, { push })).toHaveLength(0)
+    expect(await flushNotices(withOutbox, push)).toHaveLength(0)
     await as((s) => createPushStore(s).add(phone))
-    const made = await flushNotices(withOutbox, { push })
+    const made = await flushNotices(withOutbox, push)
     expect(made).toHaveLength(1)
     expect(push.sent[0]?.payload.body).toContain('Comercio 4')
   })
