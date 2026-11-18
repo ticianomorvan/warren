@@ -14,6 +14,9 @@
  * keys come from the archived verdicts when it has them, so a bank key rotated since does not
  * reject old mail. Safe to run again: mail already done is a 'duplicate'.
  *
+ * It never notifies: the movements it creates are ones the user already saw, so no notice is queued
+ * for them (`notify: false`).
+ *
  * It ends by comparing the archive's verified and parsed counts with what the new ledger holds,
  * and names every mail that differs. It deletes nothing: the old content-addressed blobs go
  * only after those counts check out.
@@ -93,12 +96,17 @@ for (const mail of mails) {
   const own = deliveries.filter((d) => d.mail_sha256 === mail.sha256)
   const list = own.length > 0 ? own : [{ provider: 'reingest', provider_id: mail.sha256 }]
   for (const [i, d] of list.entries()) {
-    const result = await intakeForUser(deps, user, {
-      raw,
-      provider: d.provider,
-      providerId: d.provider_id,
-      receivedAt: mail.received_at,
-    })
+    const result = await intakeForUser(
+      deps,
+      user,
+      {
+        raw,
+        provider: d.provider,
+        providerId: d.provider_id,
+        receivedAt: mail.received_at,
+      },
+      { notify: false },
+    )
     if (i === 0 && result.mailId) {
       const note = [result.outcome, result.reason ?? result.parseReason].filter(Boolean).join(': ')
       replayed.set(mail.sha256, { mailId: result.mailId, note })

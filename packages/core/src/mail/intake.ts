@@ -1,4 +1,5 @@
-import type { Ledger, RecordOutcome } from '../ledger'
+import type { Ledger, RecordOptions, RecordOutcome } from '../ledger'
+import { NOTICE_MAX_AGE_HOURS } from '../notify'
 import { canonicalUserId, UserErasedError } from '../user'
 import { unsignedToAddresses } from './headers'
 import { type ParseResult, parseBankMail, TEMPLATE_SET_VERSION, type VerifiedMail } from './parse'
@@ -132,7 +133,11 @@ async function route(deps: IntakeDeps, raw: Uint8Array): Promise<string | null> 
 export type MailInput = { raw: Uint8Array; provider: string; providerId: string; receivedAt: Date }
 
 /** Routes the mail to its user and runs intake for them; mail nobody claims is noted, not read. */
-export async function intakeRawMail(deps: IntakeDeps, input: MailInput): Promise<IntakeResult> {
+export async function intakeRawMail(
+  deps: IntakeDeps,
+  input: MailInput,
+  options?: RecordOptions,
+): Promise<IntakeResult> {
   const userId = await route(deps, input.raw)
   if (!userId) {
     await deps.tenancy.recordUnrouted({
@@ -142,7 +147,7 @@ export async function intakeRawMail(deps: IntakeDeps, input: MailInput): Promise
     })
     return { outcome: 'unrouted' }
   }
-  return intakeForUser(deps, userId, input)
+  return intakeForUser(deps, userId, input, options)
 }
 
 /** What `ensureStored` leaves behind: the mail is stored and recorded, with what is known of it. */
@@ -232,6 +237,7 @@ async function parseAndRecord(
   input: MailInput,
   mailId: string,
   verified: VerifiedMail,
+  options: RecordOptions,
 ): Promise<IntakeResult> {
   const user = { userId, mailId }
   return deps.tenancy.withUser(userId, async (ctx): Promise<IntakeResult> => {
@@ -240,11 +246,10 @@ async function parseAndRecord(
     if (parsed.status === 'unparsed') {
       return { ...user, outcome: 'verified', parse: 'unparsed', parseReason: parsed.reason }
     }
-    const recorded = await ctx.ledger.recordMailOperation({
-      mailId,
-      templateId: parsed.templateId,
-      operation: parsed.operation,
-    })
+    const recorded = await ctx.ledger.recordMailOperation(
+      { mailId, templateId: parsed.templateId, operation: parsed.operation },
+      options,
+    )
     return { ...user, outcome: 'verified', parse: 'parsed', movement: recorded.outcome }
   })
 }
@@ -254,11 +259,15 @@ async function parseAndRecord(
  * transaction is open while the file is stored or the bank's DNS key is fetched: `ensureStored`,
  * `settleVerdict`, `parseAndRecord`. Every step is a no-op when already done, so a crash anywhere
  * is repaired by running the same call again.
+ *
+ * A movement the mail creates owes its user a notice, unless `options.notify` is false: a rebuild
+ * or an import (`mail:reingest`) replays old mail, and old movements are not news.
  */
 export async function intakeForUser(
   deps: IntakeDeps,
   id: string,
   input: MailInput,
+  options: RecordOptions = {},
 ): Promise<IntakeResult> {
   const userId = canonicalUserId(id)
   const stored = await ensureStored(deps, userId, input)
@@ -273,7 +282,7 @@ export async function intakeForUser(
       ...('reason' in verdict ? { reason: verdict.reason } : {}),
     }
   }
-  return parseAndRecord(deps, userId, input, stored.mailId, verdict)
+  return parseAndRecord(deps, userId, input, stored.mailId, verdict, options)
 }
 
 export type ReplayResult = {
@@ -300,22 +309,34 @@ export const replayIncomplete = (r: ReplayResult): boolean =>
  * final verdict, so running this twice does the work once. A delivery that cannot be fetched,
  * that is still unrouted, or whose verdict is 'retry' (DNS trouble) stays listed: see
  * `replayIncomplete`. The caller chooses which deliveries (a provider's) to pass.
+ *
+ * This replays real mail the user never saw, so a movement it creates is news and owes a notice,
+ * unless the mail is older than the notice window (`NOTICE_MAX_AGE_HOURS`): the outbox would send
+ * that notice as if it were fresh, a day or a week late. Those movements are created silently.
+ * (A rebuild from an archive is different: it replays what the user already saw, and passes
+ * `notify: false` to `intakeForUser`.)
  */
 export async function replayUnrouted(
   deps: IntakeDeps,
   deliveries: readonly { provider: string; providerId: string; receivedAt: Date }[],
   fetchMail: (providerId: string) => Promise<ReceivedMail>,
+  now: () => Date = () => new Date(),
 ): Promise<ReplayResult[]> {
   const out: ReplayResult[] = []
   for (const d of deliveries) {
     try {
       const mail = await fetchMail(d.providerId)
-      const result = await intakeRawMail(deps, {
-        raw: mail.raw,
-        provider: d.provider,
-        providerId: d.providerId,
-        receivedAt: d.receivedAt,
-      })
+      const fresh = now().getTime() - d.receivedAt.getTime() < NOTICE_MAX_AGE_HOURS * 3_600_000
+      const result = await intakeRawMail(
+        deps,
+        {
+          raw: mail.raw,
+          provider: d.provider,
+          providerId: d.providerId,
+          receivedAt: d.receivedAt,
+        },
+        { notify: fresh },
+      )
       out.push({ provider: d.provider, providerId: d.providerId, outcome: result.outcome })
     } catch (error) {
       out.push({

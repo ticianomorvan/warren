@@ -158,10 +158,14 @@ migrated. The deploy runs `pnpm db:migrate` on every merge, so do these in one s
    runs them through intake (idempotent; `--dry-run` lists them first). A delivery stays listed
    until its mail is verified or rejected: one Resend can no longer return, or whose DNS check
    came back `retry`, is reported and the command exits 1; run it again until it exits 0. Mail
-   that still matches no mailbox is listed as `unrouted` without failing the run.
+   that still matches no mailbox is listed as `unrouted` without failing the run. This is mail
+   the user never saw, so a movement it creates owes a notice, except for mail older than the
+   notice window (24 hours), which is recorded silently rather than sent late as if it were new.
 4. `pnpm mail:reingest --user <id> --from <archive url>` replays the archive's raw mail through
    the new intake and prints the archive's verified and parsed counts against the new ledger,
-   naming every mail that differs. Re-add the accounts with `pnpm ledger:accounts --user <id>`.
+   naming every mail that differs. It never notifies: a rebuild creates its movements without
+   notices, because the user already saw them. Re-add the accounts with
+   `pnpm ledger:accounts --user <id>`.
 5. Delete the old content-addressed blobs (`raw/mail/<sha256>.eml`) only after the counts agree.
 
 Real mail files never go in this repository; `.gitignore` blocks `*.eml`.

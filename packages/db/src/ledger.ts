@@ -8,6 +8,7 @@ import {
   matchMovement,
   mergeSources,
   type ParsedMail,
+  type RecordOptions,
   type RecordOutcome,
   TEMPLATE_SET_VERSION,
 } from '@warren/core'
@@ -115,7 +116,7 @@ async function sourcesOf(
 export function createLedger(scope: Scope): Ledger {
   const { tx } = scope
   return {
-    async recordMailOperation(mail: ParsedMail): Promise<RecordOutcome> {
+    async recordMailOperation(mail: ParsedMail, options?: RecordOptions): Promise<RecordOutcome> {
       // One recording at a time per user, so two mails of one operation cannot both create a
       // movement. Taken before any insert, so the order of `seq` is the order of the chain.
       await lockUserExclusive(tx, scope.userId, 4202)
@@ -187,8 +188,9 @@ export function createLedger(scope: Scope): Ledger {
           .where(and(eq(movement.userId, scope.userId), eq(movement.id, movementId)))
       } else {
         await tx.insert(movement).values({ id: movementId, ...row })
-        // A movement first seen in a mail is news for the user; a later mail of it is not.
-        await tx.insert(notice).values({ movementId })
+        // A movement first seen in a mail is news for the user; a later mail of it is not, and
+        // neither is one a rebuild or an import recreates (`notify: false`).
+        if (options?.notify !== false) await tx.insert(notice).values({ movementId })
       }
       await tx.insert(movementSource).values({
         mailId: mail.mailId,

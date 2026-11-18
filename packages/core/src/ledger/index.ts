@@ -26,10 +26,18 @@ export type RecordOutcome = {
 
 export type ParsedMail = { mailId: string; templateId: string; operation: BankOperation }
 
+export type RecordOptions = {
+  /**
+   * Whether a movement this call creates owes its user a notice. Defaults to true. A rebuild or an
+   * import passes false: those movements are not news, and a notice is not retracted once sent.
+   */
+  notify?: boolean
+}
+
 /** One user's ledger: every call acts for the user it was created for. */
 export interface Ledger {
   /** Records what a parsed mail says happened. One real operation becomes one movement. */
-  recordMailOperation(mail: ParsedMail): Promise<RecordOutcome>
+  recordMailOperation(mail: ParsedMail, options?: RecordOptions): Promise<RecordOutcome>
   /** Parsed mails not yet reflected in the ledger, oldest first. */
   pendingMailOperations(): Promise<ParsedMail[]>
 }

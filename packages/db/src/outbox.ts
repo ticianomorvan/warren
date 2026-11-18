@@ -1,11 +1,14 @@
-import type { AttemptRecord, NoticeMovement, OpenNotice, Outbox } from '@warren/core'
+import {
+  type AttemptRecord,
+  NOTICE_MAX_AGE_HOURS,
+  type NoticeMovement,
+  type OpenNotice,
+  type Outbox,
+} from '@warren/core'
 import { asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Scope } from './client'
 import { account, movement, notice, noticeAttempt, noticeStatus } from './schema'
-
-/** A notice older than this is no longer worth sending. */
-const MAX_AGE_HOURS = 24
 
 // Sealed: a notice attempt's text and the provider's detail. The scope adds the user.
 const attemptAad = (noticeId: number, column: 'body' | 'detail') =>
@@ -24,7 +27,7 @@ export function createOutbox(scope: Scope): Outbox {
         .innerJoin(movement, eq(movement.id, notice.movementId))
         .leftJoin(own, eq(own.id, movement.accountId))
         .leftJoin(counter, eq(counter.id, movement.counterAccountId))
-        .where(sql`${notice.createdAt} > now() - make_interval(hours => ${MAX_AGE_HOURS})`)
+        .where(sql`${notice.createdAt} > now() - make_interval(hours => ${NOTICE_MAX_AGE_HOURS})`)
         .orderBy(asc(notice.id))
       if (open.length === 0) return []
 
