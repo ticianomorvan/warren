@@ -1,0 +1,62 @@
+/** What a notice needs to know about a movement. Names come from the ledger, never a model. */
+export type NoticeMovement = {
+  type: 'own_transfer' | 'unclassified'
+  direction: 'in' | 'out'
+  /** Decimal string, as stored. */
+  amount: string
+  currency: string
+  /** yyyy-mm-dd */
+  date: string
+  /** hh:mm or hh:mm:ss */
+  time: string | null
+  accountName: string | null
+  counterAccountName: string | null
+  counterpartyName: string | null
+}
+
+const SYMBOLS: Record<string, string> = { ARS: '$', USD: 'US$' }
+
+/** "1500.00000000" becomes "1.500,00". Pure string work: no floating point. */
+export function formatAmount(amount: string): string {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(amount)
+  if (!match) throw new Error('not a decimal amount')
+  const whole = (match[1] ?? '0').replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+$)/g, '.')
+  const fraction = (match[2] ?? '').replace(/0+$/, '').padEnd(2, '0')
+  return `${whole},${fraction}`
+}
+
+export function formatMoney(amount: string, currency: string): string {
+  return `${SYMBOLS[currency] ?? currency} ${formatAmount(amount)}`
+}
+
+function formatWhen(date: string, time: string | null): string {
+  const [, month, day] = date.split('-')
+  return `${day}/${month}${time ? ` ${time.slice(0, 5)}` : ''}`
+}
+
+/** The notice for a new movement, one fact per line. Parts not known yet are left out. */
+export function noticeLines(m: NoticeMovement): string[] {
+  const money = formatMoney(m.amount, m.currency)
+  const when = formatWhen(m.date, m.time)
+  if (m.type === 'own_transfer') {
+    const [from, to] =
+      m.direction === 'out'
+        ? [m.accountName, m.counterAccountName]
+        : [m.counterAccountName, m.accountName]
+    const route = [from, to].some(Boolean) ? `${from ?? ''} → ${to ?? ''}`.trim() : null
+    return ['Transferencia entre tus cuentas', money, ...(route ? [route] : []), when]
+  }
+  const out = m.direction === 'out'
+  const who = m.counterpartyName ? ` ${out ? 'a' : 'de'} ${m.counterpartyName}` : ''
+  return [
+    out ? 'Transferencia enviada' : 'Transferencia recibida',
+    `${money}${who}`,
+    [m.accountName, when].filter(Boolean).join(' · '),
+  ]
+}
+
+export const noticeText = (m: NoticeMovement) => noticeLines(m).join('\n')
+
+/** Template parameters cannot hold line breaks or runs of spaces. */
+export const noticeOneLine = (m: NoticeMovement) =>
+  noticeLines(m).join(' · ').replace(/\s+/g, ' ').slice(0, 900)

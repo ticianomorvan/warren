@@ -1,0 +1,8 @@
+{
+  "name": "warren-vercel-cli",
+  "private": true,
+  "description": "The Vercel CLI the deploy job runs, kept out of the pnpm workspace. See README.md.",
+  "dependencies": {
+    "vercel": "65.16.0"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules
+.next
+.turbo
+.vercel
+.env
+.env.*
+!.env.example
+!apps/web/.env.example
+*.tsbuildinfo
+coverage
+# real mail never goes in this repo
+*.eml
+!packages/*/test/fixtures/synthetic/*.eml
+.data
+next-env.d.ts

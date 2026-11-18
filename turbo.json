@@ -1,0 +1,35 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "!.next/cache/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"]
+    },
+    "test": {},
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
+  },
+  "globalPassThroughEnv": [
+    "DATABASE_URL",
+    "DATABASE_URL_MIGRATIONS",
+    "RESEND_API_KEY",
+    "RESEND_WEBHOOK_SECRET",
+    "WARREN_OWNER_ADDRESSES",
+    "WARREN_RAW_STORE_DIR",
+    "BLOB_READ_WRITE_TOKEN",
+    "VERCEL",
+    "KAPSO_API_KEY",
+    "KAPSO_PHONE_NUMBER_ID",
+    "WARREN_OWNER_WHATSAPP",
+    "KAPSO_WEBHOOK_SECRET",
+    "KAPSO_NOTICE_TEMPLATE",
+    "KAPSO_NOTICE_TEMPLATE_LANGUAGE",
+    "BLOB_STORE_ID",
+    "VERCEL_OIDC_TOKEN"
+  ]
+}
