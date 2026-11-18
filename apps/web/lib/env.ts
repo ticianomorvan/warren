@@ -1,4 +1,4 @@
-import { canonicalUserId, type MasterKeys, masterKeysFromEnv } from '@warren/core'
+import { type MasterKeys, masterKeysFromEnv } from '@warren/core'
 import { type AuthOrigins, authOrigins } from './auth-origin'
 
 function required(name: string): string {
@@ -26,28 +26,6 @@ export const env = {
   /** Wraps each user's data key (see packages/core/src/crypto). */
   masterKeys: (): MasterKeys => masterKeysFromEnv(process.env),
   /**
-   * The legacy WhatsApp channel (slice 3 deletes it), or null while any of its settings is
-   * missing. It reaches one number, so it serves one user: `userId`. Other users' notices wait
-   * for push.
-   */
-  kapso: () => {
-    const apiKey = process.env.KAPSO_API_KEY
-    const phoneNumberId = process.env.KAPSO_PHONE_NUMBER_ID
-    const to = process.env.WARREN_OWNER_WHATSAPP?.replace(/\D/g, '')
-    const configured = process.env.WARREN_KAPSO_USER_ID?.trim()
-    if (!apiKey || !phoneNumberId || !to || !configured) return null
-    // Compared with ids Postgres prints, so one spelling: lower case.
-    let userId: string
-    try {
-      userId = canonicalUserId(configured)
-    } catch {
-      throw new Error('WARREN_KAPSO_USER_ID must be a uuid')
-    }
-    const name = process.env.KAPSO_NOTICE_TEMPLATE
-    const language = process.env.KAPSO_NOTICE_TEMPLATE_LANGUAGE ?? 'es_AR'
-    return { apiKey, phoneNumberId, to, userId, template: name ? { name, language } : undefined }
-  },
-  /**
    * Web Push (VAPID): `pnpm push:vapid-keys` makes the pair. The public key also goes to the
    * browser, so a person can subscribe. Null while any of the three is missing: the app runs,
    * and the notifications card says they are not set up.
@@ -62,5 +40,4 @@ export const env = {
     }
     return { publicKey, privateKey, subject }
   },
-  kapsoWebhookSecret: () => required('KAPSO_WEBHOOK_SECRET'),
 }

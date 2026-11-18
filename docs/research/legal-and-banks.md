@@ -144,9 +144,9 @@ VERIFIED (Ley 25.326 text):
 Must say (from arts. 5, 6, 9, 12, 14, 16):
 
 1. Who is the controller: name, address, email contact for rights.
-2. What data: forwarded alert emails, parsed movements (amount, date, counterparty, bank), account email, phone for WhatsApp notices, MCP access logs.
+2. What data: forwarded alert emails, parsed movements (amount, date, counterparty, bank), account email, MCP access logs.
 3. Purpose: keep the ledger, send notices, serve the user's own agent. No sale, no ads, no model training by Warren.
-4. Recipients and processors: Vercel, Neon, Kapso (WhatsApp), Sentry, and the user's own AI provider (data leaves Warren when their agent reads the ledger; that is the user's choice).
+4. Recipients and processors: Vercel, Neon, Sentry, and the user's own AI provider (data leaves Warren when their agent reads the ledger; that is the user's choice).
 5. Countries where data is stored, and that they are not adequate under Argentine law, with the legal basis (model clauses or consent).
 6. Whether answers are mandatory and what happens if the user refuses.
 7. Retention and deletion.

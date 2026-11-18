@@ -69,19 +69,14 @@ describe('routing before a user exists', () => {
                  has_function_privilege('warren_app', oid, 'execute') as app,
                  has_function_privilege('warren_auth', oid, 'execute') as auth,
                  has_function_privilege('warren_eraser', oid, 'execute') as eraser
-          from pg_proc where proname in ('user_for_mailbox', 'user_for_wamid') order by proname`),
+          from pg_proc where proname like 'user\\_for\\_%' order by proname`),
       ),
     )
-    expect(rows.map((r) => r.proname)).toEqual(['user_for_mailbox', 'user_for_wamid'])
+    expect(rows.map((r) => r.proname)).toEqual(['user_for_mailbox'])
     for (const r of rows) {
       expect(r).toMatchObject({ prosecdef: true, app: true, auth: false, eraser: false })
       expect(r.cfg.join()).toContain('search_path=pg_catalog, pg_temp')
     }
-  })
-
-  it('finds the user of a WhatsApp message id', async () => {
-    expect(await system.userForWamid(t.app, 'wamid.b')).toBe(b)
-    expect(await system.userForWamid(t.app, 'wamid.unknown')).toBeNull()
   })
 
   it('notes an unclaimed delivery with no content, once, and cannot read it back', async () => {
@@ -216,27 +211,6 @@ describe('routing before a user exists', () => {
         return c.store.get(`u/${a}/x`)
       }),
     ).rejects.toThrow()
-  })
-
-  it('serves the legacy webhook with the one lookup, then the same door as everything else', async () => {
-    const withOutbox = <T>(user: string, fn: (o: ReturnType<typeof createOutbox>) => Promise<T>) =>
-      asUser(t.app, user, (scope) => fn(createOutbox(scope)))
-    expect(await system.userForWamid(t.app, 'wamid.a')).toBe(a)
-    const known = await withOutbox(a, (o) =>
-      o.recordStatus({ wamid: 'wamid.a', status: 'read', errorCode: null, occurredAt: new Date() }),
-    )
-    expect(known).toBe(true)
-    // B cannot record a status for A's message.
-    expect(
-      await withOutbox(b, (o) =>
-        o.recordStatus({
-          wamid: 'wamid.a',
-          status: 'failed',
-          errorCode: 1,
-          occurredAt: new Date(),
-        }),
-      ),
-    ).toBe(false)
   })
 })
 

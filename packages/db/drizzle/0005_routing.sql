@@ -11,7 +11,7 @@ revoke all on function user_for_mailbox(text) from public;
 --> statement-breakpoint
 grant execute on function user_for_mailbox(text) to warren_app;
 --> statement-breakpoint
--- Serves the Kapso status webhook, which names only a message id. Slice 3 deletes it.
+-- Serves the former WhatsApp status webhook, which named only a message id. Migration 0009 drops it.
 create function user_for_wamid(wamid text) returns uuid
   language sql stable security definer set search_path = pg_catalog, pg_temp as $$
   select user_id from public.notice_attempt where wamid = user_for_wamid.wamid limit 1

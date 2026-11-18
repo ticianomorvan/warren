@@ -547,7 +547,7 @@ export const movementSource = pgTable(
 ).enableRLS()
 
 // ---------------------------------------------------------------------------------------------
-// Notices (the WhatsApp channel is legacy: slice 3 replaces it)
+// Notices
 // ---------------------------------------------------------------------------------------------
 
 /**
@@ -617,7 +617,7 @@ export const noticeAttempt = pgTable(
     outcome: text('outcome').notNull(),
     /** The text that was sent, exactly. Sealed. */
     body: bytea('body').notNull(),
-    /** WhatsApp's id for the message, when the send was accepted. */
+    /** Legacy: the former WhatsApp notifier's message id. Old rows only; nothing writes it. */
     wamid: text('wamid'),
     errorCode: integer('error_code'),
     retryable: boolean('retryable'),
@@ -631,6 +631,7 @@ export const noticeAttempt = pgTable(
   (t) => [
     primaryKey({ columns: [t.userId, t.id] }),
     unique('notice_attempt_wamid_unique').on(t.userId, t.wamid),
+    // `text` and `template` are the former WhatsApp notifier's: old rows only, nothing writes them.
     check('notice_attempt_mode', sql`${t.mode} in ('text','template','push')`),
     check('notice_attempt_outcome', sql`${t.outcome} in ('sent','failed')`),
     // A sent attempt names the WhatsApp message or the subscription it reached, and has no
@@ -642,28 +643,5 @@ export const noticeAttempt = pgTable(
     check('notice_attempt_push', sql`(${t.mode} = 'push') = (${t.subscriptionId} is not null)`),
     index('notice_attempt_notice_ix').on(t.userId, t.noticeId, t.id),
     ...tenant('notice_attempt'),
-  ],
-).enableRLS()
-
-/** What WhatsApp later reported about a sent message. Append-only. */
-export const noticeStatus = pgTable(
-  'notice_status',
-  {
-    userId: userId(),
-    wamid: text('wamid').notNull(),
-    status: text('status').notNull(),
-    errorCode: integer('error_code'),
-    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
-    recordedAt: now('recorded_at'),
-  },
-  (t) => [
-    primaryKey({ columns: [t.userId, t.wamid, t.status] }),
-    foreignKey({
-      name: 'notice_status_attempt_fk',
-      columns: [t.userId, t.wamid],
-      foreignColumns: [noticeAttempt.userId, noticeAttempt.wamid],
-    }),
-    check('notice_status_kind', sql`${t.status} in ('sent','delivered','read','failed')`),
-    ...tenant('notice_status'),
   ],
 ).enableRLS()

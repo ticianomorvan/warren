@@ -13,8 +13,7 @@ Licence: MIT. The name is covered by [`TRADEMARK.md`](TRADEMARK.md).
 > row belongs to a user, Postgres row-level security keeps users apart, personal data is
 > sealed under a per-user key, and people can sign in with email and password. Sign-up is closed
 > to strangers (an operator's allow-list), and mailboxes are still registered by the operator.
-> The WhatsApp notices through Kapso are legacy: they are replaced by a web app and push
-> notices in slice 3.
+> Notices are Web Push messages to the user's own browsers (slice 3).
 
 ## Rules the code keeps
 
@@ -90,18 +89,16 @@ the user made by hand at the reset or anyone who forgot: it reads the password f
 an argument, and needs no master key. On a Vercel preview the app's origin is the deployment's own
 host (`VERCEL_URL`) and the branch alias is trusted, so `BETTER_AUTH_URL` is for production.
 
-**Notices (legacy, removed in slice 3).** A movement first seen in a mail owes its user one notice,
-queued in the same transaction that creates the movement. The WhatsApp channel reaches one number,
-so it serves one user (`WARREN_KAPSO_USER_ID`); the notices of anyone else wait for push. The text is built by plain code from the
-ledger (amount, accounts, counterparty, date) and sent through Kapso. Every attempt and every
-delivery report from WhatsApp is a new row. When WhatsApp refuses free text because the recipient
-has not written in 24 hours, the notice goes out again through an approved template, if one
-is configured. Kapso reports delivery to `POST /api/inbound/kapso`, signed with
-`KAPSO_WEBHOOK_SECRET`; the status names only a message id, so a `security definer` function
-(`user_for_wamid`) finds the user first.
+**Notices.** A movement first seen in a mail owes its user one notice, queued in the same
+transaction that creates the movement. The text is built by plain code from the ledger (amount,
+accounts, counterparty, date) and pushed as a Web Push message (VAPID, written with `node:crypto`)
+to every browser the user turned notifications on in; tapping it opens `/movements`. Every attempt
+is a new row, and a notice stays owed for 24 hours until a subscription takes it. A subscription
+the push service calls gone is deleted. `pnpm notice:status --user <id>` lists the latest notices.
+Attempts of the former WhatsApp notifier stay as history, and their notices are never pushed.
 
 ```
-apps/web        Next.js app: sign-up, sign-in and home pages, /api/auth, the inbound webhooks (Resend mail, Kapso delivery)
+apps/web        Next.js app: sign-up, sign-in and home pages, /api/auth, the inbound webhook (Resend mail), the web app and push
 packages/core   Sender policy, DKIM verification, templates, matching, notices, sealing (I/O via ports)
 packages/db     Drizzle schema, SQL migrations (roles, RLS, triggers), asUser, mail log, ledger, outbox
 scripts         mail:*, ledger:*, notice:*, mailbox:add, user:set-password, user:erase and db:tenancy-check commands

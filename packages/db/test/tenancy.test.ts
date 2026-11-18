@@ -125,11 +125,11 @@ describe('the meta test: the catalog says every table is covered', () => {
     } finally {
       await ddl('drop table stray')
     }
-    await ddl('alter table notice_status add constraint loose unique (wamid, status)')
+    await ddl('alter table notice_attempt add constraint loose unique (id)')
     try {
-      expect(failures(await checkStructure(t.app)).join('\n')).toContain('notice_status.loose')
+      expect(failures(await checkStructure(t.app)).join('\n')).toContain('notice_attempt.loose')
     } finally {
-      await ddl('alter table notice_status drop constraint loose')
+      await ddl('alter table notice_attempt drop constraint loose')
     }
     expect(failures(await checkStructure(t.app))).toEqual([])
   })
@@ -137,13 +137,13 @@ describe('the meta test: the catalog says every table is covered', () => {
   it('fails when the app role may delete beyond the settings, or a setting loses its delete', async () => {
     const ddl = (s: string) => inSystemContext(t.owner, (tx) => tx.execute(sql.raw(s)))
     expect(failures(await checkStructure(t.app))).toEqual([])
-    await ddl('grant delete on notice_status to warren_app')
+    await ddl('grant delete on notice_attempt to warren_app')
     try {
       expect(failures(await checkStructure(t.app)).join('\n')).toContain(
-        'warren_app delete notice_status',
+        'warren_app delete notice_attempt',
       )
     } finally {
-      await ddl('revoke delete on notice_status from warren_app')
+      await ddl('revoke delete on notice_attempt from warren_app')
     }
     await ddl('drop policy push_subscription_delete on push_subscription')
     try {

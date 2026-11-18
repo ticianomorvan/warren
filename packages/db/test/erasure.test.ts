@@ -43,15 +43,7 @@ const DERIVED = [
   'account',
   'account_identifier',
 ]
-const KEPT = [
-  'event',
-  'mail_parse',
-  'mail_verdict',
-  'inbound_mail',
-  'blob_file',
-  'notice_attempt',
-  'notice_status',
-]
+const KEPT = ['event', 'mail_parse', 'mail_verdict', 'inbound_mail', 'blob_file', 'notice_attempt']
 
 beforeAll(async () => {
   t = await testDatabase()
