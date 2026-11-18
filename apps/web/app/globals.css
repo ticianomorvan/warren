@@ -191,6 +191,160 @@ input:focus-visible {
   color: var(--muted);
 }
 
+.card.wide {
+  max-width: 32rem;
+}
+
+.card section + section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.actions button.quiet {
+  margin-top: 0;
+}
+
+/* Reserves the line, so a result does not push what is below it. */
+.status {
+  min-height: 1.5em;
+  margin: 8px 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.actions + .error,
+.actions + .status {
+  margin-top: 8px;
+}
+
+.back {
+  display: inline-block;
+  margin-bottom: 12px;
+  font-size: 0.875rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+a.back:hover {
+  color: var(--accent);
+}
+
+.card section h2 {
+  margin: 16px 0 4px;
+  position: sticky;
+  top: 0;
+  padding: 4px 0;
+  background: var(--surface);
+}
+
+.movements {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.movements li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.movements li:first-child {
+  border-top: 0;
+}
+
+.movements .what {
+  display: grid;
+  min-width: 0;
+}
+
+.movements .title {
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+
+.movements .detail {
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.movements .amount {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.movements .amount.in {
+  color: var(--accent);
+}
+
+.more {
+  display: block;
+  margin-top: 16px;
+  padding: 12px;
+  text-align: center;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-decoration: none;
+}
+
+.empty {
+  padding: 8px 0 16px;
+}
+
+.empty p:first-child {
+  margin: 0;
+  font-weight: 550;
+}
+
+.skeleton .bar {
+  display: block;
+  height: 0.9rem;
+  width: 10rem;
+  max-width: 100%;
+  margin: 2px 0;
+  border-radius: 6px;
+  background: var(--line);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.skeleton .bar.short {
+  width: 6rem;
+  height: 0.7rem;
+}
+
+.skeleton .amount-bar {
+  width: 4.5rem;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .note,
 .switch {
   margin: 16px 0 0;

@@ -1,7 +1,10 @@
 import { asUser, movementCount } from '@warren/db'
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
+import { NotificationsCard } from '@/components/notifications-card'
 import { SignOutButton } from '@/components/sign-out-button'
 import { database } from '@/lib/db'
+import { env } from '@/lib/env'
 import { getSession } from '@/lib/session'
 import { t } from '@/lib/strings'
 
@@ -27,8 +30,15 @@ export default async function Home() {
             <strong>{count}</strong>
             <span>{t.home.unit(count)}</span>
           </p>
-          {count === 0 && <p className="note">{t.home.empty}</p>}
+          {count === 0 ? (
+            <p className="note">{t.home.empty}</p>
+          ) : (
+            <p className="note">
+              <Link href="/movements">{t.home.seeAll}</Link>
+            </p>
+          )}
         </section>
+        <NotificationsCard publicKey={env.vapid()?.publicKey ?? null} />
         <SignOutButton />
       </div>
     </main>
