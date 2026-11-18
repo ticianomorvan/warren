@@ -7,9 +7,9 @@
  * fetches those Resend ids again, with their original arrival time, and runs each through the
  * same intake as live mail. Marks nothing: a delivery that now routes is recorded under its
  * user, and leaves the list once its mail has a final verdict (verified or rejected), so running
- * it twice does the work once. A delivery that ends 'retry' (DNS trouble), 'unrouted' (still no
- * mailbox) or failed (Resend cannot return it any more) stays listed, and the command exits 1:
- * run it again.
+ * it twice does the work once. A delivery that ends 'retry' (DNS trouble) or failed (Resend
+ * cannot return it any more) stays listed, and the command exits 1: run it again. One that is
+ * still 'unrouted' (no mailbox names its To) stays listed and is reported, without failing.
  *
  * Two connections: the owner (DATABASE_URL_MIGRATIONS) only lists the unrouted deliveries, which
  * the app role cannot read; intake itself runs as warren_app (DATABASE_URL), under row-level
@@ -53,7 +53,8 @@ console.table(
 const tally = new Map<string, number>()
 for (const r of results) tally.set(r.outcome, (tally.get(r.outcome) ?? 0) + 1)
 console.log(Object.fromEntries(tally))
-// Not final yet (retry, no mailbox yet, not fetchable): say so, and let the next run try again.
+// Not final yet (retry, not fetchable): say so, and let the next run try again. Mail that still
+// matches no mailbox shows in the table as 'unrouted' and does not fail the run.
 const unfinished = results.filter(replayIncomplete).length
 if (unfinished > 0) {
   console.error(

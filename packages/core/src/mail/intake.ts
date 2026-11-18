@@ -284,9 +284,13 @@ export type ReplayResult = {
   error?: string
 }
 
-/** A replay result that leaves the delivery unfinished: the operator must run it again. */
+/**
+ * A replay result that leaves the delivery unfinished: the operator must run it again. Mail
+ * that still matches no mailbox is not: it is addressed to nobody here (spam, a typo), so it is
+ * reported and stays listed, without failing every later run.
+ */
 export const replayIncomplete = (r: ReplayResult): boolean =>
-  r.outcome === 'retry' || r.outcome === 'unrouted' || r.outcome === 'failed'
+  r.outcome === 'retry' || r.outcome === 'failed'
 
 /**
  * Runs deliveries that were once unrouted through intake again, after their mailbox was

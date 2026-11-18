@@ -1,4 +1,5 @@
 export * from './crypto'
+export { errorTag } from './error-tag'
 export { sha256Hex } from './hash'
 export * from './ledger'
 export * from './mail/intake'

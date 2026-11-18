@@ -157,7 +157,8 @@ migrated. The deploy runs `pnpm db:migrate` on every merge, so do these in one s
    Then run `pnpm mail:replay-unrouted`, which fetches those deliveries from Resend again and
    runs them through intake (idempotent; `--dry-run` lists them first). A delivery stays listed
    until its mail is verified or rejected: one Resend can no longer return, or whose DNS check
-   came back `retry`, is reported and the command exits 1. Run it again until it exits 0.
+   came back `retry`, is reported and the command exits 1; run it again until it exits 0. Mail
+   that still matches no mailbox is listed as `unrouted` without failing the run.
 4. `pnpm mail:reingest --user <id> --from <archive url>` replays the archive's raw mail through
    the new intake and prints the archive's verified and parsed counts against the new ledger,
    naming every mail that differs. Re-add the accounts with `pnpm ledger:accounts --user <id>`.

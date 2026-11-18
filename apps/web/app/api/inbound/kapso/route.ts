@@ -1,4 +1,4 @@
-import { handleKapsoWebhook } from '@warren/core'
+import { errorTag, handleKapsoWebhook } from '@warren/core'
 import { env } from '@/lib/env'
 import { kapsoLookup, whatsAppSender } from '@/lib/notify'
 
@@ -32,7 +32,7 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json(result.body, { status: result.status })
   } catch (error) {
     // Logged without message content. A non-200 makes Kapso retry.
-    console.error('inbound/kapso failed:', error instanceof Error ? error.message : 'unknown error')
+    console.error('inbound/kapso failed:', errorTag(error))
     return Response.json({ error: 'internal' }, { status: 500 })
   }
 }

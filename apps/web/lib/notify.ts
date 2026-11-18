@@ -1,4 +1,10 @@
-import { type Attempt, flushNotices, kapsoSender, type WhatsAppSender } from '@warren/core'
+import {
+  type Attempt,
+  errorTag,
+  flushNotices,
+  kapsoSender,
+  type WhatsAppSender,
+} from '@warren/core'
 import { asUser, canonicalUserId, createOutbox, system } from '@warren/db'
 import { database } from './db'
 import { env } from './env'
@@ -26,10 +32,11 @@ export const kapsoLookup = () => ({
  * (see `flushNotices`), never inside one. A failure here is logged and never fails the caller.
  */
 export async function sendOwedNotices(userId: string): Promise<Attempt[]> {
-  const sender = whatsAppSender()
-  const kapso = env.kapso()
-  if (!sender || !kapso || kapso.userId !== canonicalUserId(userId)) return []
   try {
+    // Inside the try: a bad Kapso setting must not turn a recorded mail into a 500 and a retry.
+    const sender = whatsAppSender()
+    const kapso = env.kapso()
+    if (!sender || !kapso || kapso.userId !== canonicalUserId(userId)) return []
     const attempts = await flushNotices(
       (fn) => asUser(database(), userId, (scope) => fn(createOutbox(scope))),
       sender,
@@ -39,7 +46,7 @@ export async function sendOwedNotices(userId: string): Promise<Attempt[]> {
     }
     return attempts
   } catch (error) {
-    console.error('notices failed:', error instanceof Error ? error.message : 'unknown error')
+    console.error('notices failed:', errorTag(error))
     return []
   }
 }

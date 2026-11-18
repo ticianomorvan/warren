@@ -532,9 +532,10 @@ describe('replayUnrouted', () => {
 describe('replayIncomplete', () => {
   const r = (outcome: Parameters<typeof replayIncomplete>[0]['outcome']) =>
     replayIncomplete({ provider: 'resend', providerId: 'x', outcome })
-  it('is true for retry, unrouted and failed only', () => {
-    expect(['retry', 'unrouted', 'failed'].map((o) => r(o as never))).toEqual([true, true, true])
-    expect(['verified', 'rejected', 'duplicate'].map((o) => r(o as never))).toEqual([
+  it('is true for retry and failed only; unrouted mail is reported, not retried forever', () => {
+    expect(['retry', 'failed'].map((o) => r(o as never))).toEqual([true, true])
+    expect(['verified', 'rejected', 'duplicate', 'unrouted'].map((o) => r(o as never))).toEqual([
+      false,
       false,
       false,
       false,
