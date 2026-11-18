@@ -1,7 +1,15 @@
 export {
+  type AuthErasure,
+  authSchema,
+  createAuthDatabase,
+  type SetPasswordResult,
+  setCredentialPassword,
+} from './auth'
+export {
   asUser,
   canonicalUserId,
   createDatabase,
+  createKeylessDatabase,
   createPool,
   type Database,
   provisionUser,
@@ -9,11 +17,12 @@ export {
   UserErasedError,
 } from './client'
 export { createTenancy, sealedStore, userContext } from './context'
-export { type ErasureReport, eraseUser } from './erase'
+export { type ErasureDatabases, type ErasureReport, eraseUser } from './erase'
 export {
   type ChainReport,
   createLedger,
   type MovementRow,
+  movementCount,
   recentMovements,
   reprojectMovements,
   seedAccounts,

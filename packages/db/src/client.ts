@@ -59,6 +59,17 @@ export function createDatabase(pool: Pool, masters: MasterKeys): Database {
   return openDatabase(drizzle(pool, { schema }) as unknown as Db, masters)
 }
 
+/** Holds no master key, so nothing wrapped with one can be made or opened through it. */
+const NO_MASTER_KEYS: MasterKeys = { current: 1, keys: new Map() }
+
+/**
+ * A connection for operator commands that never seal or open anything (setting a password,
+ * erasing a user): they need no `WARREN_MASTER_KEY`, and `asUser` on it fails at the key.
+ */
+export function createKeylessDatabase(pool: Pool): Database {
+  return createDatabase(pool, NO_MASTER_KEYS)
+}
+
 function internalsOf(database: Database): Internals {
   const found = internals.get(database)
   if (!found) throw new Error('not a Database from @warren/db')

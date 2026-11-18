@@ -9,11 +9,14 @@ import { erasure, user } from './schema'
 import * as system from './system'
 import {
   AUTH_TABLES as AUTH,
+  AUTH_ERASED_TABLES,
+  AUTH_UNBOUND_TABLES,
   ERASED_TABLES,
   EXEMPT_TABLES as EXEMPT,
   KEPT_TABLES,
   MUTABLE_TABLES,
   tableNames,
+  USER_ROW,
 } from './tables'
 
 /*
@@ -307,7 +310,70 @@ export async function checkErasure(db: Database): Promise<Check[]> {
       ...stray.map((t) => `${t.table} lets the eraser delete but is not in the erasure set`),
     ].join(', '),
   })
+  out.push(...(await checkAuthErasure(db)))
   return out
+}
+
+/**
+ * The sign-in side of erasure (`eraseAuthUser`, as `warren_auth`): it may delete exactly the rows
+ * erasure removes there and never a `user` row, the `user` row's columns are each scrubbed or
+ * reviewed as non-personal, and a session cannot be made for an erased user.
+ */
+async function checkAuthErasure(db: Database): Promise<Check[]> {
+  const deletes = await query<{ table: string }>(
+    db,
+    sql`select c.relname as table
+        from pg_class c join pg_namespace n on n.oid = c.relnamespace,
+             aclexplode(c.relacl) a
+        where n.nspname = 'public' and c.relkind in ('r', 'p') and a.privilege_type = 'DELETE'
+          and a.grantee = (select oid from pg_roles where rolname = 'warren_auth')`,
+  )
+  const have = deletes.map((d) => d.table).sort()
+  const wanted = tableNames([...AUTH_ERASED_TABLES, ...AUTH_UNBOUND_TABLES]).sort()
+  // From the catalog, not information_schema: that shows only columns the caller may touch.
+  const userColumns = (
+    await query<{ name: string }>(
+      db,
+      sql`select a.attname as name from pg_attribute a
+          join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relname = 'user' and a.attnum > 0
+            and not a.attisdropped`,
+    )
+  ).map((c) => c.name)
+  const reviewed = [...USER_ROW.scrubbed, ...USER_ROW.clear].map(
+    (key) => getTableColumns(user)[key]?.name ?? `?${key}`,
+  )
+  const trigger = await query<{ n: number }>(
+    db,
+    sql`select count(*)::int as n from pg_trigger t join pg_class c on c.oid = t.tgrelid
+        where c.relname = 'session' and t.tgname = 'session_not_for_erased_user'
+          and not t.tgisinternal`,
+  )
+  return [
+    {
+      name: 'warren_auth may delete exactly the auth rows erasure removes, and never a user row',
+      ok: have.join('|') === wanted.join('|'),
+      detail: [
+        ...wanted.filter((t) => !have.includes(t)).map((t) => `missing: DELETE ${t}`),
+        ...have.filter((t) => !wanted.includes(t)).map((t) => `extra: DELETE ${t}`),
+      ].join(', '),
+    },
+    {
+      name: 'every column of the user row is scrubbed by erasure or reviewed as non-personal',
+      ok: userColumns.length === reviewed.length && userColumns.every((c) => reviewed.includes(c)),
+      detail: [
+        ...userColumns.filter((c) => !reviewed.includes(c)).map((c) => `user.${c} is unreviewed`),
+        ...reviewed
+          .filter((c) => !userColumns.includes(c))
+          .map((c) => `user.${c} is listed but missing`),
+      ].join(', '),
+    },
+    {
+      name: 'a session cannot be created for an erased user (trigger)',
+      ok: trigger[0]?.n === 1,
+      detail: 'session_not_for_erased_user is missing on session',
+    },
+  ]
 }
 
 const sent: BankOperation = {

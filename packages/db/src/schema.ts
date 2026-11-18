@@ -71,7 +71,7 @@ const erasable = (table: string) => [
 // Identity. Matches Better Auth 1.7.25 (`getAuthTables` with email and password enabled): the
 // field names are Better Auth's, `account` is renamed `auth_account` because the ledger already
 // has an `account`, and ids come from the database (`advanced.database.generateId: false`).
-// Only the `warren_auth` role touches these four tables; `warren_app` has no grants on them.
+// Only the `warren_auth` role touches these tables (and the rate limiter's, below); `warren_app` has no grants on them.
 // ---------------------------------------------------------------------------------------------
 
 export const user = pgTable('user', {
@@ -137,6 +137,20 @@ export const verification = pgTable(
   },
   (t) => [index('verification_identifier_ix').on(t.identifier)],
 )
+
+/**
+ * Better Auth's rate limiter, kept in the database because per-instance memory is useless on
+ * serverless (every request may land on a new instance). One row per client address and path,
+ * so it holds addresses, never a user id: erasing a user has nothing to delete here, and Better
+ * Auth removes a row once its window has passed. Field names are Better Auth's `rateLimit`
+ * model, renamed `rate_limit`; `last_request` is milliseconds since the epoch.
+ */
+export const rateLimit = pgTable('rate_limit', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  key: text('key').notNull().unique(),
+  count: integer('count').notNull(),
+  lastRequest: bigint('last_request', { mode: 'number' }).notNull(),
+})
 
 // ---------------------------------------------------------------------------------------------
 // Keys, routing and erasure

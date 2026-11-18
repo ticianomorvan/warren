@@ -1,6 +1,12 @@
 /** Shared by the operator scripts: arguments, and connections that go through `asUser`. */
 import { masterKeysFromEnv } from '@warren/core'
-import { canonicalUserId, createDatabase, createPool, type Database } from '@warren/db'
+import {
+  canonicalUserId,
+  createDatabase,
+  createKeylessDatabase,
+  createPool,
+  type Database,
+} from '@warren/db'
 
 const args = process.argv.slice(2)
 
@@ -42,13 +48,30 @@ export function userArg(): string {
   }
 }
 
+/** A connection from an environment variable, or an error that names it. */
+function poolFrom(variable: string) {
+  const url = process.env[variable]
+  if (!url) die(`Set ${variable} (apps/web/.env.local is read automatically)`)
+  return createPool(url)
+}
+
+/**
+ * A connection for a command that never seals or opens anything (setting a password, erasing a
+ * user): it needs no `WARREN_MASTER_KEY`.
+ */
+export function connectKeyless(variable: string): {
+  pool: ReturnType<typeof createPool>
+  database: Database
+} {
+  const pool = poolFrom(variable)
+  return { pool, database: createKeylessDatabase(pool) }
+}
+
 /** A database connection from an environment variable, with the master key for sealing. */
 export function connect(variable: string): {
   pool: ReturnType<typeof createPool>
   database: Database
 } {
-  const url = process.env[variable]
-  if (!url) die(`Set ${variable} (apps/web/.env.local is read automatically)`)
-  const pool = createPool(url)
+  const pool = poolFrom(variable)
   return { pool, database: createDatabase(pool, masterKeysFromEnv(process.env)) }
 }

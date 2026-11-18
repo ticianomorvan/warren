@@ -43,6 +43,13 @@
       "when": 1795013415130,
       "tag": "0005_routing",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795020154801,
+      "tag": "0006_rate_limit",
+      "breakpoints": true
     }
   ]
 }

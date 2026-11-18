@@ -66,7 +66,7 @@ describe('a user id in upper case', () => {
   it('erases the files under the canonical prefix', async () => {
     const id = await t.newUser('erase')
     const prefixes: string[] = []
-    await eraseUser(t.eraser, id.toUpperCase(), {
+    await eraseUser(t, id.toUpperCase(), {
       deletePrefix: async (p) => (prefixes.push(p), 0),
     })
     expect(prefixes).toEqual([`u/${id}/`])

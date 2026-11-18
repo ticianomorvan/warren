@@ -17,6 +17,7 @@ import {
   notice,
   noticeAttempt,
   noticeStatus,
+  rateLimit,
   session,
   unroutedDelivery,
   user,
@@ -32,7 +33,26 @@ import {
  */
 
 /** Better Auth's tables. Only `warren_auth` touches them; `warren_app` has no grant on them. */
-export const AUTH_TABLES: readonly PgTable[] = [user, session, authAccount, verification]
+export const AUTH_TABLES: readonly PgTable[] = [user, session, authAccount, verification, rateLimit]
+
+/** Auth tables with no user in them: client addresses and counters. Erasure has nothing to do. */
+export const AUTH_UNBOUND_TABLES: readonly PgTable[] = [rateLimit]
+
+/**
+ * What erasing a user removes from Better Auth's side, as `warren_auth` (`eraseAuthUser`): their
+ * sessions, their credentials, and any pending verification for their email. The `user` row
+ * stays, because every `user_id` points at it: its personal columns are scrubbed instead
+ * (`USER_ROW`). `rate_limit` holds client addresses and no user id, so erasure has nothing to do
+ * there (`AUTH_UNBOUND_TABLES`). `warren_auth` may delete exactly these and `rate_limit` (Better
+ * Auth prunes it), and never a `user` row: a test compares.
+ */
+export const AUTH_ERASED_TABLES: readonly PgTable[] = [session, authAccount, verification]
+
+/** The `user` row after erasure: personal columns scrubbed, the rest reviewed as non-personal. */
+export const USER_ROW = {
+  scrubbed: ['name', 'email', 'image'],
+  clear: ['id', 'emailVerified', 'createdAt', 'updatedAt', 'erasedAt'],
+} as const
 
 /** Without `user_id`, on purpose: content-free notes of mail nobody claimed. */
 export const EXEMPT_TABLES: readonly PgTable[] = [unroutedDelivery]
