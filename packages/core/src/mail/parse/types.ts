@@ -1,8 +1,8 @@
 import type { Currency } from './fields'
 import type { Doc } from './html'
 
-/** What one bank mail says happened. Values are exactly what the bank printed, validated. */
-export type BankOperation = {
+/** A transfer, as one bank mail states it. Values are exactly what the bank printed, validated. */
+export type TransferOperation = {
   kind: 'transfer_out' | 'transfer_in'
   /** Positive decimal string with two places, e.g. "1234.56". */
   amount: string
@@ -26,6 +26,24 @@ export type BankOperation = {
   /** The "Motivo" chosen for the transfer. */
   reason: string | null
 }
+
+/** A purchase approved on a card. The mail prints a date only, and no operation number. */
+export type CardPurchaseOperation = {
+  kind: 'card_purchase'
+  /** The four digits the mail names: the only handle on the card. */
+  cardLastFour: string
+  /** Free text: the merchant as the bank prints it. */
+  merchant: string
+  /** Positive decimal string with two places, e.g. "1234.56". */
+  amount: string
+  currency: Currency
+  /** Purchase date in Argentina, YYYY-MM-DD. */
+  date: string
+  cardType: 'credit'
+}
+
+/** What one bank mail says happened. Narrow on `kind`. */
+export type BankOperation = TransferOperation | CardPurchaseOperation
 
 export type Template = {
   id: string

@@ -75,6 +75,7 @@ export function createOutbox(scope: Scope): Outbox {
             accountName: n.own,
             counterAccountName: n.counter,
             counterpartyName: m.counterpartyName,
+            cardLastFour: m.cardLastFour,
           },
           history: history.get(n.noticeId) ?? [],
         }

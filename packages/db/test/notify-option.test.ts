@@ -1,4 +1,4 @@
-import { type BankOperation, recordPending } from '@warren/core'
+import { type BankOperation, recordPending, TEMPLATE_SET_VERSION } from '@warren/core'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { asUser, type Scope } from '../src/client'
 import { createLedger } from '../src/ledger'
@@ -64,7 +64,7 @@ const parked = (c: string, reference: string, receivedAt: Date) =>
       },
       1,
     )
-    await log.recordParse(id, 1, {
+    await log.recordParse(id, TEMPLATE_SET_VERSION, {
       status: 'parsed',
       templateId: 'bbva.transfer-sent',
       templateVersion: 1,

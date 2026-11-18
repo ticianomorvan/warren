@@ -1,20 +1,28 @@
 import PostalMime, { decodeWords } from 'postal-mime'
 import { daysFromInstant, FieldError } from './fields'
 import { parseDocument } from './html'
+import { bbvaCardPurchase } from './templates/bbva-card-purchase'
 import { bbvaTransferCredited, bbvaTransferDebited } from './templates/bbva-transfer-notice'
 import { bbvaTransferSent } from './templates/bbva-transfer-sent'
 import type { ParseResult, Template } from './types'
 
-export type { BankOperation, ParseResult, Template } from './types'
+export type {
+  BankOperation,
+  CardPurchaseOperation,
+  ParseResult,
+  Template,
+  TransferOperation,
+} from './types'
 
 export const TEMPLATES: readonly Template[] = [
   bbvaTransferSent,
   bbvaTransferDebited,
   bbvaTransferCredited,
+  bbvaCardPurchase,
 ]
 
 /** Recorded with "no template" results, so they are retried once new templates ship. */
-export const TEMPLATE_SET_VERSION = 1
+export const TEMPLATE_SET_VERSION = 2
 
 /** The printed date may differ from the signed Date by a weekend or holiday, not more. */
 const MAX_DATE_DISTANCE_DAYS = 3

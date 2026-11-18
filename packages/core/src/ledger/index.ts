@@ -15,7 +15,7 @@ export type AccountSeed = {
   name: string
   currency: string
   institution: string
-  identifiers: { scheme: 'cbu' | 'bank-label'; value: string }[]
+  identifiers: { scheme: 'cbu' | 'bank-label' | 'card-last-four'; value: string }[]
 }
 
 export type RecordOutcome = {
@@ -23,7 +23,7 @@ export type RecordOutcome = {
   /** 'created' a new movement, 'linked' to an existing one, or already recorded. */
   outcome: 'created' | 'linked' | 'duplicate'
   /** 'own_transfer' when the counterparty is one of the user's accounts. */
-  type: 'own_transfer' | 'unclassified'
+  type: 'own_transfer' | 'unclassified' | 'card_purchase'
 }
 
 export type ParsedMail = { mailId: string; templateId: string; operation: BankOperation }

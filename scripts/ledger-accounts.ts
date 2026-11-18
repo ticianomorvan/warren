@@ -2,6 +2,7 @@
  * Adds a user's accounts from a private file, then recomputes their movements.
  *   pnpm ledger:accounts --user <id> [.data/accounts.json]
  * The file is a JSON array of { id, kind, name, currency, institution, identifiers: [{ scheme, value }] }.
+ * Schemes: cbu, bank-label, card-last-four (a card's last four digits, on the account it charges).
  * It holds account numbers, so it stays out of the repository. Runs as the database owner,
  * because the app is not allowed to decide which accounts are a user's. The owner is not bound
  * by row-level security, so everything it does names the user.
@@ -21,4 +22,4 @@ const changed = await asUser(database, user, async (scope) => {
   return reprojectMovements(scope)
 })
 await pool.end()
-console.log(`${seeds.length} accounts in file; ${changed} movements changed type`)
+console.log(`${seeds.length} accounts in file; ${changed} movements changed type or account`)

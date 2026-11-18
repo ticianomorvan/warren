@@ -7,7 +7,15 @@ import {
   parseDate,
   parseMoney,
 } from '../src/mail/parse/fields'
-import { CBU, CUIT, htmlMessage, transferNoticeHtml, transferSentHtml } from './fixtures'
+import {
+  CBU,
+  CUIT,
+  cardPurchaseHtml,
+  cardValueRow,
+  htmlMessage,
+  transferNoticeHtml,
+  transferSentHtml,
+} from './fixtures'
 import { MAILBOX } from './helpers'
 
 const SIGNED = new Date('2026-11-14T13:00:00Z')
@@ -122,10 +130,14 @@ describe('bbva transfer notices', () => {
 
 describe('template choice', () => {
   it('reports no template for an unknown subject or sender', async () => {
-    expect(await parse('Compra aprobada', transferSentHtml())).toEqual({
+    expect(await parse('Compra rechazada', transferSentHtml())).toEqual({
       status: 'unparsed',
       templateId: null,
       templateVersion: null,
+      reason: 'no-template',
+    })
+    // The card template belongs to the cards sender: the transfers sender gets none.
+    expect(await parse('Compra aprobada', cardPurchaseHtml())).toMatchObject({
       reason: 'no-template',
     })
     const other = await parseBankMail(
@@ -149,5 +161,72 @@ describe('template choice', () => {
       },
     )
     expect(r.status).toBe('parsed')
+  })
+})
+
+describe('bbva card purchase', () => {
+  const card = (html: string) =>
+    parseBankMail(new TextEncoder().encode(htmlMessage('Compra aprobada', html, MAILBOX)), {
+      senderId: 'bbva-cards',
+      subject: 'Compra aprobada',
+      signedDate: SIGNED,
+    })
+  const reason = async (html: string) => ((await card(html)) as { reason: string }).reason
+
+  it('reads an ARS purchase from the unlabeled value rows', async () => {
+    expect(await card(cardPurchaseHtml())).toEqual({
+      status: 'parsed',
+      templateId: 'bbva.card-purchase',
+      templateVersion: 1,
+      operation: {
+        kind: 'card_purchase',
+        cardLastFour: '1234',
+        merchant: 'COMERCIO DE EJEMPLO SRL',
+        amount: '12345.60',
+        currency: 'ARS',
+        date: '2026-11-14',
+        cardType: 'credit',
+      },
+    })
+  })
+  it('reads a dollar purchase, with either symbol', async () => {
+    for (const amount of ['US$ 12,34', 'U$S 12,34']) {
+      expect(await card(cardPurchaseHtml({ amount }))).toMatchObject({
+        status: 'parsed',
+        operation: { amount: '12.34', currency: 'USD' },
+      })
+    }
+  })
+  it('allows digits in the merchant', async () => {
+    expect(await card(cardPurchaseHtml({ merchant: 'KIOSCO 24 HS' }))).toMatchObject({
+      operation: { merchant: 'KIOSCO 24 HS' },
+    })
+  })
+  it('fails closed without the credit-card heading', async () => {
+    expect(await reason(cardPurchaseHtml({ heading: 'Pagaste con tu tarjeta de débito' }))).toBe(
+      'schema-fail:heading',
+    )
+    expect(await reason(transferSentHtml())).toBe('schema-fail:heading')
+  })
+  it('fails closed unless the intro holds exactly one 4-digit run', async () => {
+    const two = 'Hola, tarjeta terminada en 1234, autorizada a las 1015.'
+    expect(await reason(cardPurchaseHtml({ intro: two }))).toBe('schema-fail:card')
+    expect(await reason(cardPurchaseHtml({ intro: 'Hola, se aprobó un pago.' }))).toBe(
+      'schema-fail:card',
+    )
+  })
+  it('never takes a year or an amount for the card', async () => {
+    const year = 'Hola, se aprobó tu primera compra del año 2026.'
+    expect(await reason(cardPurchaseHtml({ intro: year }))).toBe('schema-fail:card')
+    const amount = 'Hola, se aprobó un pago de $ 1500,00.'
+    expect(await reason(cardPurchaseHtml({ intro: amount }))).toBe('schema-fail:card')
+  })
+  it('fails closed on a changed value table', async () => {
+    expect(await reason(cardPurchaseHtml({ extraRows: cardValueRow('4 cuotas') }))).toBe(
+      'schema-fail:layout',
+    )
+    expect(await reason(cardPurchaseHtml({ date: '2026-11-14' }))).toBe('schema-fail:date')
+    expect(await reason(cardPurchaseHtml({ amount: '12,34' }))).toBe('schema-fail:amount')
+    expect(await reason(cardPurchaseHtml({ merchant: '  ' }))).toBe('schema-fail:merchant')
   })
 })
