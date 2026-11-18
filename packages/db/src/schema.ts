@@ -421,7 +421,7 @@ export const accountIdentifier = pgTable(
       columns: [t.userId, t.accountId],
       foreignColumns: [account.userId, account.id],
     }),
-    check('account_identifier_scheme', sql`${t.scheme} in ('cbu','bank-label')`),
+    check('account_identifier_scheme', sql`${t.scheme} in ('cbu','bank-label','card-last-four')`),
     ...tenant('account_identifier'),
     ...erasable('account_identifier'),
   ],
@@ -475,11 +475,14 @@ export const movement = pgTable(
     accountId: text('account_id'),
     /** Set when the counterparty is one of the user's accounts. */
     counterAccountId: text('counter_account_id'),
+    /** For a card purchase, the merchant. */
     counterpartyName: text('counterparty_name'),
     counterpartyAccount: text('counterparty_account'),
     counterpartyTaxId: text('counterparty_tax_id'),
     reference: text('reference'),
     reason: text('reason'),
+    /** The card's last four digits, for a card purchase. */
+    cardLastFour: text('card_last_four'),
     type: text('type').notNull(),
     lastEventSeq: bigint('last_event_seq', { mode: 'number' }).notNull(),
   },
@@ -497,7 +500,7 @@ export const movement = pgTable(
     }),
     check('movement_direction', sql`${t.direction} in ('in','out')`),
     check('movement_amount_positive', sql`${t.amount} > 0`),
-    check('movement_type', sql`${t.type} in ('own_transfer','unclassified')`),
+    check('movement_type', sql`${t.type} in ('own_transfer','unclassified','card_purchase')`),
     check(
       'movement_own_transfer',
       sql`(${t.type} = 'own_transfer') = (${t.counterAccountId} is not null)`,

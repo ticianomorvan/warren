@@ -447,3 +447,34 @@ describe('flushNotices', () => {
     expect(outbox.attempts).toHaveLength(0)
   })
 })
+
+describe('card purchase notice', () => {
+  const purchase: NoticeMovement = {
+    type: 'card_purchase',
+    direction: 'out',
+    amount: '1234.56000000',
+    currency: 'ARS',
+    date: '2026-11-14',
+    time: null,
+    accountName: 'Visa',
+    counterAccountName: null,
+    counterpartyName: 'COMERCIO DE EJEMPLO SRL',
+    cardLastFour: '1234',
+  }
+
+  it('names the card, the amount and the merchant', () => {
+    expect(noticeText(purchase)).toBe(
+      'Compra con tarjeta …1234\n$ 1.234,56 en COMERCIO DE EJEMPLO SRL\nVisa · 14/11',
+    )
+  })
+  it('writes dollars as US$ and leaves out an account not known yet', () => {
+    expect(noticeText({ ...purchase, currency: 'USD', amount: '12.34', accountName: null })).toBe(
+      'Compra con tarjeta …1234\nUS$ 12,34 en COMERCIO DE EJEMPLO SRL\n14/11',
+    )
+  })
+  it('has a one-line form for the template', () => {
+    expect(noticeOneLine(purchase)).toBe(
+      'Compra con tarjeta …1234 · $ 1.234,56 en COMERCIO DE EJEMPLO SRL · Visa · 14/11',
+    )
+  })
+})

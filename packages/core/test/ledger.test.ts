@@ -79,3 +79,27 @@ describe('eventId', () => {
     expect(eventId('link', 'abc')).not.toBe(id)
   })
 })
+
+describe('card purchases', () => {
+  const purchase: BankOperation = {
+    kind: 'card_purchase',
+    cardLastFour: '1234',
+    merchant: 'COMERCIO DE EJEMPLO SRL',
+    amount: '3.77',
+    currency: 'ARS',
+    date: '2026-11-14',
+    cardType: 'credit',
+  }
+  const CARD = 'bbva.card-purchase'
+
+  it('never joins a transfer, nor another purchase', () => {
+    const transfers = [{ movementId: 'm1', sources: [src('a', SENT, sent)] }]
+    expect(matchMovement({ templateId: CARD, operation: purchase }, transfers)).toBeNull()
+    const purchases = [{ movementId: 'm2', sources: [src('b', CARD, purchase)] }]
+    expect(matchMovement({ templateId: DEBITED, operation: debited }, purchases)).toBeNull()
+    expect(matchMovement({ templateId: CARD, operation: purchase }, purchases)).toBeNull()
+  })
+  it('is its own source when merged', () => {
+    expect(mergeSources([src('b', CARD, purchase)])).toEqual(purchase)
+  })
+})

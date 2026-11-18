@@ -43,13 +43,15 @@ const parseAad = (mailId: string, templateSetVersion: number) =>
 
 const direction = (op: BankOperation) => (op.kind === 'transfer_in' ? 'in' : 'out')
 
+type Scheme = 'cbu' | 'bank-label' | 'card-last-four'
+
 // Functions the operator runs as the database owner (seedAccounts, reprojectMovements) name the
 // user in every query: the owner is not bound by row-level security. The rest rely on it, and
 // would show nothing of another user's even so.
 
 async function accountFor(
   scope: Scope,
-  scheme: 'cbu' | 'bank-label',
+  scheme: Scheme,
   value: string | null,
 ): Promise<string | null> {
   if (value === null) return null
@@ -70,6 +72,25 @@ async function accountFor(
 /** The derived row for a movement: its sources merged, and its accounts resolved. */
 async function projection(scope: Scope, sources: MovementSource[], lastEventSeq: number) {
   const op = mergeSources(sources)
+  if (op.kind === 'card_purchase') {
+    return {
+      direction: direction(op),
+      amount: op.amount,
+      currency: op.currency,
+      date: op.date,
+      time: null,
+      accountId: await accountFor(scope, 'card-last-four', op.cardLastFour),
+      counterAccountId: null,
+      counterpartyName: op.merchant,
+      counterpartyAccount: null,
+      counterpartyTaxId: null,
+      reference: null,
+      reason: null,
+      cardLastFour: op.cardLastFour,
+      type: 'card_purchase' as const,
+      lastEventSeq,
+    }
+  }
   const counterAccountId = await accountFor(scope, 'cbu', op.counterparty.account)
   return {
     direction: direction(op),
@@ -84,6 +105,7 @@ async function projection(scope: Scope, sources: MovementSource[], lastEventSeq:
     counterpartyTaxId: op.counterparty.taxId,
     reference: op.reference,
     reason: op.reason,
+    cardLastFour: null,
     type: counterAccountId ? ('own_transfer' as const) : ('unclassified' as const),
     lastEventSeq,
   }

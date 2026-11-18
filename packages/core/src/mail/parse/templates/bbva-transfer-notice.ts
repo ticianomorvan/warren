@@ -1,12 +1,12 @@
 import { parseCbu, parseCuit, parseDate, parseMoney, parseText } from '../fields'
 import { labelValueRows, takeFields } from '../html'
-import type { BankOperation, Template } from '../types'
+import type { Template, TransferOperation } from '../types'
 
 /**
  * "AVISO TRANSFERENCIA INMEDIATA DEBITADA / ACREDITADA": the account-side notice of an
  * immediate transfer. It prints the date without a time and has no reference number.
  */
-function notice(kind: BankOperation['kind'], side: 'destino' | 'origen'): Template['parse'] {
+function notice(kind: TransferOperation['kind'], side: 'destino' | 'origen'): Template['parse'] {
   return (doc) => {
     const f = takeFields(labelValueRows(doc), {
       date: ['Fecha'],

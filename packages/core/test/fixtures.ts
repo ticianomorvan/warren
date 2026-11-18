@@ -131,3 +131,46 @@ export function htmlMessage(
     '',
   ].join('\r\n')
 }
+
+export type CardPurchaseValues = {
+  heading: string
+  intro: string
+  date: string
+  merchant: string
+  amount: string
+  /** Extra rows appended to the value table, spacer-separated. */
+  extraRows: string
+}
+export const CARD_PURCHASE: CardPurchaseValues = {
+  heading: 'Pagaste con tu tarjeta de crédito',
+  intro:
+    'Hola PERSONA DE PRUEBA, se aprobó un pago con tu tarjeta VISA terminada en 1234. Si tenés dudas, escribinos.',
+  date: '14/11/2026',
+  merchant: 'COMERCIO DE EJEMPLO SRL',
+  amount: '$ 12.345,60',
+  extraRows: '',
+}
+
+const valueRow = (value: string) => `<tr><td><img></td><td></td><td><p>${value}</p><br></td></tr>`
+const spacerRow = '<tr><td></td><td></td><td></td></tr>'
+
+/** A further value row after a spacer, for a layout with more than three. */
+export const cardValueRow = (value: string) => spacerRow + valueRow(value)
+
+/** "Compra aprobada": nested tables, three unlabeled value rows, then the legal text. */
+export function cardPurchaseHtml(v: Partial<CardPurchaseValues> = {}): string {
+  const x = { ...CARD_PURCHASE, ...v }
+  return `<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>
+<table class="wrapper"><tr><td><table class="main"><tr><td>
+<div><p>${x.heading}</p></div>
+<div><p>${x.intro}</p></div>
+<table>${valueRow(x.date)}${spacerRow}${valueRow(x.merchant)}${spacerRow}${valueRow(x.amount)}${x.extraRows}</table>
+<div><p>¿No reconocés el pago?</p></div>
+<div><p>Si no hiciste esta compra, comunicate con nosotros desde la app.</p></div>
+<div><p>Para tener presente</p></div>
+<div><p>Nunca te vamos a pedir tus claves por mail ni por teléfono. Consultas 0800-000-0000.</p></div>
+<table><tr><td><a><img></a></td><td><a><img></a></td><td><a><img></a></td></tr></table>
+<div><p>Este mensaje es confidencial. BBVA Argentina S.A., CUIT 30-00000000-0, domicilio ficticio 123. Tasas del 12/11/2026 al 31/12/2026, TNA 100,00%.</p></div>
+<span>PagoAprobado_sinmillasTIT / NM</span>
+</td></tr></table></td></tr></table></body></html>`
+}

@@ -1,6 +1,6 @@
 /** What a notice needs to know about a movement. Names come from the ledger, never a model. */
 export type NoticeMovement = {
-  type: 'own_transfer' | 'unclassified'
+  type: 'own_transfer' | 'unclassified' | 'card_purchase'
   direction: 'in' | 'out'
   /** Decimal string, as stored. */
   amount: string
@@ -11,7 +11,10 @@ export type NoticeMovement = {
   time: string | null
   accountName: string | null
   counterAccountName: string | null
+  /** The merchant, for a card purchase. */
   counterpartyName: string | null
+  /** The card's last four digits, for a card purchase. */
+  cardLastFour?: string | null
 }
 
 const SYMBOLS: Record<string, string> = { ARS: '$', USD: 'US$' }
@@ -38,6 +41,15 @@ function formatWhen(date: string, time: string | null): string {
 export function noticeLines(m: NoticeMovement): string[] {
   const money = formatMoney(m.amount, m.currency)
   const when = formatWhen(m.date, m.time)
+  if (m.type === 'card_purchase') {
+    const card = m.cardLastFour ? ` …${m.cardLastFour}` : ''
+    const where = m.counterpartyName ? ` en ${m.counterpartyName}` : ''
+    return [
+      `Compra con tarjeta${card}`,
+      `${money}${where}`,
+      [m.accountName, when].filter(Boolean).join(' · '),
+    ]
+  }
   if (m.type === 'own_transfer') {
     const [from, to] =
       m.direction === 'out'

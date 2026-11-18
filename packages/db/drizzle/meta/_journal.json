@@ -50,6 +50,13 @@
       "when": 1795020154801,
       "tag": "0006_rate_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795029464706,
+      "tag": "0007_card_purchase",
+      "breakpoints": true
     }
   ]
 }

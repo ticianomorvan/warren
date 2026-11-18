@@ -1,5 +1,5 @@
 import type { BankOperation } from '@warren/core'
-import { recordPending } from '@warren/core'
+import { recordPending, TEMPLATE_SET_VERSION } from '@warren/core'
 import { sql } from 'drizzle-orm'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { asUser, inUserContext, type Scope } from '../src/client'
@@ -163,7 +163,7 @@ describe('ledger', () => {
         },
         1,
       )
-      await log.recordParse(e, 1, {
+      await log.recordParse(e, TEMPLATE_SET_VERSION, {
         status: 'parsed',
         templateId: 'bbva.transfer-sent',
         templateVersion: 1,
@@ -225,5 +225,126 @@ describe('event log', () => {
     ).rejects.toThrow(/permission denied|Failed query/)
     await expect(attempt('delete from movement')).rejects.toThrow(/permission denied|Failed query/)
     expect((await record(sha('a'), 'bbva.transfer-sent', sent)).outcome).toBe('duplicate')
+  })
+})
+
+describe('card purchases', () => {
+  const purchase: BankOperation = {
+    kind: 'card_purchase',
+    cardLastFour: '1234',
+    merchant: 'COMERCIO DE EJEMPLO SRL',
+    amount: '1500.00',
+    currency: 'ARS',
+    date: '2026-11-14',
+    cardType: 'credit',
+  }
+  const notices = async () =>
+    (await t.pg.query<{ n: number }>('select count(*)::int n from notice')).rows[0]?.n ?? 0
+  /** A verified mail of the cards sender, parsed at the current template set. */
+  const cardMail = (c: string, merchant: string, receivedAt: Date) =>
+    as(async (scope) => {
+      const id = sha(c)
+      const log = createMailLog(scope)
+      await log.recordMail({
+        mailId: id,
+        pathname: `u/${user}/mail/${id}.eml.sealed`,
+        bytes: 10,
+        provider: 'resend',
+        providerId: `em_${c}`,
+        receivedAt,
+      })
+      await log.recordVerdict(
+        id,
+        {
+          verdict: 'verified',
+          senderId: 'bbva-cards',
+          fromAddress: 'avisos@bbva.com.ar',
+          signingDomain: 'bbva.com',
+          selector: 's1',
+          keyRecord: 'v=DKIM1',
+          signedHeaders: ['from', 'to', 'date', 'subject'],
+          subject: 'Compra aprobada',
+          signedDate: receivedAt,
+        },
+        1,
+      )
+      await log.recordParse(id, TEMPLATE_SET_VERSION, {
+        status: 'parsed',
+        templateId: 'bbva.card-purchase',
+        templateVersion: 1,
+        operation: { ...purchase, merchant },
+      })
+      return id
+    })
+
+  it('records an unknown card with no account, and resolves it once seeded', async () => {
+    const r = await record(await mail('f'), 'bbva.card-purchase', purchase)
+    expect(r).toMatchObject({ outcome: 'created', type: 'card_purchase' })
+    const [row] = await as((scope) => recentMovements(scope, 1))
+    expect(row).toMatchObject({
+      direction: 'out',
+      amount: '1500.00000000',
+      accountId: null,
+      counterAccountId: null,
+      counterpartyName: 'COMERCIO DE EJEMPLO SRL',
+      cardLastFour: '1234',
+      type: 'card_purchase',
+    })
+
+    await asUser(t.owner, user, (scope) =>
+      seedAccounts(scope, [
+        {
+          id: 'liability:card:visa',
+          kind: 'liability',
+          name: 'Visa',
+          currency: 'ARS',
+          institution: 'Bank',
+          identifiers: [{ scheme: 'card-last-four', value: '1234' }],
+        },
+      ]),
+    )
+    await asUser(t.owner, user, (scope) => reprojectMovements(scope))
+    expect((await as((scope) => recentMovements(scope, 1)))[0]?.accountId).toBe(
+      'liability:card:visa',
+    )
+  })
+
+  it('never merges a purchase with a transfer of the same amount and day', async () => {
+    const transfer = { ...sent, amount: '1500.00', reference: '1017000077' }
+    const t1 = await record(await mail('1'), 'bbva.transfer-sent', transfer)
+    const p2 = await record(await mail('2'), 'bbva.card-purchase', purchase)
+    expect([t1.outcome, p2.outcome]).toEqual(['created', 'created'])
+    expect(t1.movementId).not.toBe(p2.movementId)
+  })
+
+  it('reparses at the new version: no second movement, and a notice only for news', async () => {
+    // A transfer recorded from an earlier parse is parsed again at the current version.
+    await as((scope) =>
+      createMailLog(scope).recordParse(sha('a'), TEMPLATE_SET_VERSION, {
+        status: 'parsed',
+        templateId: 'bbva.transfer-sent',
+        templateVersion: 1,
+        operation: sent,
+      }),
+    )
+    const old = await cardMail('3', 'old-purchase', new Date('2026-11-14T17:10:00Z'))
+    const fresh = await cardMail('4', 'new-purchase', new Date('2026-11-18T09:30:00Z'))
+    const before = await notices()
+    const now = () => new Date('2026-11-18T10:00:00Z')
+    const done = await as((scope) => recordPending(createLedger(scope), now))
+    expect(done.map((d) => [d.mailId, d.outcome]).sort()).toEqual(
+      [
+        [old, 'created'],
+        [fresh, 'created'],
+      ].sort(),
+    )
+    // Only the purchase that is still news owes a notice; the old one and the transfer do not.
+    expect(await notices()).toBe(before + 1)
+    const { rows } = await t.pg.query<{ merchant: string }>(
+      `select m.counterparty_name merchant from notice n join movement m on m.id = n.movement_id
+       order by n.id desc limit 1`,
+    )
+    expect(rows[0]?.merchant).toBe('new-purchase')
+    expect(await as((scope) => recordPending(createLedger(scope), now))).toEqual([])
   })
 })
