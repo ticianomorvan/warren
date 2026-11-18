@@ -56,7 +56,9 @@ const mail = (c: string) =>
     return id
   })
 const record = (mailId: string, templateId: string, operation: BankOperation) =>
-  as((scope) => createLedger(scope).recordMailOperation({ mailId, templateId, operation }))
+  as((scope) =>
+    createLedger(scope).recordMailOperation({ mailId, templateId, operation }, { notify: true }),
+  )
 
 beforeAll(async () => {
   t = await testDatabase()

@@ -100,6 +100,7 @@ pnpm ledger:accounts --user <id>  # add the user's accounts from .data/accounts.
 pnpm mail:verify some.eml --mailbox you@example.com --any-date   # check a saved mail against the sender policy
 pnpm mail:parse-pending --user <id>   # parse stored mail under the current templates; needs Blob access:
                                       #   pnpm dlx vercel env pull .vercel/.env.development.local
+                                      # a movement it records owes a notice only if its mail is under 24 h old
 pnpm mail:reingest --user <id> --from <archive url>   # replay an old database's raw mail into the new ledger
 pnpm mail:replay-unrouted [--dry-run]   # run mail that arrived before its mailbox existed through intake
 pnpm user:erase --user <id> --confirm   # destroy a user's key and derived data (as warren_eraser)

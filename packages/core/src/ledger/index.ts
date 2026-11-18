@@ -1,7 +1,9 @@
 import type { BankOperation } from '../mail/parse'
+import { isNews } from './notice-policy'
 
 export { eventId } from './ids'
 export { type Candidate, type MovementSource, matchMovement, mergeSources } from './match'
+export { isNews, NOTICE_MAX_AGE_HOURS } from './notice-policy'
 
 export type AccountKind = 'asset' | 'liability'
 
@@ -26,29 +28,39 @@ export type RecordOutcome = {
 
 export type ParsedMail = { mailId: string; templateId: string; operation: BankOperation }
 
+/** A parsed mail the ledger has not recorded yet, with when it reached the receiving provider. */
+export type PendingMail = ParsedMail & { receivedAt: Date }
+
 export type RecordOptions = {
   /**
-   * Whether a movement this call creates owes its user a notice. Defaults to true. A rebuild or an
-   * import passes false: those movements are not news, and a notice is not retracted once sent.
+   * Whether a movement this call creates owes its user a notice. Required: every caller decides.
+   * A rebuild or an import passes false: those movements are not news, and a notice is not
+   * retracted once sent.
    */
-  notify?: boolean
+  notify: boolean
 }
 
 /** One user's ledger: every call acts for the user it was created for. */
 export interface Ledger {
   /** Records what a parsed mail says happened. One real operation becomes one movement. */
-  recordMailOperation(mail: ParsedMail, options?: RecordOptions): Promise<RecordOutcome>
+  recordMailOperation(mail: ParsedMail, options: RecordOptions): Promise<RecordOutcome>
   /** Parsed mails not yet reflected in the ledger, oldest first. */
-  pendingMailOperations(): Promise<ParsedMail[]>
+  pendingMailOperations(): Promise<PendingMail[]>
 }
 
-/** Records every parsed mail the ledger does not have yet. Safe to run at any time. */
+/**
+ * Records every parsed mail the ledger does not have yet. Safe to run at any time. This runs when
+ * templates change and mail is reparsed, so most of what it records is old: a movement owes a
+ * notice only if its mail is still news (`isNews`), the same rule as replaying unrouted mail.
+ */
 export async function recordPending(
   ledger: Ledger,
+  now: () => Date = () => new Date(),
 ): Promise<(RecordOutcome & { mailId: string })[]> {
   const out = []
-  for (const mail of await ledger.pendingMailOperations()) {
-    out.push({ mailId: mail.mailId, ...(await ledger.recordMailOperation(mail)) })
+  for (const { receivedAt, ...mail } of await ledger.pendingMailOperations()) {
+    const recorded = await ledger.recordMailOperation(mail, { notify: isNews(receivedAt, now()) })
+    out.push({ mailId: mail.mailId, ...recorded })
   }
   return out
 }

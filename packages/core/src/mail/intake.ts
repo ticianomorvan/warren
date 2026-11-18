@@ -1,5 +1,4 @@
-import type { Ledger, RecordOptions, RecordOutcome } from '../ledger'
-import { NOTICE_MAX_AGE_HOURS } from '../notify'
+import { isNews, type Ledger, type RecordOptions, type RecordOutcome } from '../ledger'
 import { canonicalUserId, UserErasedError } from '../user'
 import { unsignedToAddresses } from './headers'
 import { type ParseResult, parseBankMail, TEMPLATE_SET_VERSION, type VerifiedMail } from './parse'
@@ -136,7 +135,7 @@ export type MailInput = { raw: Uint8Array; provider: string; providerId: string;
 export async function intakeRawMail(
   deps: IntakeDeps,
   input: MailInput,
-  options?: RecordOptions,
+  options: RecordOptions,
 ): Promise<IntakeResult> {
   const userId = await route(deps, input.raw)
   if (!userId) {
@@ -260,14 +259,14 @@ async function parseAndRecord(
  * `settleVerdict`, `parseAndRecord`. Every step is a no-op when already done, so a crash anywhere
  * is repaired by running the same call again.
  *
- * A movement the mail creates owes its user a notice, unless `options.notify` is false: a rebuild
- * or an import (`mail:reingest`) replays old mail, and old movements are not news.
+ * `options.notify` says whether a movement the mail creates owes its user a notice. Live mail
+ * passes true; a rebuild or an import (`mail:reingest`) replays old mail, and passes false.
  */
 export async function intakeForUser(
   deps: IntakeDeps,
   id: string,
   input: MailInput,
-  options: RecordOptions = {},
+  options: RecordOptions,
 ): Promise<IntakeResult> {
   const userId = canonicalUserId(id)
   const stored = await ensureStored(deps, userId, input)
@@ -311,7 +310,7 @@ export const replayIncomplete = (r: ReplayResult): boolean =>
  * `replayIncomplete`. The caller chooses which deliveries (a provider's) to pass.
  *
  * This replays real mail the user never saw, so a movement it creates is news and owes a notice,
- * unless the mail is older than the notice window (`NOTICE_MAX_AGE_HOURS`): the outbox would send
+ * unless the mail is older than the notice window (`isNews`): the outbox would send
  * that notice as if it were fresh, a day or a week late. Those movements are created silently.
  * (A rebuild from an archive is different: it replays what the user already saw, and passes
  * `notify: false` to `intakeForUser`.)
@@ -326,7 +325,6 @@ export async function replayUnrouted(
   for (const d of deliveries) {
     try {
       const mail = await fetchMail(d.providerId)
-      const fresh = now().getTime() - d.receivedAt.getTime() < NOTICE_MAX_AGE_HOURS * 3_600_000
       const result = await intakeRawMail(
         deps,
         {
@@ -335,7 +333,7 @@ export async function replayUnrouted(
           providerId: d.providerId,
           receivedAt: d.receivedAt,
         },
-        { notify: fresh },
+        { notify: isNews(d.receivedAt, now()) },
       )
       out.push({ provider: d.provider, providerId: d.providerId, outcome: result.outcome })
     } catch (error) {
@@ -400,11 +398,15 @@ export async function handleResendWebhook(
   if (!event) return { status: 200, body: { ignored: true } }
 
   const mail = await fetchReceivedMail(event.emailId, deps.apiKey, deps.fetchFn)
-  const result = await intakeRawMail(deps, {
-    raw: mail.raw,
-    provider: 'resend',
-    providerId: event.emailId,
-    receivedAt: mail.receivedAt,
-  })
+  const result = await intakeRawMail(
+    deps,
+    {
+      raw: mail.raw,
+      provider: 'resend',
+      providerId: event.emailId,
+      receivedAt: mail.receivedAt,
+    },
+    { notify: true },
+  )
   return { status: result.outcome === 'retry' ? 503 : 200, body: result }
 }

@@ -11,9 +11,6 @@ import { type NoticeMovement, noticeOneLine, noticeText } from './text'
 export * from './kapso'
 export * from './text'
 
-/** A notice older than this is no longer worth sending, and mail older than this is not news. */
-export const NOTICE_MAX_AGE_HOURS = 24
-
 export type AttemptMode = 'text' | 'template'
 
 /** One past attempt at sending a notice, with any failure reported later by WhatsApp. */

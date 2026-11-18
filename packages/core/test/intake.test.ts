@@ -1,7 +1,12 @@
 import { Webhook } from 'svix'
 import { describe, expect, it } from 'vitest'
 import { mailId as keyedMailId, newDataKey, sealerFor } from '../src/crypto'
-import type { Ledger, ParsedMail, RecordOptions } from '../src/ledger'
+import {
+  type Ledger,
+  NOTICE_MAX_AGE_HOURS,
+  type ParsedMail,
+  type RecordOptions,
+} from '../src/ledger'
 import {
   type FinalVerdict,
   handleResendWebhook,
@@ -25,7 +30,6 @@ import { verifyResendWebhook } from '../src/mail/resend'
 import type { TxtResolver } from '../src/mail/resolver'
 import { SENDERS } from '../src/mail/senders'
 import type { MailVerdict } from '../src/mail/verify'
-import { NOTICE_MAX_AGE_HOURS } from '../src/notify'
 import { UserErasedError } from '../src/user'
 import { htmlMessage, transferSentHtml } from './fixtures'
 import { failingResolver, MAILBOX, makeSigner, message, RECEIVED_AT, resolverFor } from './helpers'
@@ -90,8 +94,8 @@ class MemoryLog implements MailLog {
 class MemoryLedger implements Ledger {
   recorded: ParsedMail[] = []
   /** The options each call passed, in order: whether intake asked for a notice or not. */
-  options: (RecordOptions | undefined)[] = []
-  async recordMailOperation(mail: ParsedMail, options?: RecordOptions) {
+  options: RecordOptions[] = []
+  async recordMailOperation(mail: ParsedMail, options: RecordOptions) {
     this.options.push(options)
     const seen = this.recorded.some((m) => m.mailId === mail.mailId)
     if (!seen) this.recorded.push(mail)
@@ -417,12 +421,12 @@ describe('handleResendWebhook', () => {
     const { deps, tenancy, raw } = await setup()
     tenancy.eraseDuringPut = true
     await expect(
-      intakeForUser(deps, USER, {
-        raw,
-        provider: 'resend',
-        providerId: 'em_1',
-        receivedAt: RECEIVED_AT,
-      }),
+      intakeForUser(
+        deps,
+        USER,
+        { raw, provider: 'resend', providerId: 'em_1', receivedAt: RECEIVED_AT },
+        { notify: true },
+      ),
     ).rejects.toBeInstanceOf(UserErasedError)
     expect(tenancy.puts).toBe(1)
     expect(tenancy.files.size).toBe(0)
@@ -433,12 +437,12 @@ describe('handleResendWebhook', () => {
     const { deps, raw } = await setup()
     const tenancy = new MemoryTenancy({ [MAILBOX]: lower })
     const mailId = keyedMailId(tenancy.user(lower).key, raw)
-    await intakeForUser({ ...deps, tenancy }, lower.toUpperCase(), {
-      raw,
-      provider: 'resend',
-      providerId: 'em_1',
-      receivedAt: RECEIVED_AT,
-    })
+    await intakeForUser(
+      { ...deps, tenancy },
+      lower.toUpperCase(),
+      { raw, provider: 'resend', providerId: 'em_1', receivedAt: RECEIVED_AT },
+      { notify: true },
+    )
     expect([...tenancy.files.keys()]).toEqual([rawMailPathname(lower, mailId)])
   })
 
@@ -457,24 +461,30 @@ describe('handleResendWebhook', () => {
 const parsable = () => htmlMessage('Realizaste una transferencia', transferSentHtml(), MAILBOX)
 
 describe('notices', () => {
-  const run = (rebuild: boolean) => async () => {
+  const intake = async (options: RecordOptions) => {
     const { deps, raw, ledger } = await setup(undefined, parsable())
     const mail = { raw, provider: 'resend', providerId: 'em_1', receivedAt: RECEIVED_AT }
-    if (rebuild) await intakeForUser(deps, USER, mail, { notify: false })
-    else await intakeForUser(deps, USER, mail)
+    await intakeForUser(deps, USER, mail, options)
     return ledger
   }
 
-  it('asks for a notice when live mail creates a movement', async () => {
-    const ledger = await run(false)()
+  it('passes on a request for a notice when mail creates a movement', async () => {
+    const ledger = await intake({ notify: true })
     expect(ledger.recorded).toHaveLength(1)
-    expect(ledger.options.map((o) => o?.notify !== false)).toEqual([true])
+    expect(ledger.options).toEqual([{ notify: true }])
   })
 
-  it('asks for no notice when a rebuild creates the movement', async () => {
-    const ledger = await run(true)()
+  it('asks for a notice when a webhook delivers live mail', async () => {
+    const { deps, body, ledger } = await setup(undefined, parsable())
+    await handleResendWebhook(deps, body, signedHeaders(body))
     expect(ledger.recorded).toHaveLength(1)
-    expect(ledger.options.map((o) => o?.notify !== false)).toEqual([false])
+    expect(ledger.options).toEqual([{ notify: true }])
+  })
+
+  it('passes on a request for no notice when a rebuild creates the movement', async () => {
+    const ledger = await intake({ notify: false })
+    expect(ledger.recorded).toHaveLength(1)
+    expect(ledger.options).toEqual([{ notify: false }])
   })
 })
 
@@ -492,22 +502,24 @@ describe('replayUnrouted', () => {
 
   it('notifies for mail inside the notice window: it is news the user never saw', async () => {
     const ledger = await replayAt(RECEIVED_AT)
-    expect(ledger.options.map((o) => o?.notify)).toEqual([true])
+    expect(ledger.options).toEqual([{ notify: true }])
   })
 
   it('does not notify for mail older than the notice window: it would arrive as if fresh', async () => {
     const ledger = await replayAt(new Date(NOW.getTime() - (NOTICE_MAX_AGE_HOURS + 1) * 3_600_000))
     expect(ledger.recorded).toHaveLength(1)
-    expect(ledger.options.map((o) => o?.notify)).toEqual([false])
+    expect(ledger.options).toEqual([{ notify: false }])
   })
 
   it('runs mail that was unrouted through intake once its mailbox exists, and says what it did', async () => {
     const { deps, raw, tenancy, log } = await setup()
     // The mailbox was not registered when the mail first arrived.
     const before = new MemoryTenancy({})
-    expect(await intakeRawMail({ ...deps, tenancy: before }, input(raw))).toEqual({
-      outcome: 'unrouted',
-    })
+    expect(await intakeRawMail({ ...deps, tenancy: before }, input(raw), { notify: true })).toEqual(
+      {
+        outcome: 'unrouted',
+      },
+    )
     expect(before.unrouted).toHaveLength(1)
 
     const fetched: string[] = []

@@ -397,11 +397,10 @@ export async function seedFixtures(
       templateVersion: 1,
       operation: sent,
     })
-    await createLedger(scope).recordMailOperation({
-      mailId,
-      templateId: 'bbva.transfer-sent',
-      operation: sent,
-    })
+    await createLedger(scope).recordMailOperation(
+      { mailId, templateId: 'bbva.transfer-sent', operation: sent },
+      { notify: true },
+    )
     const outbox = createOutbox(scope)
     const [owed] = await outbox.owed()
     if (!owed) throw new Error('recording the movement made no notice')
