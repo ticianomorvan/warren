@@ -92,12 +92,18 @@ export function createMailLog(scope: Scope): MailLog {
           signedDate: verdict.signedDate,
         })
       } else {
+        // The From address is the bank's only once it matched an allow-listed sender. Before
+        // that it is whoever sent the mail (the user's own address, when they forward by hand),
+        // and this table is append-only and outlives erasure: that address goes sealed, into
+        // `detail`, which has nothing else to say for those reasons.
+        const matched = verdict.senderId !== undefined
         const detail = 'detail' in verdict ? verdict.detail : undefined
+        const sealed = detail ?? (matched ? undefined : (verdict.fromAddress ?? undefined))
         await tx.insert(mailVerdict).values({
           ...base,
           reason: verdict.reason,
-          detail: detail ? scope.seal(detail, verdictAad(mailId, 'detail')) : null,
-          fromAddress: verdict.fromAddress,
+          detail: sealed ? scope.seal(sealed, verdictAad(mailId, 'detail')) : null,
+          fromAddress: matched ? verdict.fromAddress : null,
         })
       }
     },

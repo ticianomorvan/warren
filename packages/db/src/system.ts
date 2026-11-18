@@ -62,20 +62,28 @@ export async function addMailbox(database: Database, id: string, address: string
 }
 
 /**
- * Deliveries that arrived while no user claimed them, and still have no recorded delivery
- * under any user: what `pnpm mail:replay-unrouted` runs through intake. Operator only: it
- * reads two tables the app role cannot, and needs the owner role.
+ * Deliveries that arrived while no user claimed them and whose mail has no final verdict under
+ * any user yet: what `pnpm mail:replay-unrouted` runs through intake. A delivery stays listed
+ * until its mail is 'verified' or 'rejected'. Being recorded is not enough: a mail that got
+ * 'retry' (DNS trouble) has a delivery row and still needs another run. Operator only: it
+ * reads tables the app role cannot, and needs the owner role.
  */
 export async function pendingUnrouted(
   database: Database,
+  provider?: string,
 ): Promise<{ provider: string; providerId: string; receivedAt: Date }[]> {
   return inSystemContext(database, async (tx) =>
     rowsOf<{ provider: string; provider_id: string; received_at: Date | string }>(
       await tx.execute(sql`
         select u.provider, u.provider_id, u.received_at
         from unrouted_delivery u
-        where not exists (select 1 from mail_delivery d
-                          where d.provider = u.provider and d.provider_id = u.provider_id)
+        where (${provider ?? null}::text is null or u.provider = ${provider ?? null}::text)
+          and not exists (
+            select 1
+            from mail_delivery d
+            join mail_verdict v on v.user_id = d.user_id and v.mail_id = d.mail_id
+            where d.provider = u.provider and d.provider_id = u.provider_id
+              and v.verdict in ('verified', 'rejected'))
         order by u.received_at, u.provider_id`),
     ).map((r) => ({
       provider: r.provider,

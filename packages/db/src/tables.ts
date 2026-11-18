@@ -53,6 +53,12 @@ export const ERASED_TABLES = [
   userKey,
 ] as const
 
+/**
+ * Tenant tables `warren_app` may update (a grant and an update policy): derived state that can
+ * be rebuilt from the append-only tables. Every other tenant table is insert-only for it.
+ */
+export const MUTABLE_TABLES = [movement] as const
+
 type Kept<T extends PgTable> = {
   table: T
   /** Ciphertext: gone for good once the user's key is. */
@@ -111,7 +117,9 @@ export const KEPT_TABLES: readonly Kept<PgTable>[] = [
       'reason',
       'policyVersion',
       'senderId',
-      // The bank's address and signing domain, not the user's.
+      // Only an allow-listed sender's address (the bank's, never a person's): intake stores it
+      // clear when the sender matched (verified, or rejected after the match) and otherwise
+      // seals it into `detail`. A forwarded-by-hand mail's From is the user's own address.
       'fromAddress',
       'signingDomain',
       'selector',

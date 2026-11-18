@@ -296,6 +296,7 @@ export const mailVerdict = pgTable(
     detail: bytea('detail'),
     policyVersion: integer('policy_version').notNull(),
     senderId: text('sender_id'),
+    /** The bank's address, clear, only when the sender matched the allow-list; otherwise null and the address is sealed in `detail`. */
     fromAddress: text('from_address'),
     signingDomain: text('signing_domain'),
     selector: text('selector'),

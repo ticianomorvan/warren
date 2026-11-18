@@ -1,6 +1,12 @@
 import { userFilesPrefix } from '@warren/core'
 import { desc, eq } from 'drizzle-orm'
-import { canonicalUserId, type Database, ERASURE_LOCK, inUserContext, lockUser } from './client'
+import {
+  canonicalUserId,
+  type Database,
+  ERASURE_LOCK,
+  inUserContext,
+  lockUserExclusive,
+} from './client'
 import { erasure, event } from './schema'
 import { ERASED_TABLES } from './tables'
 
@@ -21,7 +27,11 @@ export type ErasureReport = {
  * and work that starts later finds the tombstone), deletes those rows and writes
  * `erasure(user_id, chain_head, erased_at)`. After the commit it deletes the user's files.
  * Everything append-only stays as ciphertext nobody can open once the key is gone, and every
- * chain, this user's included, still verifies. Safe to run again if the file deletion failed.
+ * chain, this user's included, still verifies.
+ *
+ * Files: an intake that was in flight can put a file after the sweep. Intake deletes that file
+ * itself when it finds the user erased (`ensureStored`, best effort). If even that failed, run
+ * this again: for an erased user it only repeats the sweep. So is it when the first sweep fails.
  */
 export async function eraseUser(
   database: Database,
@@ -30,7 +40,7 @@ export async function eraseUser(
 ): Promise<ErasureReport> {
   const userId = canonicalUserId(id)
   const report = await inUserContext(database, userId, async (tx) => {
-    await lockUser(tx, userId, ERASURE_LOCK)
+    await lockUserExclusive(tx, userId, ERASURE_LOCK)
     const done = await tx
       .select({ userId: erasure.userId })
       .from(erasure)

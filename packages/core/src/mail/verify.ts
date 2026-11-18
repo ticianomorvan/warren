@@ -30,9 +30,17 @@ export type MailVerdict =
       subject: string
       signedDate: Date
     }
-  | { verdict: 'rejected'; reason: RejectReason; fromAddress: string | null; detail?: string }
+  | {
+      verdict: 'rejected'
+      reason: RejectReason
+      /** Whoever the mail says it is from: for an unmatched sender, anyone. Treat as personal. */
+      fromAddress: string | null
+      /** Set once `fromAddress` matched an allow-listed sender: only then is it the bank's. */
+      senderId?: string
+      detail?: string
+    }
   /** Could not decide now (DNS trouble). Never treated as a rejection. */
-  | { verdict: 'retry'; reason: 'dns-temperror'; fromAddress: string | null }
+  | { verdict: 'retry'; reason: 'dns-temperror'; fromAddress: string | null; senderId?: string }
 
 export type VerifyOptions = {
   senders: readonly SenderPolicy[]
@@ -80,7 +88,12 @@ export async function verifyBankMail(raw: Uint8Array, opts: VerifyOptions): Prom
     (r) => r.signingDomain && sender.allowedSigners.includes(r.signingDomain.toLowerCase()),
   )
   if (candidates.length === 0) {
-    return { verdict: 'rejected', reason: 'no-signature-from-sender', fromAddress }
+    return {
+      verdict: 'rejected',
+      reason: 'no-signature-from-sender',
+      fromAddress,
+      senderId: sender.id,
+    }
   }
 
   const mailboxes = opts.mailboxes.map((a) => a.toLowerCase())
@@ -155,12 +168,14 @@ export async function verifyBankMail(raw: Uint8Array, opts: VerifyOptions): Prom
     }
   }
 
-  if (sawTempError) return { verdict: 'retry', reason: 'dns-temperror', fromAddress }
+  if (sawTempError)
+    return { verdict: 'retry', reason: 'dns-temperror', fromAddress, senderId: sender.id }
   const f = furthest as { reason: RejectReason; detail?: string } | null
   return {
     verdict: 'rejected',
     reason: f?.reason ?? 'signature-failed',
     fromAddress,
+    senderId: sender.id,
     ...(f?.detail ? { detail: f.detail } : {}),
   }
 }

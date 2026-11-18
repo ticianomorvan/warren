@@ -98,7 +98,7 @@ function keyFromBase64(name: string, value: string): Buffer {
  * `version=base64` pairs separated by commas, so wrapped keys made under them still open.
  */
 export function masterKeysFromEnv(env: Record<string, string | undefined>): MasterKeys {
-  const raw = env.WARREN_MASTER_KEY
+  const raw = env.WARREN_MASTER_KEY?.trim()
   if (!raw) throw new SealError('Missing environment variable WARREN_MASTER_KEY')
   const current = Number(env.WARREN_MASTER_KEY_VERSION ?? '1')
   if (!Number.isInteger(current) || current < 1) throw new SealError('bad master key version')

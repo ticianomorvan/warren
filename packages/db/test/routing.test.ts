@@ -102,20 +102,23 @@ describe('routing before a user exists', () => {
     await expect(t.pg.query('delete from unrouted_delivery')).rejects.toThrow(/append-only/)
   })
 
-  it('lists unrouted deliveries still to replay: none once a delivery is recorded under a user', async () => {
+  it('keeps listing an unrouted delivery until its mail has a final verdict', async () => {
     const stray = {
       provider: 'resend',
       providerId: 'em_replay',
       receivedAt: new Date('2026-11-13T10:00:00Z'),
     }
     await system.recordUnrouted(t.app, stray)
-    const pending = async () =>
-      (await system.pendingUnrouted(t.owner)).filter((d) => d.providerId.startsWith('em_replay'))
+    const pending = async (provider?: string) =>
+      (await system.pendingUnrouted(t.owner, provider)).filter((d) =>
+        d.providerId.startsWith('em_replay'),
+      )
     expect(await pending()).toEqual([stray])
     // The app role cannot read them: only the operator lists what to replay.
     await expect(system.pendingUnrouted(t.app)).rejects.toThrow()
-    // A mailbox gets registered and the mail is replayed: it is recorded under the user.
-    await asUser(t.app, a, async (scope) => {
+    // A mailbox gets registered and the mail is replayed. Recording the delivery (which intake
+    // does before it verifies) is not the end: no verdict yet, so it is still listed.
+    const id = await asUser(t.app, a, async (scope) => {
       const id = scope.mailId(Buffer.from('replayed'))
       await createMailLog(scope).recordMail({
         mailId: id,
@@ -125,8 +128,73 @@ describe('routing before a user exists', () => {
         providerId: 'em_replay',
         receivedAt: stray.receivedAt,
       })
+      return id
     })
+    expect(await pending()).toEqual([stray])
+    // DNS trouble: a 'retry' verdict is not final either.
+    await asUser(t.app, a, (scope) =>
+      createMailLog(scope).recordVerdict(
+        id,
+        { verdict: 'retry', reason: 'dns-temperror', fromAddress: 'avisos@bbva.com.ar' },
+        1,
+      ),
+    )
+    expect(await pending()).toEqual([stray])
+    // A rejection is final, so the delivery leaves the list.
+    await asUser(t.app, a, (scope) =>
+      createMailLog(scope).recordVerdict(
+        id,
+        { verdict: 'rejected', reason: 'date-skew', fromAddress: null },
+        1,
+      ),
+    )
     expect(await pending()).toEqual([])
+  })
+
+  it('lists only the provider asked for, and a verified mail ends the listing too', async () => {
+    const other = {
+      provider: 'imap',
+      providerId: 'em_replay_imap',
+      receivedAt: new Date('2026-11-13T11:00:00Z'),
+    }
+    await system.recordUnrouted(t.app, other)
+    const ids = async (provider?: string) =>
+      (await system.pendingUnrouted(t.owner, provider))
+        .filter((d) => d.providerId.startsWith('em_replay_'))
+        .map((d) => d.providerId)
+    expect(await ids('resend')).toEqual([])
+    expect(await ids('imap')).toEqual(['em_replay_imap'])
+    expect(await ids()).toEqual(['em_replay_imap'])
+    const id = await asUser(t.app, a, async (scope) => {
+      const id = scope.mailId(Buffer.from('replayed-imap'))
+      const log = createMailLog(scope)
+      await log.recordMail({
+        mailId: id,
+        pathname: `u/${a}/mail/${id}.eml.sealed`,
+        bytes: 8,
+        provider: 'imap',
+        providerId: 'em_replay_imap',
+        receivedAt: other.receivedAt,
+      })
+      await log.recordVerdict(
+        id,
+        {
+          verdict: 'verified',
+          senderId: 'bbva-transfers',
+          fromAddress: 'avisos@bbva.com.ar',
+          signingDomain: 'bbva.com.ar',
+          selector: 's1',
+          keyRecord: 'v=DKIM1; p=abc',
+          signedHeaders: ['from', 'to', 'subject', 'date'],
+          subject: 'Realizaste una transferencia',
+          signedDate: other.receivedAt,
+        },
+        1,
+      )
+      return id
+    })
+    expect(id).toBeTruthy()
+    expect(await ids('imap')).toEqual([])
   })
 
   it('gives intake only the user it acts for: their mailboxes, a sealing store', async () => {

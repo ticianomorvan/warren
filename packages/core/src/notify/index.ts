@@ -25,16 +25,21 @@ export type Attempt = { mode: AttemptMode; body: string } & SendResult
 
 export type OpenNotice = { noticeId: number; movement: NoticeMovement; history: AttemptRecord[] }
 
-/** The queue of one user's notices. Append-only: every attempt is a new row. */
+/**
+ * The queue of one user's notices. Append-only: every attempt is a new row. Each call is one
+ * short database transaction, so nothing here is open while a message is being sent.
+ */
 export interface Outbox {
-  /**
-   * Calls `handle` for each recent notice, oldest first, and records the attempt it returns.
-   * Only one drain runs at a time, so a notice is never sent by two callers at once.
-   */
-  drain(handle: (notice: OpenNotice) => Promise<Attempt | null>): Promise<Attempt[]>
+  /** Recent notices, oldest first, each with what was already tried. Sent ones included. */
+  owed(): Promise<OpenNotice[]>
+  /** Records one attempt at a notice. */
+  recordAttempt(noticeId: number, attempt: Attempt): Promise<void>
   /** Records a status for a message Warren sent. False when the message is not Warren's. */
   recordStatus(status: DeliveryStatus): Promise<boolean>
 }
+
+/** Runs `fn` in one short transaction on one user's outbox. */
+export type WithOutbox = <T>(fn: (outbox: Outbox) => Promise<T>) => Promise<T>
 
 export const MAX_ATTEMPTS = 4
 
@@ -54,18 +59,34 @@ export function planAttempt(
   return last.retryable ? last.mode : 'give-up'
 }
 
-/** Sends every notice that is still owed. Safe to run at any time, from anywhere. */
-export async function flushNotices(outbox: Outbox, sender: WhatsAppSender): Promise<Attempt[]> {
-  return outbox.drain(async (notice) => {
+/**
+ * Sends every notice that is still owed. Safe to run at any time, from anywhere: what a notice
+ * needs comes from its recorded history alone, so a second run after the first sends nothing.
+ * Reads the owed notices in one transaction, sends outside any, and records each attempt in
+ * its own, so a slow provider never holds the user's database lock (erasure waits on it).
+ * Two runs at the very same moment can both send a notice; the second attempt is recorded too.
+ */
+export async function flushNotices(
+  withOutbox: WithOutbox,
+  sender: WhatsAppSender,
+): Promise<Attempt[]> {
+  const owed = await withOutbox((outbox) => outbox.owed())
+  const made: Attempt[] = []
+  for (const notice of owed) {
     const plan = planAttempt(notice.history, sender.sendTemplate !== undefined)
-    if (plan === 'done' || plan === 'give-up') return null
+    if (plan === 'done' || plan === 'give-up') continue
+    let attempt: Attempt
     if (plan === 'template' && sender.sendTemplate) {
       const body = noticeOneLine(notice.movement)
-      return { mode: 'template', body, ...(await sender.sendTemplate(body)) }
+      attempt = { mode: 'template', body, ...(await sender.sendTemplate(body)) }
+    } else {
+      const body = noticeText(notice.movement)
+      attempt = { mode: 'text', body, ...(await sender.sendText(body)) }
     }
-    const body = noticeText(notice.movement)
-    return { mode: 'text', body, ...(await sender.sendText(body)) }
-  })
+    await withOutbox((outbox) => outbox.recordAttempt(notice.noticeId, attempt))
+    made.push(attempt)
+  }
+  return made
 }
 
 /**
@@ -103,11 +124,11 @@ export async function handleKapsoWebhook(
     const known = await deps.withOutbox(userId, (outbox) => outbox.recordStatus(status))
     if (!known) continue
     recorded++
-    failedForSender ||= status.status === 'failed' && userId === deps.senderUserId
+    failedForSender ||=
+      status.status === 'failed' && userId.toLowerCase() === deps.senderUserId.toLowerCase()
   }
   const resent = failedForSender
-    ? (await deps.withOutbox(deps.senderUserId, (outbox) => flushNotices(outbox, deps.sender)))
-        .length
+    ? (await flushNotices((fn) => deps.withOutbox(deps.senderUserId, fn), deps.sender)).length
     : 0
   return { status: 200, body: { recorded, resent } }
 }

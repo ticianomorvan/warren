@@ -20,6 +20,7 @@ import {
   verifyKapsoWebhook,
   type WhatsAppSender,
   WINDOW_CLOSED,
+  type WithOutbox,
 } from '../src/notify'
 
 const sent: NoticeMovement = {
@@ -235,10 +236,21 @@ class MemoryOutbox implements Outbox {
       }
     })
   }
-  async drain(handle: (n: OpenNotice) => Promise<Attempt | null>) {
-    const attempt = await handle({ noticeId: 1, movement: this.movement, history: this.history() })
-    if (attempt) this.attempts.push(attempt)
-    return attempt ? [attempt] : []
+  /** True inside `within`: one short transaction, in which nothing may be sent. */
+  inTx = false
+  within: WithOutbox = async (fn) => {
+    this.inTx = true
+    try {
+      return await fn(this)
+    } finally {
+      this.inTx = false
+    }
+  }
+  async owed(): Promise<OpenNotice[]> {
+    return [{ noticeId: 1, movement: this.movement, history: this.history() }]
+  }
+  async recordAttempt(_noticeId: number, attempt: Attempt) {
+    this.attempts.push(attempt)
   }
   knows(wamid: string) {
     return this.attempts.some((a) => a.outcome === 'sent' && a.wamid === wamid)
@@ -275,9 +287,23 @@ describe('flushNotices', () => {
   it('sends a notice once', async () => {
     const outbox = new MemoryOutbox(sent)
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }])
-    expect(await flushNotices(outbox, sender)).toHaveLength(1)
-    expect(await flushNotices(outbox, sender)).toHaveLength(0)
+    expect(await flushNotices(outbox.within, sender)).toHaveLength(1)
+    expect(await flushNotices(outbox.within, sender)).toHaveLength(0)
     expect(outbox.attempts[0]).toMatchObject({ mode: 'text', body: noticeText(sent) })
+  })
+
+  it('sends outside any transaction, and records each attempt in its own', async () => {
+    const outbox = new MemoryOutbox(sent)
+    const during: boolean[] = []
+    const sender: WhatsAppSender = {
+      sendText: async () => {
+        during.push(outbox.inTx)
+        return { outcome: 'sent', wamid: 'wamid.A' }
+      },
+    }
+    await flushNotices(outbox.within, sender)
+    expect(during).toEqual([false])
+    expect(outbox.attempts).toHaveLength(1)
   })
 
   it('falls back to the template when the window is closed', async () => {
@@ -289,8 +315,8 @@ describe('flushNotices', () => {
       detail: 'http-422',
     }
     const sender = scriptedSender([closed], [])
-    await flushNotices(outbox, sender)
-    await flushNotices(outbox, sender)
+    await flushNotices(outbox.within, sender)
+    await flushNotices(outbox.within, sender)
     expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
       'text:failed',
       'template:sent',
@@ -301,7 +327,7 @@ describe('flushNotices', () => {
   it('sends the template after WhatsApp reports the text as failed', async () => {
     const outbox = new MemoryOutbox(sent)
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }], [])
-    await flushNotices(outbox, sender)
+    await flushNotices(outbox.within, sender)
     const deps = { ...tenancyOf(outbox), sender, senderUserId: 'u1', webhookSecret: SECRET }
     const bad = await handleKapsoWebhook(deps, failedEvent, {
       signature: 'bad',
@@ -319,7 +345,7 @@ describe('flushNotices', () => {
   it("records another user's failure but does not resend through the owner's WhatsApp", async () => {
     const outbox = new MemoryOutbox(sent)
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }], [])
-    await flushNotices(outbox, sender)
+    await flushNotices(outbox.within, sender)
     const result = await handleKapsoWebhook(
       { ...tenancyOf(outbox, 'u2'), sender, senderUserId: 'u1', webhookSecret: SECRET },
       failedEvent,

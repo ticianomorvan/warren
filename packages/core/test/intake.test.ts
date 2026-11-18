@@ -5,6 +5,7 @@ import type { Ledger, ParsedMail } from '../src/ledger'
 import {
   type FinalVerdict,
   handleResendWebhook,
+  intakeForUser,
   intakeRawMail,
   type MailLog,
   type NewMail,
@@ -13,6 +14,7 @@ import {
   type RawStore,
   type ResendWebhookDeps,
   rawMailPathname,
+  replayIncomplete,
   replayUnrouted,
   type Tenancy,
   type UserContext,
@@ -23,6 +25,7 @@ import { verifyResendWebhook } from '../src/mail/resend'
 import type { TxtResolver } from '../src/mail/resolver'
 import { SENDERS } from '../src/mail/senders'
 import type { MailVerdict } from '../src/mail/verify'
+import { UserErasedError } from '../src/user'
 import { htmlMessage, transferSentHtml } from './fixtures'
 import { failingResolver, MAILBOX, makeSigner, message, RECEIVED_AT, resolverFor } from './helpers'
 
@@ -110,6 +113,9 @@ class MemoryTenancy implements Tenancy {
   /** Where a file was stored or a DNS key fetched, with whether a transaction was open. */
   io: { what: string; inTx: boolean }[] = []
   puts = 0
+  /** Simulates the erasure committing while a file is being put: later transactions throw. */
+  eraseDuringPut = false
+  erased = false
   unrouted: { provider: string; providerId: string; receivedAt: Date }[] = []
   users = new Map<string, { key: Buffer; log: MemoryLog; ledger: MemoryLedger }>()
   constructor(readonly mailboxes: Record<string, string>) {
@@ -129,12 +135,14 @@ class MemoryTenancy implements Tenancy {
     this.unrouted.push(d)
   }
   async withUser<T>(userId: string, fn: (ctx: UserContext) => Promise<T>) {
+    if (this.erased) throw new UserErasedError()
     const { key, log, ledger } = this.user(userId)
     const sealer = sealerFor(userId, key)
     const store: RawStore = {
       put: async (p, b) => {
         this.io.push({ what: 'put', inTx: this.inTx })
         this.puts++
+        if (this.eraseDuringPut) this.erased = true
         this.files.set(p, sealer.seal(b, `blob:${p}`))
       },
       get: async (p) => {
@@ -401,6 +409,35 @@ describe('handleResendWebhook', () => {
     expect(log.verdicts).toHaveLength(1)
   })
 
+  it('deletes the file it stored when the user was erased meanwhile, then fails', async () => {
+    const { deps, tenancy, raw } = await setup()
+    tenancy.eraseDuringPut = true
+    await expect(
+      intakeForUser(deps, USER, {
+        raw,
+        provider: 'resend',
+        providerId: 'em_1',
+        receivedAt: RECEIVED_AT,
+      }),
+    ).rejects.toBeInstanceOf(UserErasedError)
+    expect(tenancy.puts).toBe(1)
+    expect(tenancy.files.size).toBe(0)
+  })
+
+  it('uses one spelling of the user id for the file path', async () => {
+    const lower = 'abcdefab-cdef-4abc-8def-abcdefabcdef'
+    const { deps, raw } = await setup()
+    const tenancy = new MemoryTenancy({ [MAILBOX]: lower })
+    const mailId = keyedMailId(tenancy.user(lower).key, raw)
+    await intakeForUser({ ...deps, tenancy }, lower.toUpperCase(), {
+      raw,
+      provider: 'resend',
+      providerId: 'em_1',
+      receivedAt: RECEIVED_AT,
+    })
+    expect([...tenancy.files.keys()]).toEqual([rawMailPathname(lower, mailId)])
+  })
+
   it("deletes one user's files by prefix and no one else's", async () => {
     const { deps, body, tenancy } = await setup()
     await handleResendWebhook(deps, body, signedHeaders(body))
@@ -428,7 +465,7 @@ describe('replayUnrouted', () => {
       fetched.push(id)
       return { raw, receivedAt: RECEIVED_AT }
     }
-    const pending = [{ provider: 'resend', providerId: 'em_1' }]
+    const pending = [{ provider: 'resend', providerId: 'em_1', receivedAt: RECEIVED_AT }]
     const first = await replayUnrouted(deps, pending, fetchMail)
     expect(first).toEqual([{ provider: 'resend', providerId: 'em_1', outcome: 'verified' }])
     expect(log.mails.size).toBe(1)
@@ -440,16 +477,68 @@ describe('replayUnrouted', () => {
     expect(log.verdicts).toHaveLength(1)
   })
 
-  it('leaves a delivery that cannot be fetched for the next run', async () => {
+  it('leaves a delivery that cannot be fetched for the next run, naming the error class only', async () => {
     const { deps } = await setup()
+    const gone = { provider: 'resend', providerId: 'em_gone', receivedAt: RECEIVED_AT }
+    const out = await replayUnrouted(deps, [gone], async () => {
+      throw new TypeError('Resend API 404 for ticiano@example.com')
+    })
+    expect(out).toEqual([
+      { provider: 'resend', providerId: 'em_gone', outcome: 'failed', error: 'TypeError' },
+    ])
+    expect(JSON.stringify(out)).not.toContain('ticiano')
+    expect(out.every(replayIncomplete)).toBe(true)
+  })
+
+  it("runs each delivery with the arrival time that was noted, not the fetched mail's", async () => {
+    const { deps, raw } = await setup()
+    // Noted three weeks before the signed date: the date check must see that time.
+    const early = new Date('2026-10-20T13:00:00Z')
+    const fetchMail = async () => ({ raw, receivedAt: RECEIVED_AT })
     const out = await replayUnrouted(
       deps,
-      [{ provider: 'resend', providerId: 'em_gone' }],
-      async () => {
-        throw new Error('Resend API 404')
-      },
+      [{ provider: 'resend', providerId: 'em_1', receivedAt: early }],
+      fetchMail,
     )
-    expect(out).toEqual([{ provider: 'resend', providerId: 'em_gone', outcome: 'failed' }])
+    expect(out[0]?.outcome).toBe('rejected')
+  })
+
+  it('leaves the choice of provider to the caller', async () => {
+    const { deps, raw, log } = await setup()
+    const out = await replayUnrouted(
+      deps,
+      [{ provider: 'other', providerId: 'x_1', receivedAt: RECEIVED_AT }],
+      async () => ({ raw, receivedAt: RECEIVED_AT }),
+    )
+    expect(out[0]?.outcome).toBe('verified')
+    expect(log.mails.size).toBe(1)
+  })
+
+  it('reports a delivery whose verdict is retry as incomplete, and finishes it next time', async () => {
+    const { deps, raw, log } = await setup(failingResolver)
+    const d = { provider: 'resend', providerId: 'em_1', receivedAt: RECEIVED_AT }
+    const fetchMail = async () => ({ raw, receivedAt: RECEIVED_AT })
+    const first = await replayUnrouted(deps, [d], fetchMail)
+    expect(first[0]?.outcome).toBe('retry')
+    expect(first.some(replayIncomplete)).toBe(true)
+    const healthy = { ...deps, resolver: resolverFor({ [bank.dnsName]: bank.record }) }
+    const second = await replayUnrouted(healthy, [d], fetchMail)
+    expect(second[0]?.outcome).toBe('verified')
+    expect(second.some(replayIncomplete)).toBe(false)
+    expect(log.verdicts.map((v) => v.verdict.verdict)).toEqual(['retry', 'verified'])
+  })
+})
+
+describe('replayIncomplete', () => {
+  const r = (outcome: Parameters<typeof replayIncomplete>[0]['outcome']) =>
+    replayIncomplete({ provider: 'resend', providerId: 'x', outcome })
+  it('is true for retry, unrouted and failed only', () => {
+    expect(['retry', 'unrouted', 'failed'].map((o) => r(o as never))).toEqual([true, true, true])
+    expect(['verified', 'rejected', 'duplicate'].map((o) => r(o as never))).toEqual([
+      false,
+      false,
+      false,
+    ])
   })
 })
 

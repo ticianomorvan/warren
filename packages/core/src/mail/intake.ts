@@ -1,4 +1,5 @@
 import type { Ledger, RecordOutcome } from '../ledger'
+import { canonicalUserId, UserErasedError } from '../user'
 import { unsignedToAddresses } from './headers'
 import { type ParseResult, parseBankMail, TEMPLATE_SET_VERSION, type VerifiedMail } from './parse'
 import {
@@ -144,26 +145,25 @@ export async function intakeRawMail(deps: IntakeDeps, input: MailInput): Promise
   return intakeForUser(deps, userId, input)
 }
 
+/** What `ensureStored` leaves behind: the mail is stored and recorded, with what is known of it. */
+type Stored = {
+  mailId: string
+  mailboxes: readonly string[]
+  /** The 'verified' or 'rejected' verdict, if the mail already has one. */
+  settled: FinalVerdict | null
+  /** Rejected, or verified and parsed under the current templates: nothing left to do. */
+  done: boolean
+}
+
 /**
- * Intake for a user already known (also used to replay archived mail). Three steps, so no
- * database transaction is open while the file is stored or the bank's DNS key is fetched:
- *
- *   1. a short transaction: the mail's id, whether it is already recorded, the mailboxes;
- *   2. outside any transaction: store the sealed file (only if it was not recorded), then
- *      a short transaction records the mail and reads its verdict; then verify (DNS);
- *   3. a short transaction: the verdict, the parse and the ledger.
- *
- * The file is stored before the mail is recorded, so a recorded mail always has its file. Every
- * step is a no-op when already done, so a crash anywhere is repaired by running the same call
- * again.
+ * Step 1: the sealed file is stored, then the mail is recorded, so a recorded mail always has
+ * its file. A mail already recorded is not stored again (a second put would seal it afresh and
+ * overwrite the file). No transaction is open while the file is put. If the user was erased
+ * while it was, the file is deleted again (best effort) before the error goes on: the
+ * erasure's own file sweep may already have run.
  */
-export async function intakeForUser(
-  deps: IntakeDeps,
-  userId: string,
-  input: MailInput,
-): Promise<IntakeResult> {
-  const { tenancy } = deps
-  const first = await tenancy.withUser(userId, async (ctx) => {
+async function ensureStored(deps: IntakeDeps, userId: string, input: MailInput): Promise<Stored> {
+  const first = await deps.tenancy.withUser(userId, async (ctx) => {
     const mailId = ctx.mailId(input.raw)
     return {
       mailId,
@@ -172,47 +172,70 @@ export async function intakeForUser(
       recorded: await ctx.log.hasMail(mailId),
     }
   })
-  const { mailId, store, mailboxes } = first
+  const { mailId, store } = first
   const pathname = rawMailPathname(userId, mailId)
-  const user = { userId, mailId }
-
   if (!first.recorded) await store.put(pathname, input.raw, 'message/rfc822')
-  const final = await tenancy.withUser(userId, async (ctx) => {
-    await ctx.log.recordMail({
-      mailId,
-      pathname,
-      bytes: input.raw.byteLength,
-      provider: input.provider,
-      providerId: input.providerId,
-      receivedAt: input.receivedAt,
-    })
-    const settled = await ctx.log.finalVerdict(mailId)
-    const parsed = settled ? await ctx.log.hasParse(mailId, TEMPLATE_SET_VERSION) : false
-    return { settled, done: settled?.verdict === 'rejected' || parsed }
-  })
-  if (final.done) return { ...user, outcome: 'duplicate' }
-
-  const verdict = final.settled
-    ? null
-    : await verifyBankMail(input.raw, {
-        senders: deps.senders,
-        mailboxes,
-        resolver: deps.resolver,
+  try {
+    return await deps.tenancy.withUser(userId, async (ctx) => {
+      await ctx.log.recordMail({
+        mailId,
+        pathname,
+        bytes: input.raw.byteLength,
+        provider: input.provider,
+        providerId: input.providerId,
         receivedAt: input.receivedAt,
-        maxDateSkewMinutes: deps.maxDateSkewMinutes,
       })
-
-  return tenancy.withUser(userId, async (ctx): Promise<IntakeResult> => {
-    if (verdict) await ctx.log.recordVerdict(mailId, verdict, SENDER_POLICY_VERSION)
-    const settled = final.settled ?? (verdict?.verdict === 'verified' ? verdict : null)
-    if (!settled || settled.verdict !== 'verified') {
+      const settled = await ctx.log.finalVerdict(mailId)
+      const parsed = settled ? await ctx.log.hasParse(mailId, TEMPLATE_SET_VERSION) : false
       return {
-        ...user,
-        outcome: verdict?.verdict ?? 'rejected',
-        ...(verdict && verdict.verdict !== 'verified' ? { reason: verdict.reason } : {}),
+        mailId,
+        mailboxes: first.mailboxes,
+        settled,
+        done: settled?.verdict === 'rejected' || parsed,
       }
-    }
-    const parsed = await parseBankMail(input.raw, settled)
+    })
+  } catch (error) {
+    if (error instanceof UserErasedError) await store.deletePrefix(pathname).catch(() => {})
+    throw error
+  }
+}
+
+/**
+ * Step 2: the verdict. Returns the one already settled, or checks the mail (DNS, outside any
+ * transaction) and records what it found, in a short transaction of its own. Always returns a
+ * verdict; 'retry' is recorded but is not final.
+ */
+async function settleVerdict(
+  deps: IntakeDeps,
+  userId: string,
+  input: MailInput,
+  stored: Stored,
+): Promise<MailVerdict | FinalVerdict> {
+  if (stored.settled) return stored.settled
+  const verdict = await verifyBankMail(input.raw, {
+    senders: deps.senders,
+    mailboxes: stored.mailboxes,
+    resolver: deps.resolver,
+    receivedAt: input.receivedAt,
+    maxDateSkewMinutes: deps.maxDateSkewMinutes,
+  })
+  await deps.tenancy.withUser(userId, (ctx) =>
+    ctx.log.recordVerdict(stored.mailId, verdict, SENDER_POLICY_VERSION),
+  )
+  return verdict
+}
+
+/** Step 3: a short transaction that parses a verified mail and records its operation in the ledger. */
+async function parseAndRecord(
+  deps: IntakeDeps,
+  userId: string,
+  input: MailInput,
+  mailId: string,
+  verified: VerifiedMail,
+): Promise<IntakeResult> {
+  const user = { userId, mailId }
+  return deps.tenancy.withUser(userId, async (ctx): Promise<IntakeResult> => {
+    const parsed = await parseBankMail(input.raw, verified)
     await ctx.log.recordParse(mailId, TEMPLATE_SET_VERSION, parsed)
     if (parsed.status === 'unparsed') {
       return { ...user, outcome: 'verified', parse: 'unparsed', parseReason: parsed.reason }
@@ -226,39 +249,77 @@ export async function intakeForUser(
   })
 }
 
+/**
+ * Intake for a user already known (also used to replay mail). Three steps, so no database
+ * transaction is open while the file is stored or the bank's DNS key is fetched: `ensureStored`,
+ * `settleVerdict`, `parseAndRecord`. Every step is a no-op when already done, so a crash anywhere
+ * is repaired by running the same call again.
+ */
+export async function intakeForUser(
+  deps: IntakeDeps,
+  id: string,
+  input: MailInput,
+): Promise<IntakeResult> {
+  const userId = canonicalUserId(id)
+  const stored = await ensureStored(deps, userId, input)
+  const user = { userId, mailId: stored.mailId }
+  if (stored.done) return { ...user, outcome: 'duplicate' }
+
+  const verdict = await settleVerdict(deps, userId, input, stored)
+  if (verdict.verdict !== 'verified') {
+    return {
+      ...user,
+      outcome: verdict.verdict,
+      ...('reason' in verdict ? { reason: verdict.reason } : {}),
+    }
+  }
+  return parseAndRecord(deps, userId, input, stored.mailId, verdict)
+}
+
 export type ReplayResult = {
   provider: string
   providerId: string
   outcome: IntakeResult['outcome'] | 'failed'
+  /** For 'failed': the class of the error (its name), never its message, which could hold mail. */
+  error?: string
 }
+
+/** A replay result that leaves the delivery unfinished: the operator must run it again. */
+export const replayIncomplete = (r: ReplayResult): boolean =>
+  r.outcome === 'retry' || r.outcome === 'unrouted' || r.outcome === 'failed'
 
 /**
  * Runs deliveries that were once unrouted through intake again, after their mailbox was
- * registered. Each is fetched from the provider again (nothing of the mail was kept), with its
- * original arrival time. Marks nothing: a delivery that now routes is recorded under its user,
- * and the operator's list of unrouted deliveries leaves out any with a recorded delivery, so
- * running this twice does the work once. A delivery that cannot be fetched is reported and
- * left for the next run.
+ * registered. Each is fetched from the provider again (nothing of the mail was kept) and run
+ * with its original arrival time, `receivedAt`. Marks nothing: a delivery that now routes is
+ * recorded under its user, and the operator's list leaves out a delivery once its mail has a
+ * final verdict, so running this twice does the work once. A delivery that cannot be fetched,
+ * that is still unrouted, or whose verdict is 'retry' (DNS trouble) stays listed: see
+ * `replayIncomplete`. The caller chooses which deliveries (a provider's) to pass.
  */
 export async function replayUnrouted(
   deps: IntakeDeps,
-  deliveries: readonly { provider: string; providerId: string }[],
+  deliveries: readonly { provider: string; providerId: string; receivedAt: Date }[],
   fetchMail: (providerId: string) => Promise<ReceivedMail>,
 ): Promise<ReplayResult[]> {
   const out: ReplayResult[] = []
   for (const d of deliveries) {
-    if (d.provider !== 'resend') continue
     try {
       const mail = await fetchMail(d.providerId)
       const result = await intakeRawMail(deps, {
         raw: mail.raw,
         provider: d.provider,
         providerId: d.providerId,
-        receivedAt: mail.receivedAt,
+        receivedAt: d.receivedAt,
       })
       out.push({ provider: d.provider, providerId: d.providerId, outcome: result.outcome })
-    } catch {
-      out.push({ provider: d.provider, providerId: d.providerId, outcome: 'failed' })
+    } catch (error) {
+      out.push({
+        provider: d.provider,
+        providerId: d.providerId,
+        outcome: 'failed',
+        error: error instanceof Error ? error.name : 'unknown',
+      })
     }
   }
   return out

@@ -155,8 +155,9 @@ migrated. The deploy runs `pnpm db:migrate` on every merge, so do these in one s
    (`pnpm mailbox:add --user <id> <address>`): from the migration until then, the live webhook
    finds no mailbox and drops each mail it receives, keeping only that something arrived.
    Then run `pnpm mail:replay-unrouted`, which fetches those deliveries from Resend again and
-   runs them through intake (idempotent; `--dry-run` lists them first). One that Resend can no
-   longer return is reported and stays listed.
+   runs them through intake (idempotent; `--dry-run` lists them first). A delivery stays listed
+   until its mail is verified or rejected: one Resend can no longer return, or whose DNS check
+   came back `retry`, is reported and the command exits 1. Run it again until it exits 0.
 4. `pnpm mail:reingest --user <id> --from <archive url>` replays the archive's raw mail through
    the new intake and prints the archive's verified and parsed counts against the new ledger,
    naming every mail that differs. Re-add the accounts with `pnpm ledger:accounts --user <id>`.

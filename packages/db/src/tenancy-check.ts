@@ -12,6 +12,7 @@ import {
   ERASED_TABLES,
   EXEMPT_TABLES as EXEMPT,
   KEPT_TABLES,
+  MUTABLE_TABLES,
   tableNames,
 } from './tables'
 
@@ -27,6 +28,8 @@ export type Check = { name: string; ok: boolean; detail?: string }
 /** Better Auth's tables and the one exempt table: tagged once, in tables.ts. */
 export const AUTH_TABLES = tableNames(AUTH).slice() as readonly string[]
 export const EXEMPT_TABLES = tableNames(EXEMPT).slice() as readonly string[]
+/** The tenant tables `warren_app` may update: the rest are insert-only for it. */
+export const MUTABLE = tableNames(MUTABLE_TABLES).slice() as readonly string[]
 /** Keys that do not start with `user_id`, on purpose. Each needs a reason. */
 export const EXEMPT_KEYS: Record<string, string> = {
   // An address belongs to one person, and only the operator registers it.
@@ -93,10 +96,10 @@ export async function checkStructure(db: Database): Promise<Check[]> {
     ...(has(n, 'SELECT') ? [] : [`${n}:select`]),
     ...(has(n, 'INSERT') ? [] : [`${n}:insert`]),
   ])
-  if (names.includes('movement') && !has('movement', 'UPDATE')) lacking.push('movement:update')
-  const extraUpdate = names.filter((n) => n !== 'movement' && has(n, 'UPDATE'))
+  for (const n of MUTABLE) if (names.includes(n) && !has(n, 'UPDATE')) lacking.push(`${n}:update`)
+  const extraUpdate = names.filter((n) => !MUTABLE.includes(n) && has(n, 'UPDATE'))
   out.push({
-    name: 'warren_app has select and insert policies on every user table, update only on movement',
+    name: 'warren_app has select and insert policies on every user table, update only on the mutable ones',
     ok: lacking.length === 0 && extraUpdate.length === 0,
     detail: [
       ...lacking.map((l) => `missing ${l}`),
@@ -149,7 +152,7 @@ export async function checkStructure(db: Database): Promise<Check[]> {
       p.role === 'warren_app' &&
       p.yes &&
       ((p.verb === 'delete' && !auth.has(p.table)) ||
-        (p.verb === 'update' && !auth.has(p.table) && p.table !== 'movement')),
+        (p.verb === 'update' && !auth.has(p.table) && !MUTABLE.includes(p.table))),
   )
   out.push({
     name: 'grants: warren_app cannot touch auth tables or update/delete; warren_auth only auth tables',
@@ -400,12 +403,14 @@ export async function seedFixtures(
       operation: sent,
     })
     const outbox = createOutbox(scope)
-    await outbox.drain(async () => ({
+    const [owed] = await outbox.owed()
+    if (!owed) throw new Error('recording the movement made no notice')
+    await outbox.recordAttempt(owed.noticeId, {
       mode: 'text',
       body: 'hola',
       outcome: 'sent',
       wamid: `wamid.${tag}`,
-    }))
+    })
     await outbox.recordStatus({
       wamid: `wamid.${tag}`,
       status: 'delivered',
@@ -499,16 +504,18 @@ export async function checkIsolation({ owner, app, a, b }: Isolation): Promise<C
     detail: accepted.join('; '),
   })
 
-  const touched = await inUserContext(
-    app,
-    b,
-    async (tx) =>
-      rowsOf<Row>(
+  // Another user's row in every mutable table: row-level security shows B none of it.
+  const touched = await inUserContext(app, b, async (tx) => {
+    let n = 0
+    for (const table of MUTABLE) {
+      n += rowsOf<Row>(
         await tx.execute(
-          sql`update movement set reason = 'tampered' where user_id = ${a}::uuid returning 1`,
+          sql`update ${sql.identifier(table)} set user_id = user_id where user_id = ${a}::uuid returning 1`,
         ),
-      ).length,
-  )
+      ).length
+    }
+    return n
+  })
   const deleteError = await inUserContext(app, b, async (tx) => {
     await tx.execute(sql`delete from event where user_id = ${a}::uuid`)
   }).then(
@@ -516,7 +523,7 @@ export async function checkIsolation({ owner, app, a, b }: Isolation): Promise<C
     (e: unknown) => String((e as { cause?: unknown }).cause ?? e),
   )
   out.push({
-    name: "a user cannot update another user's movement or delete anyone's event",
+    name: "a user cannot update another user's mutable rows or delete anyone's event",
     ok: touched === 0 && deleteError !== null && /permission denied|append-only/.test(deleteError),
     detail: `updated ${touched} rows; delete: ${deleteError ?? 'accepted'}`,
   })

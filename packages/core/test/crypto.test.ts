@@ -77,6 +77,13 @@ describe('master keys', () => {
     expect(() => unwrapDataKey(masters, 'user-b', wrapped, version)).toThrow(SealError)
   })
 
+  it('ignores whitespace around the current key, as it does around the previous ones', () => {
+    const plain = masterKeysFromEnv({ WARREN_MASTER_KEY: MASTER })
+    const padded = masterKeysFromEnv({ WARREN_MASTER_KEY: `  ${MASTER}\n` })
+    expect(padded.keys.get(1)?.equals(plain.keys.get(1) ?? Buffer.alloc(0))).toBe(true)
+    expect(() => masterKeysFromEnv({ WARREN_MASTER_KEY: '  \n' })).toThrow(SealError)
+  })
+
   it('opens keys wrapped under an older master key while rotating', () => {
     const old = masterKeysFromEnv({ WARREN_MASTER_KEY: OLD_MASTER })
     const dataKey = newDataKey()

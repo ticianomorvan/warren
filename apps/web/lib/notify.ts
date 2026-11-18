@@ -1,5 +1,5 @@
 import { type Attempt, flushNotices, kapsoSender, type WhatsAppSender } from '@warren/core'
-import { asUser, createOutbox, system } from '@warren/db'
+import { asUser, canonicalUserId, createOutbox, system } from '@warren/db'
 import { database } from './db'
 import { env } from './env'
 
@@ -22,15 +22,17 @@ export const kapsoLookup = () => ({
 
 /**
  * Sends the notices still owed to `userId`, if they are the user the WhatsApp number belongs
- * to; anyone else's wait for push. A failure here is logged and never fails the caller.
+ * to; anyone else's wait for push. The WhatsApp call is made between database transactions
+ * (see `flushNotices`), never inside one. A failure here is logged and never fails the caller.
  */
 export async function sendOwedNotices(userId: string): Promise<Attempt[]> {
   const sender = whatsAppSender()
   const kapso = env.kapso()
-  if (!sender || !kapso || kapso.userId !== userId) return []
+  if (!sender || !kapso || kapso.userId !== canonicalUserId(userId)) return []
   try {
-    const attempts = await asUser(database(), userId, (scope) =>
-      flushNotices(createOutbox(scope), sender),
+    const attempts = await flushNotices(
+      (fn) => asUser(database(), userId, (scope) => fn(createOutbox(scope))),
+      sender,
     )
     for (const a of attempts) {
       if (a.outcome === 'failed') console.warn('notice not sent:', a.mode, a.errorCode)

@@ -64,16 +64,16 @@ async function feed(user: string, raw: string) {
       templateId: 'bbva.transfer-sent',
       operation: op,
     })
-    await createOutbox(scope).drain(async (n) =>
-      n.history.length > 0
-        ? null
-        : {
-            mode: 'text',
-            body: `Transferencia enviada a ${NAME}`,
-            outcome: 'sent',
-            wamid: `wamid.${user.slice(0, 8)}.${n.noticeId}`,
-          },
-    )
+    const outbox = createOutbox(scope)
+    for (const n of await outbox.owed()) {
+      if (n.history.length > 0) continue
+      await outbox.recordAttempt(n.noticeId, {
+        mode: 'text',
+        body: `Transferencia enviada a ${NAME}`,
+        outcome: 'sent',
+        wamid: `wamid.${user.slice(0, 8)}.${n.noticeId}`,
+      })
+    }
     return mailId
   })
 }

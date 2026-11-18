@@ -49,10 +49,19 @@ const record = (c: string, templateId: string, operation: BankOperation) =>
   })
 
 const seen: OpenNotice[] = []
-const reply = (attempt: Attempt | null) => async (n: OpenNotice) => {
-  seen.push(n)
-  return attempt
-}
+/** What flushNotices does, with a scripted answer: read what is owed, record `attempt` for each. */
+const drain = (attempt: Attempt | null) =>
+  outbox(async (o) => {
+    const owed = await o.owed()
+    seen.push(...owed)
+    const made: Attempt[] = []
+    for (const n of owed) {
+      if (!attempt) continue
+      await o.recordAttempt(n.noticeId, attempt)
+      made.push(attempt)
+    }
+    return made
+  })
 
 beforeAll(async () => {
   t = await testDatabase()
@@ -89,9 +98,7 @@ describe('outbox', () => {
   })
 
   it('hands over the movement with account names and records the attempt', async () => {
-    const made = await outbox((o) =>
-      o.drain(reply({ mode: 'text', body: 'hola', outcome: 'sent', wamid: 'wamid.A' })),
-    )
+    const made = await drain({ mode: 'text', body: 'hola', outcome: 'sent', wamid: 'wamid.A' })
     expect(made).toHaveLength(1)
     expect(seen.at(-1)).toMatchObject({
       history: [],
@@ -103,7 +110,7 @@ describe('outbox', () => {
         counterAccountName: 'Wallet ARS',
       },
     })
-    await outbox((o) => o.drain(reply(null)))
+    await drain(null)
     expect(seen.at(-1)?.history).toEqual([
       { mode: 'text', failed: false, errorCode: null, retryable: false },
     ])
@@ -119,22 +126,18 @@ describe('outbox', () => {
     expect(
       await outbox((o) => o.recordStatus({ ...status, wamid: 'wamid.other', status: 'read' })),
     ).toBe(false)
-    await outbox((o) =>
-      o.drain(
-        reply({
-          mode: 'template',
-          body: 'hola',
-          outcome: 'failed',
-          errorCode: null,
-          retryable: true,
-          detail: 'http-503',
-        }),
-      ),
-    )
+    await drain({
+      mode: 'template',
+      body: 'hola',
+      outcome: 'failed',
+      errorCode: null,
+      retryable: true,
+      detail: 'http-503',
+    })
     expect(seen.at(-1)?.history).toEqual([
       { mode: 'text', failed: true, errorCode: 131047, retryable: false },
     ])
-    await outbox((o) => o.drain(reply(null)))
+    await drain(null)
     expect(seen.at(-1)?.history).toHaveLength(2)
     expect(seen.at(-1)?.history[1]).toEqual({
       mode: 'template',

@@ -16,7 +16,7 @@ import {
   canonicalUserId,
   type Database,
   inUserContext,
-  lockUser,
+  lockUserExclusive,
   rowsOf,
   type Scope,
   type Tx,
@@ -118,7 +118,7 @@ export function createLedger(scope: Scope): Ledger {
     async recordMailOperation(mail: ParsedMail): Promise<RecordOutcome> {
       // One recording at a time per user, so two mails of one operation cannot both create a
       // movement. Taken before any insert, so the order of `seq` is the order of the chain.
-      await lockUser(tx, scope.userId, 4202)
+      await lockUserExclusive(tx, scope.userId, 4202)
 
       const existing = await tx
         .select({ movementId: movementSource.movementId, type: movement.type })
@@ -258,7 +258,7 @@ export async function seedAccounts(scope: Scope, seeds: readonly AccountSeed[]):
  */
 export async function reprojectMovements(scope: Scope): Promise<number> {
   const { tx, userId } = scope
-  await lockUser(tx, userId, 4202)
+  await lockUserExclusive(tx, userId, 4202)
   const rows = await tx
     .select({ id: movement.id, type: movement.type, seq: movement.lastEventSeq })
     .from(movement)

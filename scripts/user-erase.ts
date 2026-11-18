@@ -6,6 +6,10 @@
  * ending their sessions, belongs to the auth side (warren_auth).
  *   pnpm user:erase --user <id> --confirm
  * Connects as warren_eraser (DATABASE_URL_ERASER), which can do nothing else.
+ *
+ * Safe to run again: for a user already erased it only sweeps their files. Do that if the first
+ * run failed after the commit, or to catch a file an intake in flight stored after the sweep
+ * (that intake deletes its own file when it finds the user erased, but only best effort).
  */
 import { eraseUser } from '@warren/db'
 import { rawStore } from '../apps/web/lib/raw-store'

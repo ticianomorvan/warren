@@ -72,6 +72,7 @@ describe('mail log', () => {
           verdict: 'rejected',
           reason: 'date-skew',
           fromAddress: 'avisos@bbva.com.ar',
+          senderId: 'bbva-transfers',
           detail: '900 min',
         },
         1,
@@ -168,6 +169,80 @@ describe('mail log', () => {
     await expect(
       log((l) => l.recordMail({ ...mail('c', 'em_9'), mailId: 'XYZ' })),
     ).rejects.toThrow()
+  })
+})
+
+describe('the From address of a rejected mail', () => {
+  const stored = async (c: string) =>
+    (
+      await t.pg.query<{ from_address: string | null; detail: Uint8Array | null }>(
+        'select from_address, detail from mail_verdict where mail_id = $1',
+        [sha(c)],
+      )
+    ).rows[0]
+
+  it('is not kept in clear when the sender is nobody on the allow-list', async () => {
+    // A person who forwards a bank mail by hand: the From is their own address.
+    await log((l) => l.recordMail(mail('e', 'em_e')))
+    await log((l) =>
+      l.recordVerdict(
+        sha('e'),
+        { verdict: 'rejected', reason: 'unknown-sender', fromAddress: 'ticiano@gmail.example' },
+        1,
+      ),
+    )
+    const row = await stored('e')
+    expect(row?.from_address).toBeNull()
+    // Nowhere in the rows, in clear: only sealed, and it opens for the user.
+    const all = await t.pg.query('select * from mail_verdict where mail_id = $1', [sha('e')])
+    expect(JSON.stringify(all.rows)).not.toContain('gmail')
+    expect(Buffer.from(row?.detail ?? []).includes(Buffer.from('gmail'))).toBe(false)
+    const shown = (await as((scope) => recentMail(scope))).find((r) => r.mailId === sha('e'))
+    expect(shown).toMatchObject({ reason: 'unknown-sender', fromAddress: null })
+    expect(shown?.detail).toBe('ticiano@gmail.example')
+  })
+
+  it('is not kept in clear for an invalid From either, and leaves no detail without one', async () => {
+    await log((l) => l.recordMail(mail('f', 'em_f')))
+    await log((l) =>
+      l.recordVerdict(
+        sha('f'),
+        { verdict: 'rejected', reason: 'from-invalid', fromAddress: null },
+        1,
+      ),
+    )
+    expect(await stored('f')).toEqual({ from_address: null, detail: null })
+  })
+
+  it("is kept in clear once the sender matched: it is the bank's address", async () => {
+    await log((l) => l.recordMail(mail('1', 'em_g')))
+    await log((l) =>
+      l.recordVerdict(
+        sha('1'),
+        {
+          verdict: 'rejected',
+          reason: 'signature-failed',
+          fromAddress: 'avisos@bbva.com.ar',
+          senderId: 'bbva-transfers',
+        },
+        1,
+      ),
+    )
+    expect(await stored('1')).toEqual({ from_address: 'avisos@bbva.com.ar', detail: null })
+    await log((l) => l.recordMail(mail('2', 'em_h')))
+    await log((l) =>
+      l.recordVerdict(
+        sha('2'),
+        {
+          verdict: 'retry',
+          reason: 'dns-temperror',
+          fromAddress: 'avisos@bbva.com.ar',
+          senderId: 'bbva-transfers',
+        },
+        1,
+      ),
+    )
+    expect((await stored('2'))?.from_address).toBe('avisos@bbva.com.ar')
   })
 })
 

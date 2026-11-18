@@ -1,7 +1,7 @@
-import type { Attempt, AttemptRecord, NoticeMovement, Outbox } from '@warren/core'
+import type { AttemptRecord, NoticeMovement, OpenNotice, Outbox } from '@warren/core'
 import { asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
-import { lockUser, type Scope } from './client'
+import type { Scope } from './client'
 import { account, movement, notice, noticeAttempt, noticeStatus } from './schema'
 
 /** A notice older than this is no longer worth sending. */
@@ -15,10 +15,7 @@ const attemptAad = (noticeId: number, column: 'body' | 'detail') =>
 export function createOutbox(scope: Scope): Outbox {
   const { tx } = scope
   return {
-    async drain(handle) {
-      // One drain at a time per user; a second caller waits and then sees what the first sent.
-      await lockUser(tx, scope.userId, 4203)
-
+    async owed() {
       const own = alias(account, 'own')
       const counter = alias(account, 'counter')
       const open = await tx
@@ -61,44 +58,42 @@ export function createOutbox(scope: Scope): Outbox {
         history.set(attempt.noticeId, list)
       }
 
-      const made: Attempt[] = []
-      for (const n of open) {
+      return open.map((n): OpenNotice => {
         const m = n.movement
-        const view: NoticeMovement = {
-          type: m.type as NoticeMovement['type'],
-          direction: m.direction as NoticeMovement['direction'],
-          amount: m.amount,
-          currency: m.currency,
-          date: m.date,
-          time: m.time,
-          accountName: n.own,
-          counterAccountName: n.counter,
-          counterpartyName: m.counterpartyName,
-        }
-        const attempt = await handle({
+        return {
           noticeId: n.noticeId,
-          movement: view,
+          movement: {
+            type: m.type as NoticeMovement['type'],
+            direction: m.direction as NoticeMovement['direction'],
+            amount: m.amount,
+            currency: m.currency,
+            date: m.date,
+            time: m.time,
+            accountName: n.own,
+            counterAccountName: n.counter,
+            counterpartyName: m.counterpartyName,
+          },
           history: history.get(n.noticeId) ?? [],
-        })
-        if (!attempt) continue
-        await tx.insert(noticeAttempt).values({
-          noticeId: n.noticeId,
-          mode: attempt.mode,
-          outcome: attempt.outcome,
-          body: scope.seal(attempt.body, attemptAad(n.noticeId, 'body')),
-          ...(attempt.outcome === 'sent'
-            ? { wamid: attempt.wamid }
-            : {
-                errorCode: attempt.errorCode,
-                retryable: attempt.retryable,
-                detail: attempt.detail
-                  ? scope.seal(attempt.detail, attemptAad(n.noticeId, 'detail'))
-                  : null,
-              }),
-        })
-        made.push(attempt)
-      }
-      return made
+        }
+      })
+    },
+
+    async recordAttempt(noticeId, attempt) {
+      await tx.insert(noticeAttempt).values({
+        noticeId,
+        mode: attempt.mode,
+        outcome: attempt.outcome,
+        body: scope.seal(attempt.body, attemptAad(noticeId, 'body')),
+        ...(attempt.outcome === 'sent'
+          ? { wamid: attempt.wamid }
+          : {
+              errorCode: attempt.errorCode,
+              retryable: attempt.retryable,
+              detail: attempt.detail
+                ? scope.seal(attempt.detail, attemptAad(noticeId, 'detail'))
+                : null,
+            }),
+      })
     },
 
     async recordStatus(status) {

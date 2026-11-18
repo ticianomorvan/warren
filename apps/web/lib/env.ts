@@ -1,4 +1,4 @@
-import { type MasterKeys, masterKeysFromEnv } from '@warren/core'
+import { canonicalUserId, type MasterKeys, masterKeysFromEnv } from '@warren/core'
 
 function required(name: string): string {
   const value = process.env[name]
@@ -22,8 +22,15 @@ export const env = {
     const apiKey = process.env.KAPSO_API_KEY
     const phoneNumberId = process.env.KAPSO_PHONE_NUMBER_ID
     const to = process.env.WARREN_OWNER_WHATSAPP?.replace(/\D/g, '')
-    const userId = process.env.WARREN_KAPSO_USER_ID
-    if (!apiKey || !phoneNumberId || !to || !userId) return null
+    const configured = process.env.WARREN_KAPSO_USER_ID?.trim()
+    if (!apiKey || !phoneNumberId || !to || !configured) return null
+    // Compared with ids Postgres prints, so one spelling: lower case.
+    let userId: string
+    try {
+      userId = canonicalUserId(configured)
+    } catch {
+      throw new Error('WARREN_KAPSO_USER_ID must be a uuid')
+    }
     const name = process.env.KAPSO_NOTICE_TEMPLATE
     const language = process.env.KAPSO_NOTICE_TEMPLATE_LANGUAGE ?? 'es_AR'
     return { apiKey, phoneNumberId, to, userId, template: name ? { name, language } : undefined }

@@ -1,8 +1,10 @@
 import {
+  canonicalUserId,
   type MasterKeys,
   newDataKey,
   type Sealer,
   sealerFor,
+  UserErasedError,
   unwrapDataKey,
   wrapDataKey,
 } from '@warren/core'
@@ -11,6 +13,9 @@ import { drizzle } from 'drizzle-orm/node-postgres'
 import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core'
 import { Pool } from 'pg'
 import * as schema from './schema'
+
+/** The user-id spelling and the erased-user error live in core, so intake can use them too. */
+export { canonicalUserId, UserErasedError }
 
 /** Driver-independent handle: node-postgres in production, PGlite in tests. Never exported. */
 export type Db = PgDatabase<PgQueryResultHKT, typeof schema>
@@ -60,18 +65,6 @@ function internalsOf(database: Database): Internals {
   return found
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/**
- * The one spelling of a user id: lower case, as Postgres prints a uuid. The id is also the
- * associated data of the wrapped key and the seed of the chain, so every entry point (here,
- * `eraseUser`, `verifyChain`, the operator scripts) goes through this, never a raw string.
- */
-export function canonicalUserId(id: string): string {
-  if (!UUID.test(id)) throw new Error('user id must be a uuid')
-  return id.toLowerCase()
-}
-
 /**
  * A transaction as one user, without that user's key. Sets `app.user_id` with a bound
  * parameter and `is_local = true`: it lasts until this transaction ends and is gone before the
@@ -102,13 +95,6 @@ export async function inSystemContext<T>(
     if (role) await tx.execute(sql`select set_config('role', ${role}, true)`)
     return fn(tx)
   })
-}
-
-export class UserErasedError extends Error {
-  constructor() {
-    super('user was erased')
-    this.name = 'UserErasedError'
-  }
 }
 
 /**
@@ -193,7 +179,7 @@ export async function asUser<T>(
   const userId = canonicalUserId(id)
   const { masters } = internalsOf(database)
   return inUserContext(database, userId, async (tx) => {
-    await lockUser(tx, userId, ERASURE_LOCK, 'shared')
+    await lockUserShared(tx, userId, ERASURE_LOCK)
     const dataKey = await dataKeyFor(tx, userId, masters)
     return fn(scopeOf(tx, userId, sealerFor(userId, dataKey)))
   })
@@ -204,20 +190,20 @@ export async function provisionUser(database: Database, userId: string): Promise
   await asUser(database, userId, async () => {})
 }
 
-/**
+/*
  * One advisory lock per user and purpose, held until the transaction ends. `userId` must be
  * canonical (it is hashed as text). Shared locks do not block each other, only an exclusive one.
  */
-export async function lockUser(
-  tx: Tx,
-  userId: string,
-  purpose: number,
-  mode: 'exclusive' | 'shared' = 'exclusive',
-): Promise<void> {
+
+/** Waits for every holder of the lock, shared or exclusive, and blocks everyone until commit. */
+export async function lockUserExclusive(tx: Tx, userId: string, purpose: number): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${userId}::text, ${purpose}))`)
+}
+
+/** Waits only for an exclusive holder; any number of shared holders run together. */
+export async function lockUserShared(tx: Tx, userId: string, purpose: number): Promise<void> {
   await tx.execute(
-    mode === 'shared'
-      ? sql`select pg_advisory_xact_lock_shared(hashtextextended(${userId}::text, ${purpose}))`
-      : sql`select pg_advisory_xact_lock(hashtextextended(${userId}::text, ${purpose}))`,
+    sql`select pg_advisory_xact_lock_shared(hashtextextended(${userId}::text, ${purpose}))`,
   )
 }
 
