@@ -32,6 +32,9 @@ export const t = {
     testGone: 'Este dispositivo ya no recibe avisos. Desactivalos y activalos de nuevo.',
     testFailed: 'No pudimos mandar el aviso de prueba. Probá de nuevo en un momento.',
     enableFailed: 'No pudimos activar los avisos. Probá de nuevo en un momento.',
+    limit: 'Ya activaste los avisos en 10 dispositivos. Desactivalos en alguno para activar este.',
+    slowDown: 'Probaste muchas veces seguidas. Esperá unos minutos y probá de nuevo.',
+    misconfigured: 'Los avisos tienen un problema de configuración en este servidor.',
     disableFailed: 'No pudimos desactivar los avisos. Probá de nuevo en un momento.',
   },
   movements: {

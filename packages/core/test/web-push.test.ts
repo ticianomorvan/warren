@@ -1,9 +1,11 @@
 import { createECDH, createPublicKey, createVerify } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
+  assertVapidPair,
   decryptPayload,
   encryptPayload,
   generateVapidKeys,
+  isPushHost,
   MAX_PLAINTEXT,
   type PushPayload,
   parseSubscription,
@@ -170,13 +172,57 @@ describe('RFC 8292 VAPID', () => {
   })
 })
 
+describe('VAPID self-check', () => {
+  it('accepts a pair and refuses a mismatch or a malformed key, without echoing key material', () => {
+    const a = generateVapidKeys()
+    const b = generateVapidKeys()
+    expect(() => assertVapidPair(a)).not.toThrow()
+    const mismatch = () => assertVapidPair({ publicKey: a.publicKey, privateKey: b.privateKey })
+    expect(mismatch).toThrow('does not match')
+    expect(mismatch).not.toThrow(b.privateKey)
+    expect(() => assertVapidPair({ publicKey: 'AAAA', privateKey: a.privateKey })).toThrow(
+      'does not match',
+    )
+    expect(() =>
+      webPushSender({ publicKey: a.publicKey, privateKey: b.privateKey, subject: 'mailto:a@b.c' }),
+    ).toThrow()
+  })
+})
+
+describe('push hosts', () => {
+  it.each([
+    'fcm.googleapis.com',
+    'fcm.googleapis.com.',
+    'FCM.googleapis.com',
+    'updates.push.services.mozilla.com',
+    'autopush.prod.mozaws.net.push.services.mozilla.com',
+    'web.push.apple.com',
+    'sg2p.notify.windows.com',
+    'db5p.wns.windows.com',
+  ])('accepts %s', (host) => expect(isPushHost(host)).toBe(true))
+
+  it.each([
+    'localhost.',
+    'localhost',
+    '127.0.0.1',
+    '127.0.0.1.nip.io',
+    'metadata.google.internal',
+    'foo.local',
+    'evil.example',
+    'fcm.googleapis.com.evil.example',
+    'evilfcm.googleapis.com',
+    'push.apple.com.evil.example',
+    'notify.windows.com',
+  ])('refuses %s', (host) => expect(isPushHost(host)).toBe(false))
+})
+
 describe('webPushSender', () => {
   const vapid = generateVapidKeys()
   const receiver = createECDH('prime256v1')
   receiver.generateKeys()
   const auth = Buffer.alloc(16, 9)
   const subscription = {
-    endpoint: 'https://updates.push.example/wpush/v2/abc123',
+    endpoint: 'https://updates.push.services.mozilla.com/wpush/v2/abc123',
     p256dh: toB64u(receiver.getPublicKey()),
     auth: toB64u(auth),
   }
@@ -211,7 +257,7 @@ describe('webPushSender', () => {
     const match = /^vapid t=([\w-]+\.[\w-]+\.[\w-]+), k=([\w-]+)$/.exec(headers.Authorization ?? '')
     expect(match?.[2]).toBe(vapid.publicKey)
     const claims = JSON.parse(Buffer.from(match?.[1]?.split('.')[1] ?? '', 'base64url').toString())
-    expect(claims.aud).toBe('https://updates.push.example')
+    expect(claims.aud).toBe('https://updates.push.services.mozilla.com')
     expect(claims.sub).toBe('mailto:ops@example.invalid')
     const text = decryptPayload(call?.init.body as Uint8Array, {
       privateKey: receiver.getPrivateKey(),
@@ -237,6 +283,41 @@ describe('webPushSender', () => {
     expect(await webPushSender({ ...config, fetchFn }).send(subscription, payload)).toEqual(
       expected,
     )
+  })
+
+  it('never follows a redirect: a 307 is a final failure, and the request says so', async () => {
+    const { calls, fetchFn } = answering(307)
+    const sender = webPushSender({ ...config, fetchFn })
+    expect(await sender.send(subscription, payload)).toEqual({
+      outcome: 'failed',
+      retryable: false,
+      status: 307,
+    })
+    expect(calls[0]?.init.redirect).toBe('manual')
+  })
+
+  it('leaves 403 a final failure, not gone', async () => {
+    const { fetchFn } = answering(403)
+    expect(await webPushSender({ ...config, fetchFn }).send(subscription, payload)).toEqual({
+      outcome: 'failed',
+      retryable: false,
+      status: 403,
+    })
+  })
+
+  it.each([
+    'https://localhost/x',
+    'https://127.0.0.1.nip.io/x',
+    'https://metadata.google.internal/x',
+    'http://fcm.googleapis.com/x',
+  ])('does not call %s: not a push service', async (endpoint) => {
+    const { calls, fetchFn } = answering(201)
+    const result = await webPushSender({ ...config, fetchFn }).send(
+      { ...subscription, endpoint },
+      payload,
+    )
+    expect(result).toEqual({ outcome: 'failed', retryable: false, status: null })
+    expect(calls).toHaveLength(0)
   })
 
   it('treats a network error as temporary and a malformed subscription as final', async () => {
@@ -267,6 +348,15 @@ describe('parseSubscription', () => {
   }
   const ok = { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', keys }
 
+  it.each([
+    'https://fcm.googleapis.com/fcm/send/dX1abc:APA91b',
+    'https://updates.push.services.mozilla.com/wpush/v2/gAAAAABk',
+    'https://web.push.apple.com/QGxyz',
+    'https://wns2-par02p.notify.windows.com/w/?token=abc',
+  ])('accepts a real-shaped endpoint %s', (endpoint) => {
+    expect(parseSubscription({ ...ok, endpoint })?.endpoint).toBe(endpoint)
+  })
+
   it('reads what a browser sends', () => {
     expect(parseSubscription(ok)).toEqual({ endpoint: ok.endpoint, ...keys })
     // `expirationTime` and other fields are ignored.
@@ -279,6 +369,11 @@ describe('parseSubscription', () => {
     ['credentials', { ...ok, endpoint: 'https://user:pw@fcm.googleapis.com/x' }],
     ['a port', { ...ok, endpoint: 'https://fcm.googleapis.com:8443/x' }],
     ['an ip address', { ...ok, endpoint: 'https://169.254.169.254/latest' }],
+    ['a lookalike host', { ...ok, endpoint: 'https://fcm.googleapis.com.evil.example/x' }],
+    ['nip.io', { ...ok, endpoint: 'https://127.0.0.1.nip.io/x' }],
+    ['an internal name', { ...ok, endpoint: 'https://metadata.google.internal/x' }],
+    ['localhost with a dot', { ...ok, endpoint: 'https://localhost./x' }],
+    ['an unknown host', { ...ok, endpoint: 'https://evil.example/x' }],
     ['an ipv6 address', { ...ok, endpoint: 'https://[::1]/x' }],
     ['localhost', { ...ok, endpoint: 'https://localhost/x' }],
     ['a single-label host', { ...ok, endpoint: 'https://internal/x' }],

@@ -1,11 +1,12 @@
 import { type BankOperation, flushNotices, memoryPushSender, sendTestPush } from '@warren/core'
 import { sql } from 'drizzle-orm'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { allowAction } from '../src/auth'
 import { asUser, type Scope } from '../src/client'
 import { createLedger, listMovements, seedAccounts } from '../src/ledger'
 import { createMailLog } from '../src/mail-log'
 import { createOutbox, recentNotices } from '../src/outbox'
-import { createPushStore } from '../src/push'
+import { createPushStore, MAX_SUBSCRIPTIONS } from '../src/push'
 import { sha, testDatabase } from './helpers'
 
 let t: Awaited<ReturnType<typeof testDatabase>>
@@ -70,8 +71,8 @@ beforeAll(async () => {
 
 describe('push subscriptions', () => {
   it('adds one, once per browser, and opens it again', async () => {
-    expect(await as((s) => createPushStore(s).add(phone))).toBe(true)
-    expect(await as((s) => createPushStore(s).add(phone))).toBe(false)
+    expect(await as((s) => createPushStore(s).add(phone))).toBe('added')
+    expect(await as((s) => createPushStore(s).add(phone))).toBe('exists')
     expect(await as((s) => createPushStore(s).count())).toBe(1)
     expect(await as((s) => createPushStore(s).has(phone.endpoint))).toBe(true)
     expect(await as((s) => createPushStore(s).has(laptop.endpoint))).toBe(false)
@@ -121,6 +122,26 @@ describe('push subscriptions', () => {
     expect(update).toMatch(/permission denied/)
     expect(await as((s) => createPushStore(s).remove(laptop.endpoint))).toBe(true)
     expect(await as((s) => createPushStore(s).remove(laptop.endpoint))).toBe(false)
+  })
+})
+
+describe('subscription limits', () => {
+  it('replaces a browser stored with other keys, and refuses the eleventh', async () => {
+    const rekeyed = { ...phone, auth: 'AAAAAAAAAAAAAAAAAAAAAA' }
+    expect(await as((s) => createPushStore(s).add(rekeyed))).toBe('added')
+    expect(await as((s) => createPushStore(s).count())).toBe(1)
+    const [stored] = await as((s) => createPushStore(s).list())
+    expect(stored?.subscription.auth).toBe(rekeyed.auth)
+    for (let i = 1; i < MAX_SUBSCRIPTIONS; i++) {
+      const more = { ...phone, endpoint: `https://fcm.example.invalid/${i}` }
+      expect(await as((s) => createPushStore(s).add(more))).toBe('added')
+    }
+    const eleventh = { ...phone, endpoint: 'https://fcm.example.invalid/eleventh' }
+    expect(await as((s) => createPushStore(s).add(eleventh))).toBe('limit')
+    // The browser already stored is not "another": it is replaced, not refused.
+    expect(await as((s) => createPushStore(s).add(phone))).toBe('added')
+    await t.pg.query('delete from push_subscription where user_id = $1', [user])
+    await as((s) => createPushStore(s).add(phone))
   })
 })
 
@@ -260,5 +281,19 @@ describe('listMovements', () => {
     const page = await as((s) => listMovements(s, "x'; drop table movement; --", 3))
     expect(page.items).toHaveLength(3)
     expect((await asUser(t.app, other, (s) => listMovements(s, null))).items).toEqual([])
+  })
+})
+
+describe('allowAction', () => {
+  it('allows `max` calls per window, per key, and starts a new window after it', async () => {
+    const hit = (key: string, now: number) => allowAction(t.auth, key, 3, 600_000, now)
+    const t0 = 1_800_000_000_000
+    expect(await hit('push-test:a', t0)).toBe(true)
+    expect(await hit('push-test:a', t0 + 1)).toBe(true)
+    expect(await hit('push-test:a', t0 + 2)).toBe(true)
+    expect(await hit('push-test:a', t0 + 3)).toBe(false)
+    expect(await hit('push-test:a', t0 + 599_999)).toBe(false)
+    expect(await hit('push-test:b', t0 + 4)).toBe(true)
+    expect(await hit('push-test:a', t0 + 600_001)).toBe(true)
   })
 })

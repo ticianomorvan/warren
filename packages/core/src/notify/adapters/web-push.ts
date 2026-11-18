@@ -3,12 +3,20 @@ import {
   createDecipheriv,
   createECDH,
   createPrivateKey,
+  createPublicKey,
   createSign,
+  createVerify,
   generateKeyPairSync,
   hkdfSync,
   randomBytes,
 } from 'node:crypto'
-import type { PushPayload, PushResult, PushSender, PushSubscription } from '../push'
+import {
+  isPushEndpoint,
+  type PushPayload,
+  type PushResult,
+  type PushSender,
+  type PushSubscription,
+} from '../push'
 
 /*
  * Web Push written with node:crypto: RFC 8030 (the POST), RFC 8291 (aes128gcm message
@@ -173,6 +181,40 @@ export function vapidJwt(
   return `${header}.${body}.${b64u(signature)}`
 }
 
+/**
+ * Signs a token with the private key and checks it with the public one, so a pair that does
+ * not belong together fails here, once, instead of as a 403 on every push. Never puts key
+ * material in the message.
+ */
+export function assertVapidPair(keys: VapidKeys): void {
+  let ok = false
+  try {
+    const point = fromB64u(keys.publicKey)
+    const jwt = vapidJwt(keys, {
+      audience: 'https://check.invalid',
+      subject: 'mailto:a@b.c',
+      now: new Date(),
+    })
+    const [header, body, signature] = jwt.split('.') as [string, string, string]
+    const publicKey = createPublicKey({
+      format: 'jwk',
+      key: {
+        kty: 'EC',
+        crv: 'P-256',
+        x: b64u(point.subarray(1, 33)),
+        y: b64u(point.subarray(33)),
+      },
+    })
+    ok = createVerify('SHA256')
+      .update(`${header}.${body}`)
+      .verify({ key: publicKey, dsaEncoding: 'ieee-p1363' }, fromB64u(signature))
+  } catch {
+    ok = false
+  }
+  if (!ok)
+    throw new Error('VAPID_PRIVATE_KEY does not match VAPID_PUBLIC_KEY (or one is malformed)')
+}
+
 export type WebPushConfig = VapidKeys & {
   /** A `mailto:` or `https:` contact for the push service operator (VAPID `sub`). */
   subject: string
@@ -185,12 +227,15 @@ const TTL_SECONDS = 24 * 3600
 
 /** Sends through the browser vendor's push service. Never throws, and logs nothing. */
 export function webPushSender(config: WebPushConfig): PushSender {
+  assertVapidPair(config)
   const fetchFn = config.fetchFn ?? fetch
   const clock = config.clock ?? (() => new Date())
   return {
     async send(subscription: PushSubscription, payload: PushPayload): Promise<PushResult> {
       let request: { url: string; init: RequestInit }
       try {
+        // Again, though storing a subscription checked it: the last line before the network.
+        if (!isPushEndpoint(subscription.endpoint)) throw new Error('not a push service')
         const jwt = vapidJwt(config, {
           audience: new URL(subscription.endpoint).origin,
           subject: config.subject,
@@ -213,6 +258,9 @@ export function webPushSender(config: WebPushConfig): PushSender {
               Authorization: `vapid t=${jwt}, k=${config.publicKey}`,
             },
             body: new Uint8Array(body),
+            // A redirect is never followed (a 307 would replay the POST somewhere else). It
+            // comes back as a 3xx answer and is a final failure.
+            redirect: 'manual',
             signal: AbortSignal.timeout(10_000),
           },
         }
@@ -231,6 +279,8 @@ export function webPushSender(config: WebPushConfig): PushSender {
       await res.body?.cancel().catch(() => {})
       if (res.ok) return { outcome: 'sent' }
       if (res.status === 404 || res.status === 410) return { outcome: 'gone', status: res.status }
+      // 403 (FCM: the subscription was made with another VAPID key) stays a final failure and
+      // is not `gone`: a wrong key on our side would otherwise delete every subscription.
       return {
         outcome: 'failed',
         retryable: res.status === 429 || res.status >= 500,

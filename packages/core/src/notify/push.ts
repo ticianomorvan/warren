@@ -18,11 +18,43 @@ export type PushSubscription = {
 const B64URL = /^[A-Za-z0-9_-]+$/
 
 /**
+ * The push services browsers use. The server POSTs to whatever endpoint a person hands it, so
+ * only these hosts are accepted, never a heuristic about what looks internal: a name can point
+ * anywhere (`127.0.0.1.nip.io`), and a new vendor is one line here. Checked when a subscription
+ * is stored and again before every send.
+ */
+const PUSH_HOST_SUFFIXES = [
+  '.push.services.mozilla.com', // Firefox: updates.push.services.mozilla.com
+  '.push.apple.com', // Safari: web.push.apple.com
+  '.notify.windows.com', // Edge, through WNS
+  '.wns.windows.com',
+]
+
+export function isPushHost(hostname: string): boolean {
+  // One trailing dot is the same name (`fcm.googleapis.com.`); two is not a name.
+  const host = hostname.toLowerCase().replace(/\.$/, '')
+  return host === 'fcm.googleapis.com' || PUSH_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))
+}
+
+/**
+ * Whether an endpoint is one the server may POST to: https on the default port, no
+ * credentials, and a host on the push-service allow-list.
+ */
+export function isPushEndpoint(endpoint: string): boolean {
+  let url: URL
+  try {
+    url = new URL(endpoint)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) return false
+  return isPushHost(url.hostname)
+}
+
+/**
  * Reads a subscription a browser sent (`PushSubscription.toJSON()`), or null when it is not
- * one worth storing. The server will POST to this URL, so it must look like a push service
- * and not like something inside a network: https, no credentials, the default port, and a
- * host name (not an address, not `localhost`). The keys must have the shape of a P-256 point
- * and a 16-byte secret.
+ * one worth storing: an endpoint on a push service (`isPushEndpoint`), and keys with the shape
+ * of a P-256 point and a 16-byte secret.
  */
 export function parseSubscription(input: unknown): PushSubscription | null {
   if (typeof input !== 'object' || input === null) return null
@@ -32,22 +64,11 @@ export function parseSubscription(input: unknown): PushSubscription | null {
   if (typeof endpoint !== 'string' || endpoint.length > 2048) return null
   if (typeof p256dh !== 'string' || !B64URL.test(p256dh)) return null
   if (typeof auth !== 'string' || !B64URL.test(auth)) return null
-  if (Buffer.from(p256dh, 'base64url').length !== 65 || Buffer.from(p256dh, 'base64url')[0] !== 4) {
-    return null
-  }
+  const point = Buffer.from(p256dh, 'base64url')
+  if (point.length !== 65 || point[0] !== 4) return null
   if (Buffer.from(auth, 'base64url').length !== 16) return null
-  let url: URL
-  try {
-    url = new URL(endpoint)
-  } catch {
-    return null
-  }
-  const host = url.hostname
-  const isAddress = /^[\d.]+$/.test(host) || host.includes(':')
-  const local = host === 'localhost' || host.endsWith('.localhost') || !host.includes('.')
-  if (url.protocol !== 'https:' || url.username || url.password || url.port) return null
-  if (isAddress || local) return null
-  return { endpoint: url.href, p256dh, auth }
+  if (!isPushEndpoint(endpoint)) return null
+  return { endpoint: new URL(endpoint).href, p256dh, auth }
 }
 
 /** What the service worker shows. `tag` makes a repeat replace the earlier notification. */

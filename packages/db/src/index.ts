@@ -1,5 +1,6 @@
 export {
   type AuthErasure,
+  allowAction,
   authSchema,
   createAuthDatabase,
   type SetPasswordResult,
@@ -41,6 +42,6 @@ export {
   verifiedMailOf,
 } from './mail-log'
 export { createOutbox, type NoticeRow, recentNotices } from './outbox'
-export { createPushStore } from './push'
+export { createPushStore, MAX_SUBSCRIPTIONS } from './push'
 export * as schema from './schema'
 export * as system from './system'

@@ -4,6 +4,10 @@
  * mail). `tag` makes a repeated notice replace the earlier one.
  */
 
+// A new worker takes over at once, so a fixed sw.js does not wait for every tab to close.
+self.addEventListener('install', () => self.skipWaiting())
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()))
+
 self.addEventListener('push', (event) => {
   let data = {}
   try {
@@ -19,6 +23,7 @@ self.addEventListener('push', (event) => {
       body: text(data.body) || '',
       tag: text(data.tag),
       icon: '/icons/icon-192.png',
+      badge: '/icons/badge-96.png',
       data: { url: text(data.url) || '/movements' },
     }),
   )
@@ -34,9 +39,13 @@ self.addEventListener('notificationclick', (event) => {
       const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
       const open = windows.find((w) => new URL(w.url).origin === self.location.origin)
       if (open) {
-        await open.focus()
-        if ('navigate' in open) await open.navigate(target.href)
-        return
+        try {
+          await open.focus()
+          await open.navigate(target.href)
+          return
+        } catch {
+          // navigate() refuses for a window the worker does not control: open a new one.
+        }
       }
       await self.clients.openWindow(target.href)
     })(),

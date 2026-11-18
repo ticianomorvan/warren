@@ -124,3 +124,32 @@ export async function userIdentity(
     return row && !row.erasedAt ? { name: row.name, email: row.email } : null
   })
 }
+
+/**
+ * A fixed-window limit on one action, kept in `rate_limit` (the table Better Auth's limiter
+ * uses; run as `warren_auth`). True while the key has made at most `max` calls in the last
+ * `windowMs`; every call counts, allowed or not. The key must not be a user id: that table
+ * holds none and erasure does not look in it, so callers pass a hash.
+ */
+export async function allowAction(
+  auth: Database,
+  key: string,
+  max: number,
+  windowMs: number,
+  now: number = Date.now(),
+): Promise<boolean> {
+  const rows = await inSystemContext(auth, (tx) =>
+    tx
+      .insert(rateLimit)
+      .values({ key, count: 1, lastRequest: now })
+      .onConflictDoUpdate({
+        target: rateLimit.key,
+        set: {
+          count: sql`case when ${rateLimit.lastRequest} <= ${now - windowMs} then 1 else ${rateLimit.count} + 1 end`,
+          lastRequest: sql`case when ${rateLimit.lastRequest} <= ${now - windowMs} then ${now} else ${rateLimit.lastRequest} end`,
+        },
+      })
+      .returning({ count: rateLimit.count }),
+  )
+  return (rows[0]?.count ?? max + 1) <= max
+}

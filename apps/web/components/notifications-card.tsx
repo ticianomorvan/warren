@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useId, useState } from 'react'
-import { subscribePush, testPush, unsubscribePush } from '@/app/notifications/actions'
+import { hasPush, subscribePush, testPush, unsubscribePush } from '@/app/notifications/actions'
 import { t } from '@/lib/strings'
 
 type Status = 'checking' | 'unsupported' | 'blocked' | 'off' | 'on'
@@ -28,7 +28,14 @@ const supported = () =>
  * this browser is already subscribed, its subscription is sent again quietly: the server may
  * have dropped it, and sending an existing one changes nothing.
  */
-export function NotificationsCard({ publicKey }: { publicKey: string | null }) {
+export function NotificationsCard({
+  publicKey,
+  broken = false,
+}: {
+  publicKey: string | null
+  /** The server's push settings are wrong: say so instead of offering a button that cannot work. */
+  broken?: boolean
+}) {
   const [status, setStatus] = useState<Status>('checking')
   const [busy, setBusy] = useState<Busy>(null)
   const [message, setMessage] = useState<{ text: string; failed: boolean } | null>(null)
@@ -41,9 +48,15 @@ export function NotificationsCard({ publicKey }: { publicKey: string | null }) {
       const registration = await navigator.serviceWorker.register('/sw.js')
       await navigator.serviceWorker.ready
       const subscription = await registration.pushManager.getSubscription()
-      if (subscription && Notification.permission === 'granted') {
+      // "On" only when the server holds this browser's subscription for the signed-in person.
+      // A browser subscribed under another account (a shared device) reads "off": tapping
+      // Activar is what attaches it to this one, never a page load.
+      if (
+        subscription &&
+        Notification.permission === 'granted' &&
+        (await hasPush(subscription.endpoint))
+      ) {
         setStatus('on')
-        void subscribePush(subscription.toJSON())
       } else {
         setStatus('off')
       }
@@ -76,7 +89,11 @@ export function NotificationsCard({ publicKey }: { publicKey: string | null }) {
       if (!result.ok) {
         // Not stored on the server: do not leave the browser thinking it is subscribed.
         await subscription.unsubscribe()
-        throw new Error('not stored')
+        setMessage({
+          text: result.reason === 'limit' ? t.notifications.limit : t.notifications.enableFailed,
+          failed: true,
+        })
+        return
       }
       setStatus('on')
     } catch {
@@ -123,11 +140,13 @@ export function NotificationsCard({ publicKey }: { publicKey: string | null }) {
     }
   }
 
-  const copy = !publicKey
-    ? t.notifications.unconfigured
-    : status === 'checking'
-      ? t.notifications.checking
-      : t.notifications[status]
+  const copy = broken
+    ? t.notifications.misconfigured
+    : !publicKey
+      ? t.notifications.unconfigured
+      : status === 'checking'
+        ? t.notifications.checking
+        : t.notifications[status]
 
   return (
     <section aria-labelledby="notifications" data-testid="notifications" data-status={status}>
