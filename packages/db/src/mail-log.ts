@@ -271,3 +271,31 @@ export async function mailCounts(scope: Scope): Promise<MailCounts> {
     .leftJoin(parse, eq(parse.mailId, inboundMail.mailId))
   return rows[0] ?? { mails: 0, verified: 0, rejected: 0, parsed: 0 }
 }
+
+/** A user's verified mail of one sender, oldest first, with the signed subject opened. */
+export async function verifiedMailOf(scope: Scope, senderId: string): Promise<PendingParse[]> {
+  const rows = await scope.tx
+    .select({
+      mailId: mailVerdict.mailId,
+      pathname: blobFile.pathname,
+      subject: mailVerdict.subject,
+      signedDate: mailVerdict.signedDate,
+    })
+    .from(mailVerdict)
+    .innerJoin(blobFile, eq(blobFile.mailId, mailVerdict.mailId))
+    .where(and(eq(mailVerdict.verdict, 'verified'), eq(mailVerdict.senderId, senderId)))
+    .orderBy(mailVerdict.id)
+  return rows.flatMap((r) =>
+    r.signedDate
+      ? [
+          {
+            mailId: r.mailId,
+            pathname: r.pathname,
+            senderId,
+            subject: r.subject ? text(scope, r.subject, verdictAad(r.mailId, 'subject')) : '',
+            signedDate: r.signedDate,
+          },
+        ]
+      : [],
+  )
+}
