@@ -134,8 +134,10 @@ Each slice names its research file and a proof that can fail. Read the file befo
    a mail's identity is an HMAC under that key; the chain hashes the ciphertext, so erasing a
    user (a dedicated `warren_eraser` role deletes their key, their clear-text rows and files, under
    a lock that makes it wait for work in flight) leaves
-   every chain verifying. Better Auth's four tables belong to their own role, `warren_auth`,
-   and `warren_app` has no grant on them.
+   every chain verifying. Better Auth's tables (and its database-backed rate limiter) belong to
+   their own role, `warren_auth`, and `warren_app` has no grant on them; erasing a user also has
+   `warren_auth` delete their sessions and credentials and scrub the email and name of the
+   `user` row, which stays.
    Step 2, sign-in: Better Auth (email and password), sign-up, sign-in and sign-out pages, and
    a signed-in home that shows the user's movement count.
    Proof, step 1: a tenancy test as the app role reads zero of user A's rows as user B on every

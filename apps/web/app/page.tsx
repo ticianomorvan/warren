@@ -1,4 +1,4 @@
-import { asUser, movementCount, UserErasedError } from '@warren/db'
+import { asUser, movementCount } from '@warren/db'
 import { redirect } from 'next/navigation'
 import { SignOutButton } from '@/components/sign-out-button'
 import { database } from '@/lib/db'
@@ -12,24 +12,9 @@ export default async function Home() {
   const session = await getSession()
   if (!session) redirect('/sign-in')
 
-  // Through asUser, so row-level security shows only this user's movements.
-  const count = await asUser(database(), session.user.id, movementCount).catch((error) => {
-    if (error instanceof UserErasedError) return null
-    throw error
-  })
-  // An erased user keeps a session until they leave. Sending them to /sign-in would loop (the
-  // proxy sends a signed-in person back), so say so and offer the way out.
-  if (count === null) {
-    return (
-      <main className="screen">
-        <div className="card">
-          <p className="brand">{t.appName}</p>
-          <h1>{t.home.erased}</h1>
-          <SignOutButton />
-        </div>
-      </main>
-    )
-  }
+  // Through asUser, so row-level security shows only this user's movements. An erased user has
+  // no session (erasure deletes them, and none can be made), so this never meets one.
+  const count = await asUser(database(), session.user.id, movementCount)
 
   return (
     <main className="screen">

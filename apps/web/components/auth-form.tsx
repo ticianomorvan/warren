@@ -4,33 +4,11 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { type FormEvent, useId, useState } from 'react'
 import { authClient } from '@/lib/auth-client'
+import { type Mode, messageFor } from '@/lib/auth-errors'
 import { t } from '@/lib/strings'
 
-// Mirrors PASSWORD_MIN_LENGTH in @warren/core; the server is what enforces it.
-const MIN_PASSWORD = 10
-
-type Mode = 'sign-in' | 'sign-up'
-
-function messageFor(error: {
-  code?: string | undefined
-  message?: string | undefined
-  status?: number | undefined
-}): string {
-  if (error.status === 403 || error.message === 'signup_closed') return t.errors.signupClosed
-  switch (error.code) {
-    case 'INVALID_EMAIL_OR_PASSWORD':
-      return t.errors.invalidCredentials
-    case 'USER_ALREADY_EXISTS':
-    case 'USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL':
-      return t.errors.exists
-    case 'PASSWORD_TOO_SHORT':
-      return t.errors.passwordLength(MIN_PASSWORD)
-    default:
-      return t.errors.generic
-  }
-}
-
-export function AuthForm({ mode }: { mode: Mode }) {
+/** `minPassword` is the server's own rule, passed down from @warren/core so there is one. */
+export function AuthForm({ mode, minPassword }: { mode: Mode; minPassword: number }) {
   const router = useRouter()
   const copy = mode === 'sign-in' ? t.signIn : t.signUp
   const [pending, setPending] = useState(false)
@@ -56,7 +34,7 @@ export function AuthForm({ mode }: { mode: Mode }) {
               password,
             })
       if (failed) {
-        setError(messageFor(failed))
+        setError(messageFor(mode, failed, minPassword))
         setPending(false)
         return
       }
@@ -100,11 +78,11 @@ export function AuthForm({ mode }: { mode: Mode }) {
               name="password"
               type="password"
               autoComplete={mode === 'sign-in' ? 'current-password' : 'new-password'}
-              minLength={mode === 'sign-up' ? MIN_PASSWORD : undefined}
+              minLength={mode === 'sign-up' ? minPassword : undefined}
               required
               aria-describedby={mode === 'sign-up' ? hintId : undefined}
             />
-            {mode === 'sign-up' && <small id={hintId}>{t.fields.passwordHint(MIN_PASSWORD)}</small>}
+            {mode === 'sign-up' && <small id={hintId}>{t.fields.passwordHint(minPassword)}</small>}
           </label>
           <p id={errorId} className="error" role="alert">
             {error}

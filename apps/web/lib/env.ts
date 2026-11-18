@@ -1,4 +1,5 @@
 import { canonicalUserId, type MasterKeys, masterKeysFromEnv } from '@warren/core'
+import { type AuthOrigins, authOrigins } from './auth-origin'
 
 function required(name: string): string {
   const value = process.env[name]
@@ -9,12 +10,15 @@ function required(name: string): string {
 /** Read lazily, so a build without secrets still succeeds. */
 export const env = {
   databaseUrl: () => required('DATABASE_URL'),
-  /** Better Auth connects as warren_auth: grants on the four auth tables and nothing else. */
+  /** Better Auth connects as warren_auth: grants on the auth tables and nothing else. */
   databaseUrlAuth: () => required('DATABASE_URL_AUTH'),
   /** Signs and encrypts what Better Auth stores in cookies: 32+ random characters. */
   authSecret: () => required('BETTER_AUTH_SECRET'),
-  /** The public origin of the app, e.g. https://warren.example. Decides the cookie names. */
-  authUrl: () => required('BETTER_AUTH_URL'),
+  /**
+   * The public origin of the app, e.g. https://warren.example (`BETTER_AUTH_URL`), or on a Vercel
+   * preview the deployment's own host. Decides the cookie names. See auth-origin.ts.
+   */
+  authOrigins: (): AuthOrigins => authOrigins(process.env),
   /** Who may sign up: emails separated by commas. Unset means nobody (see core/signup.ts). */
   signupEmails: () => process.env.WARREN_SIGNUP_EMAILS,
   resendApiKey: () => required('RESEND_API_KEY'),

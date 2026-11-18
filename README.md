@@ -62,7 +62,11 @@ subjects, notice texts) and raw mail are sealed with AES-256-GCM under a random 
 which is stored wrapped by `WARREN_MASTER_KEY`. Erasing a user (`pnpm user:erase`) destroys their
 key and deletes everything of theirs that is in clear (movements, sources, notices, mailboxes,
 account names and identifiers) and their files; their append-only rows stay as ciphertext
-nobody can open, and every chain still verifies. Each table is tagged once in
+nobody can open, and every chain still verifies. On the sign-in side (as `warren_auth`) it also
+deletes their sessions and credentials and scrubs the `user` row: it stays, because every
+`user_id` points at it, marked erased, with its email replaced by `erased+<id>@invalid` and its
+name and image cleared. An erased user cannot sign in, gets no session (a trigger refuses one
+even from a sign-in already in flight) and no new password. Each table is tagged once in
 `packages/db/src/tables.ts` (erased with the user, or kept with a reviewed list of columns), and
 tests compare the tags with the eraser's real grants, policies and triggers. Neon's history keeps the wrapped key for its history
 window. Better Auth's tables are reachable only by their own role, `warren_auth`.
@@ -74,12 +78,17 @@ checks the session against the database, not just the cookie. Pages: sign-up, si
 that shows the signed-in user's movement count through `asUser`; every string is in
 `apps/web/lib/strings.ts`. **Sign-up is closed to strangers** until slice 13: only emails in
 `WARREN_SIGNUP_EMAILS` (comma separated; unset means nobody) can create an account. The gate is
-a Better Auth database hook, so no route skips it. Because nothing is mailed yet, an allow-listed
+a Better Auth database hook, so no route skips it, and a request hook answers 403 before any
+lookup, so sign-up gives the same answer for an email that has an account and one that does not.
+Better Auth logs only warn and above (at info it prints the email of a repeated sign-up), and its
+rate limiter keeps its counters in the database (`rate_limit`), because per-instance memory counts
+nothing on Vercel: five tries a minute per client address on sign-in and on sign-up. Because nothing is mailed yet, an allow-listed
 address belongs to whoever signs up with it first: list an address when its owner is about to sign
 up, and take it off afterwards. A new user's data key is made at sign-up (and by `asUser` on first
 use otherwise). `pnpm user:set-password --user <id>` gives a user a password, or replaces it, for
 the user made by hand at the reset or anyone who forgot: it reads the password from stdin, never
-an argument.
+an argument, and needs no master key. On a Vercel preview the app's origin is the deployment's own
+host (`VERCEL_URL`) and the branch alias is trusted, so `BETTER_AUTH_URL` is for production.
 
 **Notices (legacy, removed in slice 3).** A movement first seen in a mail owes its user one notice,
 queued in the same transaction that creates the movement. The WhatsApp channel reaches one number,
@@ -119,7 +128,7 @@ pnpm mail:parse-pending --user <id>   # parse stored mail under the current temp
 pnpm mail:reingest --user <id> --from <archive url>   # replay an old database's raw mail into the new ledger
 pnpm mail:replay-unrouted [--dry-run]   # run mail that arrived before its mailbox existed through intake
 pnpm user:set-password --user <id>   # set or replace a password (read from stdin; connects as warren_auth)
-pnpm user:erase --user <id> --confirm   # destroy a user's key and derived data (as warren_eraser)
+pnpm user:erase --user <id> --confirm   # destroy a user's key and derived data, end their sign-in (warren_eraser + warren_auth)
 ```
 
 The scripts that read or write a user's data take `--user` and connect as `warren_app`

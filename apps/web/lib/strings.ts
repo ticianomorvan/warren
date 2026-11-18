@@ -1,15 +1,14 @@
 /** Every string the person sees, in one place. Spanish (Argentina). */
 export const t = {
   appName: 'Warren',
-  tagline: 'Tus movimientos, verificados.',
   home: {
     title: 'Tus movimientos',
     unit: (n: number) => (n === 1 ? 'movimiento registrado' : 'movimientos registrados'),
     empty: 'Todavía no hay movimientos.',
     hello: (name: string) => `Hola, ${name}`,
-    erased: 'Esta cuenta fue eliminada.',
     signOut: 'Salir',
     signingOut: 'Saliendo…',
+    signOutFailed: 'No pudimos cerrar la sesión. Probá de nuevo.',
   },
   signIn: {
     title: 'Entrar',
@@ -37,6 +36,7 @@ export const t = {
     signupClosed: 'El registro está cerrado por ahora.',
     exists: 'Ya hay una cuenta con ese email. Entrá con ella.',
     passwordLength: (min: number) => `La contraseña necesita al menos ${min} caracteres.`,
+    tooManyAttempts: 'Demasiados intentos. Esperá un minuto y probá de nuevo.',
     generic: 'No pudimos completar la acción. Probá de nuevo en un momento.',
   },
 } as const

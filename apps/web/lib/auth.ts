@@ -15,7 +15,7 @@ export function auth(): Auth {
   cached = createAuth({
     db: createAuthDatabase(pool),
     secret: env.authSecret(),
-    baseURL: env.authUrl(),
+    ...env.authOrigins(),
     signup: signupPolicy(env.signupEmails()),
     onUserCreated: (userId) => provisionUser(database(), userId),
   })

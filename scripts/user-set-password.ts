@@ -6,12 +6,13 @@
  *   pnpm user:set-password --user <id>                # asks, with no echo
  *   pass show warren | pnpm user:set-password --user <id>   # or pipe it in
  * It hashes with Better Auth's own hasher, stores only the hash through warren_auth
- * (DATABASE_URL_AUTH), and ends the user's open sessions.
+ * (DATABASE_URL_AUTH), and ends the user's open sessions. It needs no master key. An erased user
+ * gets no password.
  */
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from '@warren/core'
 import { setCredentialPassword } from '@warren/db'
-import { hashPassword } from '../apps/web/lib/password'
-import { connect, die, userArg } from './lib'
+import { hashPassword } from 'better-auth/crypto'
+import { connectKeyless, die, userArg } from './lib'
 
 const user = userArg()
 
@@ -52,8 +53,9 @@ const password = await readPassword()
 if (password.length < PASSWORD_MIN_LENGTH || password.length > PASSWORD_MAX_LENGTH) {
   die(`The password must be ${PASSWORD_MIN_LENGTH} to ${PASSWORD_MAX_LENGTH} characters.`)
 }
-const { pool, database } = connect('DATABASE_URL_AUTH')
-const found = await setCredentialPassword(database, user, await hashPassword(password))
+const { pool, database } = connectKeyless('DATABASE_URL_AUTH')
+const result = await setCredentialPassword(database, user, await hashPassword(password))
 await pool.end()
-if (!found) die('No user with that id.')
+if (result === 'no-user') die('No user with that id.')
+if (result === 'erased') die('That user was erased; they cannot have a password.')
 console.log('Password set. Open sessions of that user were ended.')
