@@ -5,12 +5,14 @@ import { asUser, type Database, inSystemContext, inUserContext, rowsOf } from '.
 import { createLedger, seedAccounts } from './ledger'
 import { createMailLog } from './mail-log'
 import { createOutbox } from './outbox'
+import { createPushStore } from './push'
 import { erasure, user } from './schema'
 import * as system from './system'
 import {
   AUTH_TABLES as AUTH,
   AUTH_ERASED_TABLES,
   AUTH_UNBOUND_TABLES,
+  DELETABLE_TABLES,
   ERASED_TABLES,
   EXEMPT_TABLES as EXEMPT,
   KEPT_TABLES,
@@ -33,6 +35,8 @@ export const AUTH_TABLES = tableNames(AUTH).slice() as readonly string[]
 export const EXEMPT_TABLES = tableNames(EXEMPT).slice() as readonly string[]
 /** The tenant tables `warren_app` may update: the rest are insert-only for it. */
 export const MUTABLE = tableNames(MUTABLE_TABLES).slice() as readonly string[]
+/** The tenant tables `warren_app` may delete from: settings. The rest are insert-only for it. */
+export const DELETABLE = tableNames(DELETABLE_TABLES).slice() as readonly string[]
 /** Keys that do not start with `user_id`, on purpose. Each needs a reason. */
 export const EXEMPT_KEYS: Record<string, string> = {
   // An address belongs to one person, and only the operator registers it.
@@ -100,13 +104,16 @@ export async function checkStructure(db: Database): Promise<Check[]> {
     ...(has(n, 'INSERT') ? [] : [`${n}:insert`]),
   ])
   for (const n of MUTABLE) if (names.includes(n) && !has(n, 'UPDATE')) lacking.push(`${n}:update`)
+  for (const n of DELETABLE) if (names.includes(n) && !has(n, 'DELETE')) lacking.push(`${n}:delete`)
   const extraUpdate = names.filter((n) => !MUTABLE.includes(n) && has(n, 'UPDATE'))
+  const extraDelete = names.filter((n) => !DELETABLE.includes(n) && has(n, 'DELETE'))
   out.push({
-    name: 'warren_app has select and insert policies on every user table, update only on the mutable ones',
-    ok: lacking.length === 0 && extraUpdate.length === 0,
+    name: 'warren_app has select and insert policies on every user table, update only on the mutable ones, delete only on the settings',
+    ok: lacking.length === 0 && extraUpdate.length === 0 && extraDelete.length === 0,
     detail: [
       ...lacking.map((l) => `missing ${l}`),
       ...extraUpdate.map((n) => `extra update on ${n}`),
+      ...extraDelete.map((n) => `extra delete on ${n}`),
     ].join(', '),
   })
 
@@ -154,11 +161,11 @@ export async function checkStructure(db: Database): Promise<Check[]> {
     (p) =>
       p.role === 'warren_app' &&
       p.yes &&
-      ((p.verb === 'delete' && !auth.has(p.table)) ||
+      ((p.verb === 'delete' && !auth.has(p.table) && !DELETABLE.includes(p.table)) ||
         (p.verb === 'update' && !auth.has(p.table) && !MUTABLE.includes(p.table))),
   )
   out.push({
-    name: 'grants: warren_app cannot touch auth tables or update/delete; warren_auth only auth tables',
+    name: 'grants: warren_app cannot touch auth tables, update beyond the mutable ones or delete beyond the settings; warren_auth only auth tables',
     ok: appOnAuth.length + authOnData.length + appMutates.length === 0,
     detail: [...appOnAuth, ...authOnData, ...appMutates]
       .map((p) => `${p.role} ${p.verb} ${p.table}`)
@@ -467,6 +474,13 @@ export async function seedFixtures(
       { mailId, templateId: 'bbva.transfer-sent', operation: sent },
       { notify: true },
     )
+    // A browser that may be pushed to. The endpoint is invented and never called.
+    await createPushStore(scope).add({
+      endpoint: `https://push.example.invalid/${tag}`,
+      p256dh:
+        'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4',
+      auth: 'BTBZMqHH6r4Tts7J_aSIgg',
+    })
     const outbox = createOutbox(scope)
     const [owed] = await outbox.owed()
     if (!owed) throw new Error('recording the movement made no notice')
@@ -581,6 +595,18 @@ export async function checkIsolation({ owner, app, a, b }: Isolation): Promise<C
     }
     return n
   })
+  // The one table the app may delete from: row-level security shows B none of A's rows.
+  const deletedSettings = await inUserContext(app, b, async (tx) => {
+    let n = 0
+    for (const table of DELETABLE) {
+      n += rowsOf<Row>(
+        await tx.execute(
+          sql`delete from ${sql.identifier(table)} where user_id = ${a}::uuid returning 1`,
+        ),
+      ).length
+    }
+    return n
+  })
   const deleteError = await inUserContext(app, b, async (tx) => {
     await tx.execute(sql`delete from event where user_id = ${a}::uuid`)
   }).then(
@@ -588,9 +614,13 @@ export async function checkIsolation({ owner, app, a, b }: Isolation): Promise<C
     (e: unknown) => String((e as { cause?: unknown }).cause ?? e),
   )
   out.push({
-    name: "a user cannot update another user's mutable rows or delete anyone's event",
-    ok: touched === 0 && deleteError !== null && /permission denied|append-only/.test(deleteError),
-    detail: `updated ${touched} rows; delete: ${deleteError ?? 'accepted'}`,
+    name: "a user cannot update another user's mutable rows, delete another user's settings or delete anyone's event",
+    ok:
+      touched === 0 &&
+      deletedSettings === 0 &&
+      deleteError !== null &&
+      /permission denied|append-only/.test(deleteError),
+    detail: `updated ${touched} rows; deleted ${deletedSettings} settings; delete: ${deleteError ?? 'accepted'}`,
   })
   return out
 }

@@ -47,5 +47,20 @@ export const env = {
     const language = process.env.KAPSO_NOTICE_TEMPLATE_LANGUAGE ?? 'es_AR'
     return { apiKey, phoneNumberId, to, userId, template: name ? { name, language } : undefined }
   },
+  /**
+   * Web Push (VAPID): `pnpm push:vapid-keys` makes the pair. The public key also goes to the
+   * browser, so a person can subscribe. Null while any of the three is missing: the app runs,
+   * and the notifications card says they are not set up.
+   */
+  vapid: () => {
+    const publicKey = process.env.VAPID_PUBLIC_KEY?.trim()
+    const privateKey = process.env.VAPID_PRIVATE_KEY?.trim()
+    const subject = process.env.VAPID_SUBJECT?.trim()
+    if (!publicKey || !privateKey || !subject) return null
+    if (!/^(mailto:|https:\/\/)/.test(subject)) {
+      throw new Error('VAPID_SUBJECT must be a mailto: or https: URL')
+    }
+    return { publicKey, privateKey, subject }
+  },
   kapsoWebhookSecret: () => required('KAPSO_WEBHOOK_SECRET'),
 }

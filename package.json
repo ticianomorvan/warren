@@ -27,6 +27,7 @@
     "mail:parse-pending": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/mail-parse-pending.ts",
     "ledger:accounts": "tsx --env-file-if-exists=apps/web/.env.local scripts/ledger-accounts.ts",
     "ledger:status": "tsx --env-file-if-exists=apps/web/.env.local scripts/ledger-status.ts",
+    "push:vapid-keys": "tsx scripts/push-vapid-keys.ts",
     "notice:status": "tsx --env-file-if-exists=apps/web/.env.local scripts/notice-status.ts"
   },
   "devDependencies": {

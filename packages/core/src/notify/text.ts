@@ -1,3 +1,5 @@
+import type { PushPayload } from './push'
+
 /** What a notice needs to know about a movement. Names come from the ledger, never a model. */
 export type NoticeMovement = {
   type: 'own_transfer' | 'unclassified' | 'card_purchase'
@@ -68,6 +70,12 @@ export function noticeLines(m: NoticeMovement): string[] {
 }
 
 export const noticeText = (m: NoticeMovement) => noticeLines(m).join('\n')
+
+/** What the service worker shows: the first line as the title, the rest as the body. */
+export function noticePushPayload(noticeId: number, m: NoticeMovement): PushPayload {
+  const [title = '', ...rest] = noticeLines(m)
+  return { title, body: rest.join('\n'), tag: `notice-${noticeId}`, url: '/movements' }
+}
 
 /** Template parameters cannot hold line breaks or runs of spaces. */
 export const noticeOneLine = (m: NoticeMovement) =>

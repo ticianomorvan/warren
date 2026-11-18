@@ -8,6 +8,7 @@ import {
 import { asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Scope } from './client'
+import { createPushStore } from './push'
 import { account, movement, notice, noticeAttempt, noticeStatus } from './schema'
 
 // Sealed: a notice attempt's text and the provider's detail. The scope adds the user.
@@ -57,6 +58,7 @@ export function createOutbox(scope: Scope): Outbox {
           errorCode: reported ? code : attempt.errorCode,
           // A failure WhatsApp reports after accepting the message is final for that mode.
           retryable: reported ? false : (attempt.retryable ?? false),
+          ...(attempt.subscriptionId ? { subscriptionId: attempt.subscriptionId } : {}),
         })
         history.set(attempt.noticeId, list)
       }
@@ -83,11 +85,30 @@ export function createOutbox(scope: Scope): Outbox {
     },
 
     async recordAttempt(noticeId, attempt) {
+      const body = scope.seal(attempt.body, attemptAad(noticeId, 'body'))
+      if (attempt.mode === 'push') {
+        // `gone` is a failure that will not repeat: the subscription is deleted with it.
+        const sent = attempt.outcome === 'sent'
+        await tx.insert(noticeAttempt).values({
+          noticeId,
+          mode: 'push',
+          outcome: sent ? 'sent' : 'failed',
+          body,
+          subscriptionId: attempt.subscriptionId,
+          ...(sent
+            ? {}
+            : {
+                retryable: attempt.outcome === 'failed' && attempt.retryable,
+                statusCode: attempt.status,
+              }),
+        })
+        return
+      }
       await tx.insert(noticeAttempt).values({
         noticeId,
         mode: attempt.mode,
         outcome: attempt.outcome,
-        body: scope.seal(attempt.body, attemptAad(noticeId, 'body')),
+        body,
         ...(attempt.outcome === 'sent'
           ? { wamid: attempt.wamid }
           : {
@@ -99,6 +120,9 @@ export function createOutbox(scope: Scope): Outbox {
             }),
       })
     },
+
+    subscriptions: () => createPushStore(scope).list(),
+    dropSubscription: (id) => createPushStore(scope).drop(id),
 
     async recordStatus(status) {
       const known = await tx
@@ -151,7 +175,11 @@ export async function recentNotices(scope: Scope, limit = 20): Promise<NoticeRow
       attempts: attempts.length,
       lastMode: last?.mode ?? null,
       lastOutcome: last?.outcome ?? null,
-      lastDetail: last ? (detail ?? (last.errorCode ? `code ${last.errorCode}` : null)) : null,
+      lastDetail: last
+        ? (detail ??
+          (last.errorCode ? `code ${last.errorCode}` : null) ??
+          (last.statusCode ? `http ${last.statusCode}` : null))
+        : null,
       delivery: statuses.map((s) => s.status).join(' → ') || null,
     })
   }

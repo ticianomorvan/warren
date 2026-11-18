@@ -80,6 +80,15 @@ export function mailId(dataKey: Uint8Array, raw: Uint8Array): string {
   return createHmac('sha256', subkey(dataKey, 'mail-id')).update(raw).digest('hex')
 }
 
+/**
+ * A push endpoint's identity inside one user's subscriptions: HMAC-SHA256 under a subkey, like
+ * `mailId`. It makes "this endpoint is already subscribed" a lookup that never decrypts, and
+ * means nothing without the key. The endpoint itself is a bearer URL and is stored sealed.
+ */
+export function endpointKey(dataKey: Uint8Array, endpoint: string): string {
+  return createHmac('sha256', subkey(dataKey, 'push-endpoint')).update(endpoint).digest('hex')
+}
+
 /** The master keys that wrap users' data keys. Old versions stay readable while rotating. */
 export type MasterKeys = { current: number; keys: ReadonlyMap<number, Buffer> }
 
@@ -140,6 +149,7 @@ export interface Sealer {
   seal(plaintext: Uint8Array, aad: string): Buffer
   open(sealed: Uint8Array, aad: string): Buffer
   mailId(raw: Uint8Array): string
+  endpointKey(endpoint: string): string
 }
 
 export function sealerFor(userId: string, dataKey: Uint8Array): Sealer {
@@ -147,5 +157,6 @@ export function sealerFor(userId: string, dataKey: Uint8Array): Sealer {
     seal: (plaintext, aad) => seal(dataKey, plaintext, `${userId}:${aad}`),
     open: (sealed, aad) => open(dataKey, sealed, `${userId}:${aad}`),
     mailId: (raw) => mailId(dataKey, raw),
+    endpointKey: (endpoint) => endpointKey(dataKey, endpoint),
   }
 }

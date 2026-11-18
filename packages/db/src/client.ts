@@ -124,6 +124,7 @@ export type Scope = {
     open<T>(sealed: Uint8Array, aad: string): T
   }
   mailId(raw: Uint8Array): string
+  endpointKey(endpoint: string): string
 }
 
 function scopeOf(tx: Tx, userId: string, sealer: Sealer): Scope {
@@ -141,6 +142,7 @@ function scopeOf(tx: Tx, userId: string, sealer: Sealer): Scope {
         JSON.parse(open(sealed, aad).toString('utf8')) as T,
     },
     mailId: sealer.mailId,
+    endpointKey: sealer.endpointKey,
   }
 }
 

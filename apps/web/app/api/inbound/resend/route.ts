@@ -1,4 +1,5 @@
 import { errorTag, handleResendWebhook } from '@warren/core'
+import { after } from 'next/server'
 import { resendWebhookDeps } from '@/lib/intake'
 import { sendOwedNotices } from '@/lib/notify'
 
@@ -18,9 +19,11 @@ export async function POST(request: Request): Promise<Response> {
       timestamp: request.headers.get('svix-timestamp'),
       signature: request.headers.get('svix-signature'),
     })
-    // Also on a redelivery, so a notice that could not go out earlier gets another try.
+    // Also on a redelivery, so a notice that could not go out earlier gets another try. After
+    // the response: Resend is answered at once, and the function stays alive until the pushes
+    // are sent (maxDuration above). `sendOwedNotices` never throws.
     const userId = result.body.userId
-    if (result.status === 200 && typeof userId === 'string') await sendOwedNotices(userId)
+    if (result.status === 200 && typeof userId === 'string') after(() => sendOwedNotices(userId))
     return Response.json(result.body, { status: result.status })
   } catch (error) {
     // Logged without mail content. A 500 makes Resend retry later.

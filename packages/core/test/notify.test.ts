@@ -9,14 +9,19 @@ import {
   handleKapsoWebhook,
   type KapsoWebhookDeps,
   kapsoSender,
+  memoryPushSender,
   type NoticeMovement,
   noticeOneLine,
   noticeText,
   type OpenNotice,
   type Outbox,
+  type PushResult,
   parseKapsoStatuses,
   planAttempt,
+  planPush,
   type SendResult,
+  type StoredSubscription,
+  sendTestPush,
   verifyKapsoWebhook,
   type WhatsAppSender,
   WINDOW_CLOSED,
@@ -235,8 +240,18 @@ class MemoryOutbox implements Outbox {
   attempts: Attempt[] = []
   statuses: DeliveryStatus[] = []
   constructor(readonly movement: NoticeMovement) {}
+  subs: StoredSubscription[] = []
   private history(): AttemptRecord[] {
-    return this.attempts.map((a) => {
+    return this.attempts.map((a): AttemptRecord => {
+      if (a.mode === 'push') {
+        return {
+          mode: 'push',
+          failed: a.outcome !== 'sent',
+          errorCode: null,
+          retryable: a.outcome === 'failed' && a.retryable,
+          subscriptionId: a.subscriptionId,
+        }
+      }
       const report =
         a.outcome === 'sent'
           ? this.statuses.find((s) => s.wamid === a.wamid && s.status === 'failed')
@@ -269,7 +284,13 @@ class MemoryOutbox implements Outbox {
     this.attempts.push(attempt)
   }
   knows(wamid: string) {
-    return this.attempts.some((a) => a.outcome === 'sent' && a.wamid === wamid)
+    return this.attempts.some((a) => a.mode !== 'push' && a.outcome === 'sent' && a.wamid === wamid)
+  }
+  async subscriptions() {
+    return this.subs
+  }
+  async dropSubscription(id: string) {
+    this.subs = this.subs.filter((s) => s.id !== id)
   }
   async recordStatus(status: DeliveryStatus) {
     const known = this.knows(status.wamid)
@@ -303,8 +324,8 @@ describe('flushNotices', () => {
   it('sends a notice once', async () => {
     const outbox = new MemoryOutbox(sent)
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }])
-    expect(await flushNotices(outbox.within, sender)).toHaveLength(1)
-    expect(await flushNotices(outbox.within, sender)).toHaveLength(0)
+    expect(await flushNotices(outbox.within, { whatsapp: sender })).toHaveLength(1)
+    expect(await flushNotices(outbox.within, { whatsapp: sender })).toHaveLength(0)
     expect(outbox.attempts[0]).toMatchObject({ mode: 'text', body: noticeText(sent) })
   })
 
@@ -317,7 +338,7 @@ describe('flushNotices', () => {
         return { outcome: 'sent', wamid: 'wamid.A' }
       },
     }
-    await flushNotices(outbox.within, sender)
+    await flushNotices(outbox.within, { whatsapp: sender })
     expect(during).toEqual([false])
     expect(outbox.attempts).toHaveLength(1)
   })
@@ -326,8 +347,8 @@ describe('flushNotices', () => {
     const outbox = new MemoryOutbox(sent)
     const down: SendResult = { outcome: 'failed', errorCode: null, retryable: true, detail: 'x' }
     const sender = scriptedSender([down], [])
-    expect(await flushNotices(outbox.within, sender)).toHaveLength(1)
-    expect(await flushNotices(outbox.within, sender)).toHaveLength(1)
+    expect(await flushNotices(outbox.within, { whatsapp: sender })).toHaveLength(1)
+    expect(await flushNotices(outbox.within, { whatsapp: sender })).toHaveLength(1)
     expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
       'text:failed',
       'text:sent',
@@ -343,13 +364,13 @@ describe('flushNotices', () => {
       detail: 'http-422',
     }
     const sender = scriptedSender([closed], [])
-    await flushNotices(outbox.within, sender)
+    await flushNotices(outbox.within, { whatsapp: sender })
     expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
       'text:failed',
       'template:sent',
     ])
     expect(outbox.attempts[1]?.body).toBe(noticeOneLine(sent))
-    await flushNotices(outbox.within, sender)
+    await flushNotices(outbox.within, { whatsapp: sender })
     expect(outbox.attempts).toHaveLength(2)
   })
 
@@ -363,8 +384,8 @@ describe('flushNotices', () => {
     }
     const busy: SendResult = { outcome: 'failed', errorCode: null, retryable: true, detail: 'x' }
     const sender = scriptedSender([closed], [busy])
-    expect(await flushNotices(outbox.within, sender)).toHaveLength(2)
-    expect(await flushNotices(outbox.within, sender)).toHaveLength(1)
+    expect(await flushNotices(outbox.within, { whatsapp: sender })).toHaveLength(2)
+    expect(await flushNotices(outbox.within, { whatsapp: sender })).toHaveLength(1)
     expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
       'text:failed',
       'template:failed',
@@ -392,7 +413,7 @@ describe('flushNotices', () => {
       template: { name: 'movement_notice', language: 'es_AR' },
       fetchFn,
     })
-    await flushNotices(outbox.within, sender)
+    await flushNotices(outbox.within, { whatsapp: sender })
     expect(bodies).toEqual(['text', 'template'])
     expect(outbox.attempts.map((a) => `${a.mode}:${a.outcome}`)).toEqual([
       'text:failed',
@@ -403,7 +424,7 @@ describe('flushNotices', () => {
   it('sends the template after WhatsApp reports the text as failed', async () => {
     const outbox = new MemoryOutbox(sent)
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }], [])
-    await flushNotices(outbox.within, sender)
+    await flushNotices(outbox.within, { whatsapp: sender })
     const deps = { ...tenancyOf(outbox), sender, senderUserId: 'u1', webhookSecret: SECRET }
     const bad = await handleKapsoWebhook(deps, failedEvent, {
       signature: 'bad',
@@ -421,7 +442,7 @@ describe('flushNotices', () => {
   it("records another user's failure but does not resend through the owner's WhatsApp", async () => {
     const outbox = new MemoryOutbox(sent)
     const sender = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }], [])
-    await flushNotices(outbox.within, sender)
+    await flushNotices(outbox.within, { whatsapp: sender })
     const result = await handleKapsoWebhook(
       { ...tenancyOf(outbox, 'u2'), sender, senderUserId: 'u1', webhookSecret: SECRET },
       failedEvent,
@@ -476,5 +497,163 @@ describe('card purchase notice', () => {
     expect(noticeOneLine(purchase)).toBe(
       'Compra con tarjeta …1234 · $ 1.234,56 en COMERCIO DE EJEMPLO SRL · Visa · 14/11',
     )
+  })
+})
+
+const sub = (id: string): StoredSubscription => ({
+  id,
+  subscription: { endpoint: `https://push.example/${id}`, p256dh: 'k', auth: 'a' },
+})
+const pushed = (outcome: PushResult['outcome'], extra: Partial<AttemptRecord> = {}) => ({
+  mode: 'push' as const,
+  failed: outcome !== 'sent',
+  errorCode: null,
+  retryable: false,
+  subscriptionId: 's1',
+  ...extra,
+})
+
+describe('planPush', () => {
+  it('sends to a subscription with no attempt while nobody has the notice', () => {
+    expect(planPush([], 's1')).toBe('send')
+  })
+  it('is done for a subscription once it has a sent attempt', () => {
+    expect(planPush([pushed('sent')], 's1')).toBe('skip')
+  })
+  it('does not replay a delivered notice on a device added later', () => {
+    expect(planPush([pushed('sent')], 's2')).toBe('skip')
+    expect(planPush([pushed('failed', { retryable: true })], 's2')).toBe('send')
+  })
+  it('retries a temporary failure, and stops on a final one or after four attempts', () => {
+    const temporary = pushed('failed', { retryable: true })
+    expect(planPush([temporary], 's1')).toBe('send')
+    expect(planPush([pushed('failed')], 's1')).toBe('skip')
+    expect(planPush([temporary, temporary, temporary, temporary], 's1')).toBe('skip')
+  })
+  it('is not moved by WhatsApp attempts, nor moves them', () => {
+    const text = { mode: 'text' as const, failed: false, errorCode: null, retryable: false }
+    expect(planPush([text], 's1')).toBe('send')
+    expect(planAttempt([pushed('sent')], false)).toBe('text')
+  })
+})
+
+describe('flushNotices over push', () => {
+  const run = (outbox: MemoryOutbox, push: ReturnType<typeof memoryPushSender>) =>
+    flushNotices(outbox.within, { push })
+
+  it('pushes the notice to every subscription, with the notice as the message', async () => {
+    const outbox = new MemoryOutbox(sent)
+    outbox.subs = [sub('s1'), sub('s2')]
+    const push = memoryPushSender()
+    expect(await run(outbox, push)).toHaveLength(2)
+    expect(push.sent.map((s) => s.subscription.endpoint)).toEqual([
+      'https://push.example/s1',
+      'https://push.example/s2',
+    ])
+    expect(push.sent[0]?.payload).toEqual({
+      title: 'Transferencia enviada',
+      body: '$ 1.500,00 a Juana Ejemplo\nBank ARS · 14/11 14:09',
+      tag: 'notice-1',
+      url: '/movements',
+    })
+    expect(outbox.attempts[0]).toMatchObject({
+      mode: 'push',
+      outcome: 'sent',
+      subscriptionId: 's1',
+      body: noticeText(sent),
+    })
+  })
+
+  it('is done after the first sent attempt: a second run sends nothing', async () => {
+    const outbox = new MemoryOutbox(sent)
+    outbox.subs = [sub('s1')]
+    const push = memoryPushSender()
+    await run(outbox, push)
+    expect(await run(outbox, push)).toHaveLength(0)
+    expect(push.sent).toHaveLength(1)
+  })
+
+  it('leaves the notice owed with no subscription, and delivers it once there is one', async () => {
+    const outbox = new MemoryOutbox(sent)
+    const push = memoryPushSender()
+    expect(await run(outbox, push)).toHaveLength(0)
+    expect(outbox.attempts).toHaveLength(0)
+    outbox.subs = [sub('s1')]
+    expect(await run(outbox, push)).toHaveLength(1)
+  })
+
+  it('deletes a subscription the push service calls gone, and records the attempt', async () => {
+    const outbox = new MemoryOutbox(sent)
+    outbox.subs = [sub('s1'), sub('s2')]
+    const push = memoryPushSender((s) =>
+      s.endpoint.endsWith('s1') ? { outcome: 'gone', status: 410 } : { outcome: 'sent' },
+    )
+    await run(outbox, push)
+    expect(outbox.subs.map((s) => s.id)).toEqual(['s2'])
+    expect(outbox.attempts[0]).toMatchObject({ outcome: 'gone', status: 410, subscriptionId: 's1' })
+    await run(outbox, push)
+    expect(push.sent).toHaveLength(2)
+  })
+
+  it('retries a temporary failure on the next run, up to four attempts per subscription', async () => {
+    const outbox = new MemoryOutbox(sent)
+    outbox.subs = [sub('s1')]
+    const down = memoryPushSender(() => ({ outcome: 'failed', retryable: true, status: 503 }))
+    for (let i = 0; i < 6; i++) await run(outbox, down)
+    expect(down.sent).toHaveLength(4)
+    outbox.attempts.length = 1
+    await run(outbox, memoryPushSender())
+    expect(outbox.attempts.at(-1)).toMatchObject({ outcome: 'sent' })
+  })
+
+  it('does not retry a final failure', async () => {
+    const outbox = new MemoryOutbox(sent)
+    outbox.subs = [sub('s1')]
+    const refused = memoryPushSender(() => ({ outcome: 'failed', retryable: false, status: 400 }))
+    await run(outbox, refused)
+    await run(outbox, refused)
+    expect(refused.sent).toHaveLength(1)
+  })
+
+  it('sends outside any transaction', async () => {
+    const outbox = new MemoryOutbox(sent)
+    outbox.subs = [sub('s1')]
+    const during: boolean[] = []
+    const push = memoryPushSender(() => {
+      during.push(outbox.inTx)
+      return { outcome: 'sent' }
+    })
+    await run(outbox, push)
+    expect(during).toEqual([false])
+  })
+
+  it('works beside WhatsApp, each channel planned on its own', async () => {
+    const outbox = new MemoryOutbox(sent)
+    outbox.subs = [sub('s1')]
+    const whatsapp = scriptedSender([{ outcome: 'sent', wamid: 'wamid.A' }])
+    await flushNotices(outbox.within, { whatsapp, push: memoryPushSender() })
+    expect(outbox.attempts.map((a) => a.mode)).toEqual(['text', 'push'])
+  })
+})
+
+describe('sendTestPush', () => {
+  const payload = { title: 'Warren', body: 'Prueba', tag: 'test', url: '/movements' }
+  it('pushes to every subscription, counts the outcomes and drops the gone ones', async () => {
+    const outbox = new MemoryOutbox(sent)
+    outbox.subs = [sub('s1'), sub('s2'), sub('s3')]
+    const push = memoryPushSender((s) =>
+      s.endpoint.endsWith('s1')
+        ? { outcome: 'gone', status: 404 }
+        : s.endpoint.endsWith('s2')
+          ? { outcome: 'failed', retryable: true, status: 500 }
+          : { outcome: 'sent' },
+    )
+    expect(await sendTestPush(outbox.within, push, payload)).toEqual({
+      sent: 1,
+      gone: 1,
+      failed: 1,
+    })
+    expect(outbox.subs.map((s) => s.id)).toEqual(['s2', 's3'])
+    expect(outbox.attempts).toHaveLength(0)
   })
 })
