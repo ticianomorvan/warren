@@ -12,6 +12,7 @@ import {
   CUIT,
   cardPurchaseHtml,
   cardValueRow,
+  debinCreditHtml,
   htmlMessage,
   transferNoticeHtml,
   transferSentHtml,
@@ -239,5 +240,33 @@ describe('templateKind', () => {
     expect(templateKind('nope')).toBeNull()
     expect(templateKind(null)).toBeNull()
     for (const template of TEMPLATES) expect(templateKind(template.id)).toBe(template.kind)
+  })
+})
+
+describe('bbva.debin-credited', () => {
+  const DEBIN = 'Mensajes y Avisos por e-mail - AVISO DEBIN ACREDITADO'
+  it('reads the credit and names no counterparty', async () => {
+    expect(await parse(DEBIN, debinCreditHtml())).toEqual({
+      status: 'parsed',
+      templateId: 'bbva.debin-credited',
+      templateVersion: 1,
+      operation: {
+        kind: 'transfer_in',
+        amount: '9.99',
+        currency: 'USD',
+        date: '2026-11-14',
+        time: null,
+        ownAccount: 'CA-USD ***123/4',
+        counterparty: { name: null, account: null, taxId: null },
+        reference: null,
+        reason: null,
+      },
+    })
+  })
+  it('fails by field name on a bad amount', async () => {
+    expect(await parse(DEBIN, debinCreditHtml({ amount: 'USD 9,9' }))).toMatchObject({
+      status: 'unparsed',
+      reason: 'schema-fail:amount',
+    })
   })
 })

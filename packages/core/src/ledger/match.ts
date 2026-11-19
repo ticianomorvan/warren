@@ -1,4 +1,8 @@
-import type { BankOperation, TransferOperation } from '../mail/parse'
+import {
+  type BankOperation,
+  isOwnCounterpartyTemplate,
+  type TransferOperation,
+} from '../mail/parse'
 
 /** One mail's account of an operation, as stored with the movement it belongs to. */
 export type MovementSource = { mailId: string; templateId: string; operation: BankOperation }
@@ -36,6 +40,14 @@ const isTransfer = (o: BankOperation): o is TransferOperation => o.kind !== 'car
  *    movement's counter account, or its counter account is the movement's own. The two banks'
  *    clocks differ, so times are not compared. Two such movements make the mail ambiguous, and
  *    it joins neither.
+ *    The same goes for two mails that name no account at all, one of which is of a template that
+ *    says its other side is an own account (`counterpartyIsOwn`): see `ownPair`. They join when
+ *    the pairing is unique from both sides, counting every movement, of any template.
+ *
+ * Accepted limits of the own-account pair: it keys on currency, amount and date alone, so an
+ * unrelated credit of the same figures on a known account, arriving first, can take the
+ * withdrawal; and it only sees movements recorded so far, so the outcome can depend on the order
+ * mails arrive in (a pair joined before a rival existed stays joined).
  */
 export function matchMovement(
   incoming: { templateId: string; operation: BankOperation; accounts?: Accounts | undefined },
@@ -72,45 +84,89 @@ export function matchMovement(
   }
   const mine = incoming.accounts
   if (!mine) return null
-  const legs = open.filter((c) => {
+  const unnamed = (ops: readonly BankOperation[]) =>
+    ops.every((o) => isTransfer(o) && namesNoCounterparty(o))
+  const figures = (o: BankOperation) =>
+    isTransfer(o) && o.currency === op.currency && o.amount === op.amount && o.date === op.date
+  const sideOf = (c: Candidate): Side => ({
+    templateIds: c.sources.map((s) => s.templateId),
+    ops: c.sources.map((s) => s.operation),
+    accounts: c.accounts,
+  })
+  const me: Side = { templateIds: [incoming.templateId], ops: [op], accounts: mine }
+  const mirrorsMe = (c: Candidate) => {
     const theirs = c.accounts
     if (!theirs) return false
-    const ops = c.sources.map((s) => s.operation)
-    const mirrors =
-      (mine.own !== null && mine.own === theirs.counter) ||
-      (mine.counter !== null && mine.counter === theirs.own)
     return (
-      mirrors &&
-      (namesNoCounterparty(op) || ops.every((o) => isTransfer(o) && namesNoCounterparty(o))) &&
+      ((mine.own !== null && mine.own === theirs.counter) ||
+        (mine.counter !== null && mine.counter === theirs.own)) &&
+      (namesNoCounterparty(op) || unnamed(c.sources.map((s) => s.operation))) &&
       same(mine.own, theirs.counter) &&
-      same(mine.counter, theirs.own) &&
-      ops.every(
-        (o) =>
-          isTransfer(o) &&
-          o.kind !== op.kind &&
-          o.currency === op.currency &&
-          o.amount === op.amount &&
-          o.date === op.date,
-      )
+      same(mine.counter, theirs.own)
     )
-  })
-  return legs.length === 1 ? (legs[0]?.movementId ?? null) : null
+  }
+  const legs = open.filter(
+    (c) =>
+      c.sources.every((s) => isTransfer(s.operation) && s.operation.kind !== op.kind) &&
+      c.sources.every((s) => figures(s.operation)) &&
+      (mirrorsMe(c) || ownPair(me, sideOf(c))),
+  )
+  const found = legs.length === 1 ? legs[0] : undefined
+  if (!found) return null
+  if (mirrorsMe(found)) return found.movementId
+  // An own-account pair must be unique from the other side too: if another movement, of any
+  // template, could pair with the movement found, the pair is ambiguous.
+  const peer = sideOf(found)
+  const rival = candidates.some((p) => p !== found && ownPair(peer, sideOf(p)))
+  return rival ? null : found.movementId
+}
+
+type Side = { templateIds: string[]; ops: BankOperation[]; accounts: Accounts | undefined }
+
+/**
+ * Two movements (or a mail and a movement) that are the two legs of one transfer between the
+ * owner's own accounts, though neither names the other account: they are of opposite directions
+ * with the same currency, amount and date, name no counterparty account, sit on different known
+ * accounts, and one is of a template that says its other side is an own account.
+ */
+function ownPair(a: Side, b: Side): boolean {
+  const [x, y] = [a.ops[0], b.ops[0]]
+  if (!a.accounts?.own || !b.accounts?.own || a.accounts.own === b.accounts.own) return false
+  if (!x || !y || !isTransfer(x) || !isTransfer(y) || x.kind === y.kind) return false
+  const all = [...a.ops, ...b.ops]
+  return (
+    all.every((o) => isTransfer(o) && namesNoCounterparty(o)) &&
+    a.ops.every((o) => o.kind === x.kind) &&
+    b.ops.every((o) => o.kind === y.kind) &&
+    all.every(
+      (o) =>
+        isTransfer(o) &&
+        [o.currency, o.amount, o.date].join() === [x.currency, x.amount, x.date].join(),
+    ) &&
+    [...a.templateIds, ...b.templateIds].some(isOwnCounterpartyTemplate)
+  )
 }
 
 /**
  * A movement's facts: for each field, the first source that states it, among the sources that
- * carry the movement. Those are the sources that name a counterparty account (a bank's), or all
- * of them when none does; a source of the other direction is the other bank's view of the same
- * money, and adds nothing but its place in the movement. A purchase has exactly one source, so
+ * carry the movement. Those are the sources that name a counterparty account (a bank's), else one
+ * of a template that says its other side is an own account, else the first. A source of the
+ * other direction is the other bank's view of the same money, and adds nothing but its place in
+ * the movement. A purchase has exactly one source, so
  * it is returned as it is.
  */
 export function mergeSources(sources: readonly MovementSource[]): BankOperation {
   const first = sources[0]?.operation
   if (!first) throw new Error('a movement needs at least one source')
   if (first.kind === 'card_purchase') return first
-  const all = sources.flatMap((s) => (isTransfer(s.operation) ? [s.operation] : []))
-  const lead = all.find((o) => o.counterparty.account !== null) ?? first
-  const transfers = all.filter((o) => o.kind === lead.kind)
+  const all = sources.flatMap((s) =>
+    isTransfer(s.operation) ? [{ templateId: s.templateId, op: s.operation }] : [],
+  )
+  const lead =
+    all.find((s) => s.op.counterparty.account !== null)?.op ??
+    all.find((s) => isOwnCounterpartyTemplate(s.templateId))?.op ??
+    first
+  const transfers = all.map((s) => s.op).filter((o) => o.kind === lead.kind)
   const pick = <T>(read: (o: TransferOperation) => T | null): T | null => {
     for (const o of transfers) {
       const v = read(o)

@@ -2,7 +2,11 @@ import PostalMime, { decodeWords } from 'postal-mime'
 import { daysFromInstant, FieldError } from './fields'
 import { bodyText, parseDocument } from './html'
 import { bbvaCardPurchase } from './templates/bbva-card-purchase'
-import { bbvaTransferCredited, bbvaTransferDebited } from './templates/bbva-transfer-notice'
+import {
+  bbvaDebinCredited,
+  bbvaTransferCredited,
+  bbvaTransferDebited,
+} from './templates/bbva-transfer-notice'
 import { bbvaTransferSent } from './templates/bbva-transfer-sent'
 import {
   beloArsDeposit,
@@ -26,6 +30,7 @@ export const TEMPLATES: readonly Template[] = [
   bbvaTransferSent,
   bbvaTransferDebited,
   bbvaTransferCredited,
+  bbvaDebinCredited,
   bbvaCardPurchase,
   beloArsDeposit,
   beloArsWithdrawal,
@@ -37,8 +42,12 @@ export const TEMPLATES: readonly Template[] = [
 export const templateKind = (templateId: string | null) =>
   TEMPLATES.find((t) => t.id === templateId)?.kind ?? null
 
+/** Whether a stored template id reads mail that says its other side is an own account. */
+export const isOwnCounterpartyTemplate = (templateId: string) =>
+  TEMPLATES.find((t) => t.id === templateId)?.counterpartyIsOwn === true
+
 /** Recorded with "no template" results, so they are retried once new templates ship. */
-export const TEMPLATE_SET_VERSION = 3
+export const TEMPLATE_SET_VERSION = 4
 
 /** The printed date may differ from the signed Date by a weekend or holiday, not more. */
 const MAX_DATE_DISTANCE_DAYS = 3

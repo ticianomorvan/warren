@@ -24,6 +24,8 @@ function belo(spec: {
   /** Group 1 is the amount. */
   sentence: RegExp
   timed: boolean
+  /** The sentence says the other side is the person's own account. */
+  counterpartyIsOwn?: true
 }): Template {
   return {
     id: spec.id,
@@ -32,6 +34,7 @@ function belo(spec: {
     senderId: 'belo',
     subject: spec.subject,
     body: spec.sentence,
+    ...(spec.counterpartyIsOwn ? { counterpartyIsOwn: true as const } : {}),
     parse(doc: Doc, signed: SignedHeaders) {
       const amount = spec.sentence.exec(bodyText(doc))?.[1]
       const money = parseMoney(amount ?? '', 'amount', { wallet: true })
@@ -70,6 +73,7 @@ export const beloArsWithdrawal = belo({
   subject: new RegExp(`^Retiro exitoso! - ${TIMESTAMP}$`),
   sentence: new RegExp(`Retiraste ${AMOUNT} a una cuenta propia`),
   timed: true,
+  counterpartyIsOwn: true,
 })
 
 export const beloUsdWithdrawal = belo({
@@ -80,6 +84,7 @@ export const beloUsdWithdrawal = belo({
   subject: new RegExp(`^¡Retiro exitoso! - ${TIMESTAMP}$`),
   sentence: new RegExp(`Retiraste ${AMOUNT} a una cuenta propia`),
   timed: true,
+  counterpartyIsOwn: true,
 })
 
 export const beloUsdDeposit = belo({

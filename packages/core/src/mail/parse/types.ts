@@ -62,6 +62,12 @@ export type Template = {
    * A mail it does not match is left to the next template, or to "no template".
    */
   body?: RegExp
+  /**
+   * The mail says the other side of its transfer is one of the owner's own accounts, without
+   * naming it ("a una cuenta propia"). A property of the template, not of the stored operation,
+   * so mail recorded before the template said so is covered too.
+   */
+  counterpartyIsOwn?: true
   parse(doc: Doc, signed: SignedHeaders): BankOperation
 }
 

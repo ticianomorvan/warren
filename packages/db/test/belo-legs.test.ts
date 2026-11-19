@@ -119,7 +119,22 @@ const belo = (
   counterparty: NONE,
 })
 
+/** What the Belo withdrawal templates record; whether it says "own account" is the template's. */
+const beloOwn = (currency: 'ARS' | 'USD', amount: string): BankOperation =>
+  belo('transfer_out', currency, amount, '12:30')
+/** BBVA's DEBIN credit: it names no counterparty. */
+const debin = (amount: string, ownAccount = 'CA-USD ***2'): BankOperation => ({
+  ...common,
+  kind: 'transfer_in',
+  currency: 'USD',
+  amount,
+  time: null,
+  ownAccount,
+  counterparty: NONE,
+})
+
 const DEBITED = 'bbva.transfer-debited'
+const DEBIN = 'bbva.debin-credited'
 const CREDITED = 'bbva.transfer-credited'
 const ARS_DEPOSIT = 'belo.ars-deposit'
 const USD_WITHDRAWAL = 'belo.usd-withdrawal'
@@ -324,5 +339,89 @@ describe('notices after a join', () => {
       counterAccountName: 'asset:belo:ars',
     })
     expect(await as((scope) => recentNotices(scope))).toHaveLength(1)
+  })
+})
+
+describe('a leg that says "own account" and names no other', () => {
+  const joined = {
+    direction: 'out',
+    currency: 'USD',
+    amount: 5.25,
+    accountId: 'asset:belo:usdt',
+    counterAccountId: 'asset:bbva:usd',
+    type: 'own_transfer',
+    sources: 2,
+  }
+
+  it('joins a Belo USD withdrawal and the DEBIN credit, whichever came first', async () => {
+    await fresh()
+    const first = await record(USD_WITHDRAWAL, beloOwn('USD', '5.25'))
+    expect(first.type).toBe('unclassified')
+    const second = await record(DEBIN, debin('5.25'))
+    expect(second).toEqual({
+      movementId: first.movementId,
+      outcome: 'linked',
+      type: 'own_transfer',
+    })
+    expect(await shape()).toEqual([joined])
+
+    await fresh()
+    await record(DEBIN, debin('5.25'))
+    await record(USD_WITHDRAWAL, beloOwn('USD', '5.25'))
+    expect(await shape()).toEqual([joined])
+    // Projecting again from the sources gives the same row.
+    await asUser(t.owner, user, (scope) => reprojectMovements(scope))
+    expect(await shape()).toEqual([joined])
+  })
+
+  it('counts the joined pair once, as an own transfer', async () => {
+    await fresh()
+    await record(DEBIN, debin('5.25'))
+    await record(USD_WITHDRAWAL, beloOwn('USD', '5.25'))
+    const summary = await as((scope) =>
+      summarizeMovements(scope, { from: '2026-11-01', to: '2026-11-30' }),
+    )
+    expect(summary.currencies).toEqual([])
+    expect(summary.own_transfers).toMatchObject([{ currency: 'USD', count: 1 }])
+  })
+
+  it('joins none when two DEBIN credits could be its other leg', async () => {
+    await fresh()
+    await record(DEBIN, debin('5.25'))
+    await record(DEBIN, debin('5.25'))
+    const w = await record(USD_WITHDRAWAL, beloOwn('USD', '5.25'))
+    expect(w.outcome).toBe('created')
+    expect((await shape()).map((m) => m.type)).toEqual([
+      'unclassified',
+      'unclassified',
+      'unclassified',
+    ])
+  })
+
+  it('joins none when two flagged withdrawals could take the credit', async () => {
+    await fresh()
+    await record(USD_WITHDRAWAL, beloOwn('USD', '5.25'))
+    await record(USD_WITHDRAWAL, beloOwn('USD', '5.25'))
+    expect((await record(DEBIN, debin('5.25'))).outcome).toBe('created')
+    expect(await movements()).toHaveLength(3)
+  })
+
+  it('leaves a DEBIN credit alone when no leg says "own account"', async () => {
+    await fresh()
+    await record(DEBIN, debin('5.25'))
+    await record('test.plain-withdrawal', belo('transfer_out', 'USD', '5.25', '12:30'))
+    const rows = await shape()
+    expect(rows).toHaveLength(2)
+    expect(rows.map((m) => m.type)).toEqual(['unclassified', 'unclassified'])
+    await fresh()
+    await record(DEBIN, debin('5.25'))
+    expect(await shape()).toMatchObject([{ direction: 'in', type: 'unclassified', sources: 1 }])
+  })
+
+  it('does not join legs on the same account, or when the credit account is unknown', async () => {
+    await fresh()
+    await record(DEBIN, debin('5.25', 'CA-USD ***999/9'))
+    await record(USD_WITHDRAWAL, beloOwn('USD', '5.25'))
+    expect(await movements()).toHaveLength(2)
   })
 })

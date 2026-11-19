@@ -154,8 +154,14 @@ async function projection(
   const accountId = await accountFor(scope, 'bank-label', op.ownAccount)
   // A source that names a counterparty account says which account it is. One that names none (a
   // wallet's) can still be the other currency's leg of a transfer another source describes.
+  // A mail of the other direction on the same movement sits on the counter account: a leg joined
+  // by the accounts it mirrors, or by saying "own account" (see `matchMovement`).
+  const other = sources
+    .map((s) => s.operation)
+    .find((o): o is TransferOperation => o.kind !== 'card_purchase' && o.kind !== op.kind)
   const counterAccountId =
     (await accountFor(scope, 'cbu', op.counterparty.account)) ??
+    (await accountFor(scope, 'bank-label', other?.ownAccount ?? null)) ??
     (op.counterparty.account === null
       ? await otherCurrencyLeg(scope, movementId, op, accountId)
       : null)
