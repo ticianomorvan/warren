@@ -3,6 +3,7 @@ import type { PgTable } from 'drizzle-orm/pg-core'
 import {
   account,
   accountIdentifier,
+  allowance,
   authAccount,
   blobFile,
   erasure,
@@ -29,6 +30,7 @@ import {
   profile,
   pushSubscription,
   rateLimit,
+  rule,
   session,
   unroutedDelivery,
   user,
@@ -117,6 +119,8 @@ export const ERASED_TABLES = [
   forwardingConfirmation,
   pushSubscription,
   profile,
+  allowance,
+  rule,
   userKey,
 ] as const
 

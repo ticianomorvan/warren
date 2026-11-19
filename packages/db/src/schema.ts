@@ -852,6 +852,84 @@ export const profile = pgTable(
 ).enableRLS()
 
 /**
+ * What the user means to spend in a month, in ARS. A setting kept as records: a new amount is a
+ * new row valid from a date, and the latest row whose `valid_from` is on or before a month's
+ * first day applies to that month, so earlier months keep what they had. Not personal data in the
+ * sealed sense (like `movement.amount`), so it is in clear. Append-only, except that erasing the
+ * user deletes it.
+ */
+export const allowance = pgTable(
+  'allowance',
+  {
+    userId: userId(),
+    id: uuid('id').notNull().defaultRandom(),
+    /** Insertion order: what "latest" means, since `created_at` ties within a transaction. */
+    seq: bigint('seq', { mode: 'number' }).generatedAlwaysAsIdentity(),
+    amount: numeric('amount', { precision: 28, scale: 8 }).notNull(),
+    currency: text('currency').notNull(),
+    validFrom: date('valid_from').notNull(),
+    createdAt: now('created_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    check('allowance_amount_positive', sql`${t.amount} > 0`),
+    check('allowance_currency', sql`${t.currency} = 'ARS'`),
+    // Always the first of a month: `setAllowance` takes a month, never a day.
+    check('allowance_valid_from_first', sql`extract(day from ${t.validFrom}) = 1`),
+    index('allowance_valid_ix').on(t.userId, t.validFrom, t.seq),
+    ...tenant('allowance'),
+    ...erasable('allowance'),
+  ],
+).enableRLS()
+
+/**
+ * Which movements count toward the allowance, matched on the counterparty and applied when the
+ * allowance is read (never written into a movement). Append-only: a rule is a row, and revoking
+ * it is a second row, with `revokes` naming the first and the match columns empty. A rule is
+ * active while no row revokes it. `match_value` is in clear, as the movement columns it is
+ * joined to are: a merchant is stored already folded (`foldMerchant`, core), an account and a
+ * tax id as digits. Erasing the user deletes the rows.
+ */
+export const rule = pgTable(
+  'rule',
+  {
+    userId: userId(),
+    id: uuid('id').notNull().defaultRandom(),
+    /** Insertion order: what "newest" means, since `created_at` ties within a transaction. */
+    seq: bigint('seq', { mode: 'number' }).generatedAlwaysAsIdentity(),
+    matchScheme: text('match_scheme'),
+    matchValue: text('match_value'),
+    class: text('class'),
+    revokes: uuid('revokes'),
+    createdAt: now('created_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    foreignKey({
+      name: 'rule_revokes_fk',
+      columns: [t.userId, t.revokes],
+      foreignColumns: [t.userId, t.id],
+    }),
+    // A rule can be revoked once.
+    unique('rule_revokes_unique').on(t.userId, t.revokes),
+    check(
+      'rule_scheme',
+      sql`${t.matchScheme} in ('counterparty-account','counterparty-tax-id','merchant')`,
+    ),
+    check('rule_class', sql`${t.class} in ('allowance','fixed','excluded')`),
+    check('rule_value', sql`${t.matchValue} <> ''`),
+    // Either a rule (all three match columns) or a revocation (only `revokes`).
+    check(
+      'rule_shape',
+      sql`(${t.revokes} is null) = (${t.matchScheme} is not null and ${t.matchValue} is not null and ${t.class} is not null)
+        and (${t.revokes} is not null) = (${t.matchScheme} is null and ${t.matchValue} is null and ${t.class} is null)`,
+    ),
+    ...tenant('rule'),
+    ...erasable('rule'),
+  ],
+).enableRLS()
+
+/**
  * Google's confirmation mail, captured when the user adds their Warren address as a forwarding
  * address in Gmail. `data` is sealed JSON `{ address, url }` (the Gmail asking, and Google's
  * confirm link). `address_hash` is the sha256 (hex) of the lowercased address, so the database
