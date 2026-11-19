@@ -268,6 +268,12 @@ describe('which clients may connect', () => {
     'http://claude.ai/oauth/client.json',
     'https://claude.ai@evil.example/oauth/client.json',
     'https://169.254.169.254/latest/meta-data',
+    'https://claude.ai/oauth/other-client-metadata',
+    'https://claude.com/oauth/mcp-oauth-client-metadata',
+    'https://claude.ai/oauth/mcp-oauth-client-metadata?x=1',
+    'https://CLAUDE.ai/oauth/mcp-oauth-client-metadata',
+    'https://claude.ai/oauth/mcp-oauth-client-metadata/',
+    'https://claude.ai/oauth/mcp-oauth-client-metadata#x',
   ])('rejects %s before any fetch', async (clientId) => {
     DOCUMENTS[clientId] = document(clientId, [CLAUDE_CALLBACK])
     const user = await signedInUser()
@@ -278,14 +284,15 @@ describe('which clients may connect', () => {
     expect(location.searchParams.get('code')).toBeNull()
   })
 
-  it('accepts claude.com, which is on the list', async () => {
-    const clientId = 'https://claude.com/oauth/client.json'
-    DOCUMENTS[clientId] = document(clientId, ['https://claude.com/callback'])
+  it("accepts Claude Code's client, which is on the list", async () => {
+    const clientId = 'https://claude.ai/oauth/claude-code-client-metadata'
+    // Claude Code registers a portless loopback redirect and calls back on whatever port is free.
+    DOCUMENTS[clientId] = document(clientId, ['http://localhost/callback'])
     const user = await signedInUser()
     fetched.length = 0
     const { location } = await authorizeAndConsent(user.cookie, {
       clientId,
-      redirectUri: 'https://claude.com/callback',
+      redirectUri: 'http://localhost:49891/callback',
     })
     expect(fetched).toEqual([clientId])
     expect(location.pathname).toBe('/oauth/consent')
