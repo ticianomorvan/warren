@@ -17,6 +17,7 @@ import {
 } from '@warren/core'
 import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
+import { figureAad, figureFor } from './allowance'
 import {
   canonicalUserId,
   type Database,
@@ -329,9 +330,6 @@ export function createLedger(scope: Scope): Ledger {
           .where(and(eq(movement.userId, scope.userId), eq(movement.id, movementId)))
       } else {
         await tx.insert(movement).values({ id: movementId, ...row })
-        // A movement first seen in a mail is news for the user; a later mail of it is not, and
-        // neither is one a rebuild or an import recreates (`notify: false`).
-        if (options.notify) await tx.insert(notice).values({ movementId })
       }
       await tx.insert(movementSource).values({
         mailId: mail.mailId,
@@ -341,6 +339,18 @@ export function createLedger(scope: Scope): Ledger {
         eventSeq: seq,
       })
       if (op.kind !== 'card_purchase') await settleOtherCurrencyLegs(scope, op)
+      // A movement first seen in a mail is news for the user; a later mail of it is not, and
+      // neither is one a rebuild or an import recreates (`notify: false`). The notice comes last,
+      // after `settleOtherCurrencyLegs`: settling can re-project another movement (pairing or
+      // unpairing an own-account leg), which changes what counts, so the figure is taken only
+      // once the books are as this recording leaves them, still under the lock.
+      if (!matched && options.notify) {
+        const figure = await figureFor(scope, movementId)
+        await tx.insert(notice).values({
+          movementId,
+          figure: figure ? scope.json.seal(figure, figureAad(movementId)) : null,
+        })
+      }
       return { movementId, outcome: matched ? 'linked' : 'created', type: row.type }
     },
 

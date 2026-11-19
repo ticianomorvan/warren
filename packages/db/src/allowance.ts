@@ -121,6 +121,33 @@ export type AllowanceMonth = {
 const folded = (column: ReturnType<typeof sql>) =>
   sql`btrim(regexp_replace(translate(regexp_replace(${column}, ${COMBINING_MARKS}, '', 'g'), ${FOLD_FROM}, ${FOLD_TO}), ${FOLD_SPACE}, ' ', 'g'), ' ')`
 
+/** The rules in force, as a CTE named `active`. */
+const ACTIVE = sql`active as (
+  select r.id, r.seq, r.match_scheme, r.match_value, r.class, r.created_at
+  from rule r
+  where r.revokes is null and not exists (select 1 from rule v where v.revokes = r.id)
+)`
+
+/** The class of the movement `m` (a SQL alias) under the rules in `active`: the newest match, else `allowance`. */
+const classOf = (m: ReturnType<typeof sql>) => sql`coalesce((
+  select a.class from active a
+  where (a.match_scheme = 'counterparty-account' and a.match_value = ${m}.counterparty_account)
+     or (a.match_scheme = 'counterparty-tax-id' and a.match_value = ${m}.counterparty_tax_id)
+     or (a.match_scheme = 'merchant' and ${m}.type = 'card_purchase'
+         and a.match_value = ${folded(sql`${m}.counterparty_name`)})
+  order by a.seq desc limit 1
+), 'allowance')`
+
+/** What counts toward the allowance before the rules: ARS, out, not an own transfer. For the movement alias `m`. */
+const countable = (m: ReturnType<typeof sql>) =>
+  sql`${m}.currency = 'ARS' and ${m}.direction = 'out' and ${m}.type <> 'own_transfer'`
+
+/** The allowance in force on the day `first` (a SQL expression): the latest row valid on or before it. */
+const allowanceOn = (first: ReturnType<typeof sql>) => sql`(
+  select a.amount from allowance a where a.valid_from <= ${first}
+  order by a.valid_from desc, a.seq desc limit 1
+)`
+
 /**
  * What the person meant to spend in `month` ("2026-11", an Argentine calendar month) and what is
  * left. All arithmetic is SQL on numeric (rule 1); amounts come back as decimal strings in the
@@ -144,24 +171,11 @@ export async function allowanceMonth(scope: Scope, month: string): Promise<Allow
     excluded: string
   }>(
     await scope.tx.execute(sql`
-      with active as (
-        select r.id, r.seq, r.match_scheme, r.match_value, r.class, r.created_at
-        from rule r
-        where r.revokes is null and not exists (select 1 from rule v where v.revokes = r.id)
-      ),
+      with ${ACTIVE},
       counted as (
-        select m.amount,
-          coalesce((
-            select a.class from active a
-            where (a.match_scheme = 'counterparty-account' and a.match_value = m.counterparty_account)
-               or (a.match_scheme = 'counterparty-tax-id' and a.match_value = m.counterparty_tax_id)
-               or (a.match_scheme = 'merchant' and m.type = 'card_purchase'
-                   and a.match_value = ${folded(sql`m.counterparty_name`)})
-            order by a.seq desc limit 1
-          ), 'allowance') as class
+        select m.amount, ${classOf(sql`m`)} as class
         from movement m
-        where m.currency = 'ARS' and m.direction = 'out' and m.type <> 'own_transfer'
-          and m.date >= ${from}::date and m.date <= ${to}::date
+        where ${countable(sql`m`)} and m.date >= ${from}::date and m.date <= ${to}::date
       ),
       totals as (
         select coalesce(sum(amount) filter (where class = 'allowance'), 0::numeric(28,8)) as spent,
@@ -169,16 +183,13 @@ export async function allowanceMonth(scope: Scope, month: string): Promise<Allow
                coalesce(sum(amount) filter (where class = 'excluded'), 0::numeric(28,8)) as excluded
         from counted
       ),
-      current as (
-        select amount from allowance where valid_from <= ${from}::date
-        order by valid_from desc, seq desc limit 1
-      )
-      select (select amount from current)::text as amount,
+      current as (select ${allowanceOn(sql`${from}::date`)} as amount)
+      select current.amount::text as amount,
              totals.spent::text as spent,
-             ((select amount from current) - totals.spent)::text as left,
+             (current.amount - totals.spent)::text as left,
              totals.fixed::text as fixed,
              totals.excluded::text as excluded
-      from totals`),
+      from totals, current`),
   )
   if (!row) throw new Error('allowance query returned no row')
   return {
@@ -190,4 +201,41 @@ export async function allowanceMonth(scope: Scope, month: string): Promise<Allow
     excluded: row.excluded,
     currency: 'ARS',
   }
+}
+
+// Sealed: the allowance figure stored with a notice. A movement has one notice, so it names it.
+export const figureAad = (movementId: string) => `notice:${movementId}:figure`
+
+/** What a notice says about the allowance: the month and what was left, as the database computed them. */
+export type AllowanceFigure = { month: string; left: string }
+
+/**
+ * The figure for a notice about `movementId`, which must already be inserted: what is left of
+ * its month's allowance now, counting it. Null when the movement does not count (not ARS, not
+ * out, an own transfer, or class `fixed` or `excluded` under the rules in force) or no allowance
+ * applies to its month. The caller holds the ledger lock, so "now" is right after this movement.
+ */
+export async function figureFor(scope: Scope, movementId: string): Promise<AllowanceFigure | null> {
+  const [row] = rowsOf<{ month: string; left: string }>(
+    await scope.tx.execute(sql`
+      with ${ACTIVE},
+      target as (
+        select date_trunc('month', m.date)::date as first
+        from movement m
+        where m.id = ${movementId}::uuid and ${countable(sql`m`)} and ${classOf(sql`m`)} = 'allowance'
+      ),
+      spent as (
+        select t.first, coalesce(sum(m.amount), 0::numeric(28,8)) as total
+        from target t
+        join movement m on ${countable(sql`m`)}
+          and m.date >= t.first and m.date < t.first + interval '1 month'
+          and ${classOf(sql`m`)} = 'allowance'
+        group by t.first
+      )
+      select to_char(spent.first, 'YYYY-MM') as month,
+             (${allowanceOn(sql`spent.first`)} - spent.total)::text as left
+      from spent
+      where ${allowanceOn(sql`spent.first`)} is not null`),
+  )
+  return row ? { month: row.month, left: row.left } : null
 }

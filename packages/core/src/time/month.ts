@@ -30,3 +30,21 @@ export function parseMonth(text: string): { year: number; month: number } | null
   if (!m || month < 1 || month > 12) return null
   return { year, month }
 }
+
+const MONTH_NAMES = [
+  'enero',
+  'febrero',
+  'marzo',
+  'abril',
+  'mayo',
+  'junio',
+  'julio',
+  'agosto',
+  'septiembre',
+  'octubre',
+  'noviembre',
+  'diciembre',
+] as const
+
+/** The Spanish name of a month, lowercase: `monthName(11)` is "noviembre". Undefined outside 1 to 12. */
+export const monthName = (month: number): string | undefined => MONTH_NAMES[month - 1]

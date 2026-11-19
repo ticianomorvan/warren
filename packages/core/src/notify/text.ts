@@ -1,4 +1,5 @@
 import { ASSETS, isAsset } from '../assets'
+import { monthName, parseMonth } from '../time/month'
 import type { PushPayload } from './push'
 
 /** What a notice needs to know about a movement. Names come from the ledger, never a model. */
@@ -18,6 +19,12 @@ export type NoticeMovement = {
   counterpartyName: string | null
   /** The card's last four digits, for a card purchase. */
   cardLastFour?: string | null
+  /**
+   * What was left of the month's allowance right after this movement, stored with the notice.
+   * `left` is a decimal string in ARS, negative when overspent. Absent when the movement does
+   * not count or no allowance was in force.
+   */
+  allowance?: { month: string; left: string } | null
 }
 
 /** "1500.00000000" becomes "1.500,00". Pure string work: no floating point. */
@@ -48,8 +55,24 @@ function formatWhen(date: string, time: string | null): string {
   return `${day}/${month}${time ? ` ${time.slice(0, 5)}` : ''}`
 }
 
-/** The notice for a new movement, one fact per line. Parts not known yet are left out. */
+/** "Te quedan $ 182.400,00 de tu asignación de noviembre", or "Te pasaste por $ 500,25 en noviembre". String work only. */
+function allowanceLine(figure: { month: string; left: string }): string | null {
+  const parsed = parseMonth(figure.month)
+  const name = parsed ? monthName(parsed.month) : undefined
+  if (!name) return null
+  if (figure.left.startsWith('-')) {
+    return `Te pasaste por ${formatMoney(figure.left.slice(1), 'ARS')} en ${name}`
+  }
+  return `Te quedan ${formatMoney(figure.left, 'ARS')} de tu asignación de ${name}`
+}
+
+/** The notice for a new movement, one fact per line, the allowance line last. Parts not known yet are left out. */
 export function noticeLines(m: NoticeMovement): string[] {
+  const line = m.allowance ? allowanceLine(m.allowance) : null
+  return [...movementLines(m), ...(line ? [line] : [])]
+}
+
+function movementLines(m: NoticeMovement): string[] {
   const money = formatMoney(m.amount, m.currency)
   const when = formatWhen(m.date, m.time)
   if (m.type === 'card_purchase') {

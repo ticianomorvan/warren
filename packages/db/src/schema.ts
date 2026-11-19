@@ -788,6 +788,13 @@ export const notice = pgTable(
     userId: userId(),
     id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity(),
     movementId: uuid('movement_id').notNull(),
+    /**
+     * Sealed JSON `{ month, left }`: what was left of the month's allowance right after this
+     * movement (`figureFor`). Null when the movement does not count or no allowance applied.
+     * Fixed when the notice is written; a later rule or movement never changes it. A later mail
+     * that joins a movement or re-pairs a leg can make it stale, and a figure is never rewritten.
+     */
+    figure: bytea('figure'),
     createdAt: now('created_at'),
   },
   (t) => [
