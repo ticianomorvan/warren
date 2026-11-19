@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { BankOperation } from '@warren/core'
 import { eq, getTableColumns, getTableName, sql } from 'drizzle-orm'
 import { asUser, type Database, inSystemContext, inUserContext, rowsOf } from './client'
+import { createForwardingConfirmations } from './forwarding'
 import { inboundAddressFor } from './inbound-address'
 import { createLedger, seedAccounts } from './ledger'
 import { createMailLog } from './mail-log'
@@ -44,7 +45,8 @@ const UPDATABLE_COLUMN: Record<string, string> = { inbound_address: 'revoked_at'
 /** Keys that do not start with `user_id`, on purpose. Each needs a reason. */
 export const EXEMPT_KEYS: Record<string, string> = {
   // An address belongs to one person, and only the operator registers it.
-  mailbox_address_unique: 'a mailbox address belongs to one person; operator-written',
+  mailbox_address_unique:
+    'a mailbox address belongs to one person; written by the operator or claim_mailbox',
   // Mail arrives knowing only the address, so the token must be unique across users. It is 110
   // random bits, so a clash is not a channel worth having: a conflict reveals nothing guessable.
   inbound_address_token_unique: 'mail arrives knowing only the token; random, unguessable',
@@ -180,6 +182,25 @@ export async function checkStructure(db: Database): Promise<Check[]> {
     detail: [...appOnAuth, ...authOnData, ...appMutates]
       .map((p) => `${p.role} ${p.verb} ${p.table}`)
       .join(', '),
+  })
+
+  // The one door into `mailbox` for the app: a function that insists on a confirmation.
+  const door = await query<{ insert_any: boolean; secdef: boolean; app: boolean; others: boolean }>(
+    db,
+    sql`select has_any_column_privilege('warren_app', 'public.mailbox', 'insert') as insert_any,
+               coalesce((select prosecdef from pg_proc where proname = 'claim_mailbox'), false) as secdef,
+               coalesce((select has_function_privilege('warren_app', oid, 'execute')
+                         from pg_proc where proname = 'claim_mailbox'), false) as app,
+               coalesce((select has_function_privilege('warren_auth', oid, 'execute')
+                           or has_function_privilege('warren_eraser', oid, 'execute')
+                           or has_function_privilege('public', oid, 'execute')
+                         from pg_proc where proname = 'claim_mailbox'), true) as others`,
+  )
+  const d = door[0]
+  out.push({
+    name: 'warren_app cannot insert into mailbox; claim_mailbox is security definer and only warren_app may run it',
+    ok: !!d && !d.insert_any && d.secdef && d.app && !d.others,
+    detail: d ? JSON.stringify(d) : 'no row',
   })
   return out
 }
@@ -492,6 +513,13 @@ export async function seedFixtures(
         'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4',
       auth: 'BTBZMqHH6r4Tts7J_aSIgg',
     })
+    await createForwardingConfirmations(scope).record(
+      {
+        address: `${tag}@example.invalid`,
+        url: 'https://mail-settings.google.com/mail/vf-invented',
+      },
+      new Date('2026-11-14T17:00:00Z'),
+    )
     await appendProfile(scope, {
       currency: 'ARS',
       goals: [],

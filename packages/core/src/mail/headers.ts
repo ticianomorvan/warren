@@ -31,3 +31,15 @@ export function unsignedToAddresses(raw: Uint8Array): string[] {
   }
   return out
 }
+
+/** Addresses in the From headers of raw mail. Unsigned: only decides whether a check is worth running. */
+export function unsignedFromAddresses(raw: Uint8Array): string[] {
+  const text = Buffer.from(raw).toString('latin1')
+  const end = text.search(/\r?\n\r?\n/)
+  const head = (end === -1 ? text : text.slice(0, end)).replace(/\r?\n[ \t]+/g, ' ')
+  const out: string[] = []
+  for (const line of head.split(/\r?\n/)) {
+    if (line.slice(0, 5).toLowerCase() === 'from:') out.push(...addressesIn(line.slice(5)))
+  }
+  return out
+}

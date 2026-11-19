@@ -1,6 +1,7 @@
 import type { RawStore, Tenancy, UserContext } from '@warren/core'
 import { eq } from 'drizzle-orm'
 import { asUser, type Database, type Scope } from './client'
+import { createForwardingConfirmations } from './forwarding'
 import { createLedger } from './ledger'
 import { createMailLog } from './mail-log'
 import { mailbox } from './schema'
@@ -34,6 +35,7 @@ export async function userContext(scope: Scope, files: RawStore): Promise<UserCo
     userId: scope.userId,
     store: sealedStore(files, scope),
     log: createMailLog(scope),
+    confirmations: createForwardingConfirmations(scope),
     ledger: createLedger(scope),
     mailboxes: rows.map((r) => r.address),
     mailId: scope.mailId,

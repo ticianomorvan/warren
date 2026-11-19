@@ -39,6 +39,7 @@ const DERIVED = [
   'notice',
   'mailbox',
   'inbound_address',
+  'forwarding_confirmation',
   'user_key',
   'push_subscription',
   'profile',

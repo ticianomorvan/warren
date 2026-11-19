@@ -21,6 +21,7 @@ import {
   rawMailPathname,
   replayIncomplete,
   replayUnrouted,
+  reverifyRejected,
   type Tenancy,
   type UserContext,
   userFilesPrefix,
@@ -73,6 +74,23 @@ class MemoryLog implements MailLog {
   async recordParse(mailId: string, set: number, result: ParseResult) {
     if (!this.parses.has(`${mailId}:${set}`)) this.parses.set(`${mailId}:${set}`, result)
   }
+  async rejectedNotAddressed(since: Date) {
+    const out: { mailId: string; pathname: string; receivedAt: Date }[] = []
+    for (const [mailId, mail] of this.mails) {
+      const v = (await this.latestAny(mailId))?.verdict
+      if (
+        v?.verdict === 'rejected' &&
+        v.reason === 'not-addressed-to-user' &&
+        mail.receivedAt >= since
+      ) {
+        out.push({ mailId, pathname: mail.pathname, receivedAt: mail.receivedAt })
+      }
+    }
+    return out
+  }
+  async latestAny(mailId: string) {
+    return this.verdicts.findLast((x) => x.mailId === mailId && x.verdict.verdict !== 'retry')
+  }
   async pendingParses(set: number): Promise<PendingParse[]> {
     const out: PendingParse[] = []
     for (const [mailId, mail] of this.mails) {
@@ -119,6 +137,8 @@ const TOKEN_B = 'u-bbbbbbbbbbbbbbbbbbbbbb'
 /** In-memory tenancy: each user has their own key, log, ledger and files. */
 class MemoryTenancy implements Tenancy {
   files = new Map<string, Uint8Array>()
+  /** Confirmations recorded, in order. */
+  confirmations: { address: string; url: string }[] = []
   /** True while a `withUser` callback runs: file and network I/O must never happen then. */
   inTx = false
   /** Where a file was stored or a DNS key fetched, with whether a transaction was open. */
@@ -179,7 +199,20 @@ class MemoryTenancy implements Tenancy {
       .map(([address]) => address)
     this.inTx = true
     try {
-      return await fn({ userId, store, log, ledger, mailboxes, mailId: sealer.mailId })
+      const confirmations = {
+        record: async (c: { address: string; url: string }) => {
+          this.confirmations.push(c)
+        },
+      }
+      return await fn({
+        userId,
+        store,
+        log,
+        confirmations,
+        ledger,
+        mailboxes,
+        mailId: sealer.mailId,
+      })
     } finally {
       this.inTx = false
     }
@@ -810,4 +843,95 @@ const input = (raw: Uint8Array) => ({
   providerId: 'em_1',
   receivedAt: RECEIVED_AT,
   recipients: [] as string[],
+})
+
+describe('Google forwarding confirmation through intake', () => {
+  const google = makeSigner('google.com')
+  const ADDRESS = `${TOKEN_A}@${DOMAIN}`
+  const LINK = 'https://mail-settings.google.com/mail/vf-%5Binvented%5D'
+  const confirmation = (to = ADDRESS) =>
+    [
+      'From: Equipo de Gmail <forwarding-noreply@google.com>',
+      `To: ${to}`,
+      'Subject: Confirmación de reenvío de Gmail: recibir correo de persona@gmail.com',
+      'Date: Sat, 14 Nov 2026 10:00:00 -0300',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      `persona@gmail.com pidió reenviar a ${to}. Confirmar: ${LINK}`,
+      '',
+    ].join('\r\n')
+  const run = async (raw: string, tokens: Record<string, string> = { [TOKEN_A]: USER }) => {
+    const { deps, tenancy } = await setup(
+      resolverFor({ [google.dnsName]: google.record, [bank.dnsName]: bank.record }),
+      message(),
+      [],
+      tokens,
+    )
+    const result = await intakeRawMail(
+      deps,
+      {
+        raw: new TextEncoder().encode(raw),
+        provider: 'resend',
+        providerId: 'em_g',
+        receivedAt: RECEIVED_AT,
+        recipients: [ADDRESS],
+      },
+      { notify: true },
+    )
+    return { result, tenancy }
+  }
+
+  it('records the confirmation, and stores no raw mail and writes no ledger entry', async () => {
+    const { result, tenancy } = await run(await google.sign(confirmation()))
+    expect(result).toEqual({ userId: USER, outcome: 'forwarding-confirmation', routedBy: 'token' })
+    expect(tenancy.confirmations).toEqual([{ address: 'persona@gmail.com', url: LINK }])
+    expect(tenancy.files.size).toBe(0)
+    expect(tenancy.puts).toBe(0)
+    expect(tenancy.user(USER).log.mails.size).toBe(0)
+    expect(tenancy.user(USER).ledger.recorded).toEqual([])
+    expect(JSON.stringify(result)).not.toContain('gmail.com')
+  })
+
+  it('takes the ordinary path (rejected, unknown sender) when the mail is unsigned', async () => {
+    const { result, tenancy } = await run(confirmation())
+    expect(result).toMatchObject({ outcome: 'rejected', reason: 'unknown-sender' })
+    expect(tenancy.confirmations).toEqual([])
+  })
+
+  it('takes the ordinary path when the signed To is not the routed address', async () => {
+    const { result, tenancy } = await run(
+      await google.sign(confirmation('u-bbbbbbbbbbbbbbbbbbbbbb@in.heywarren.app')),
+    )
+    expect(result).toMatchObject({ outcome: 'rejected' })
+    expect(tenancy.confirmations).toEqual([])
+  })
+})
+
+describe('reverifyRejected', () => {
+  it('verifies a mail rejected as not-addressed once the mailbox is held, appending a verdict', async () => {
+    const { deps, body, tenancy, log, ledger } = await setup(
+      undefined,
+      message({ to: 'nuevo@gmail.com' }),
+      [`${TOKEN_A}@${DOMAIN}`],
+      { [TOKEN_A]: USER },
+    )
+    const first = await handleResendWebhook(deps, body, signedHeaders(body))
+    expect(first.body).toMatchObject({ outcome: 'rejected', reason: 'not-addressed-to-user' })
+    expect(log.verdicts).toHaveLength(1)
+
+    // Nothing changes until the mailbox is claimed.
+    expect(await reverifyRejected(deps, USER, NOW)).toBe(0)
+    expect(log.verdicts).toHaveLength(2)
+
+    tenancy.mailboxes['nuevo@gmail.com'] = USER
+    expect(await reverifyRejected(deps, USER, NOW)).toBe(1)
+    expect(log.verdicts.at(-1)?.verdict.verdict).toBe('verified')
+    expect((await log.finalVerdict([...log.mails.keys()][0] ?? ''))?.verdict).toBe('verified')
+    // Parsed under the current templates, as live mail would be (this fixture has no html).
+    expect(log.parses.size).toBe(1)
+    expect(ledger.recorded).toEqual([])
+    // And it is not looked at again.
+    expect(await reverifyRejected(deps, USER, NOW)).toBe(0)
+  })
 })

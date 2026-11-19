@@ -852,6 +852,31 @@ export const profile = pgTable(
 ).enableRLS()
 
 /**
+ * Google's confirmation mail, captured when the user adds their Warren address as a forwarding
+ * address in Gmail. `data` is sealed JSON `{ address, url }` (the Gmail asking, and Google's
+ * confirm link). `address_hash` is the sha256 (hex) of the lowercased address, so the database
+ * can check a mailbox claim (`claim_mailbox`, 0013) without opening anything. Append-only,
+ * except that erasing the user deletes it.
+ */
+export const forwardingConfirmation = pgTable(
+  'forwarding_confirmation',
+  {
+    userId: userId(),
+    id: bigint('id', { mode: 'number' }).generatedAlwaysAsIdentity(),
+    addressHash: text('address_hash').notNull(),
+    data: bytea('data').notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    check('forwarding_confirmation_hash', sql`${t.addressHash} ~ '^[0-9a-f]{64}$'`),
+    index('forwarding_confirmation_ix').on(t.userId, t.addressHash, t.receivedAt),
+    ...tenant('forwarding_confirmation'),
+    ...erasable('forwarding_confirmation'),
+  ],
+).enableRLS()
+
+/**
  * One row per attempt at sending a notice. Append-only. `body` and `detail` are sealed.
  * `notice_id` has no foreign key: erasing a user deletes their notices but must leave
  * this row, which is append-only, standing as ciphertext.
