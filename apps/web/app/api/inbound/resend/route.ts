@@ -22,6 +22,9 @@ export async function POST(request: Request): Promise<Response> {
     // Also on a redelivery, so a notice that could not go out earlier gets another try. After
     // the response: Resend is answered at once, and the function stays alive until the pushes
     // are sent (maxDuration above). `sendOwedNotices` never throws.
+    // Which route found the user; no address or content. It shows when the legacy To-header route
+    // can be removed (slice 6 spec), and a wrong WARREN_INBOUND_DOMAIN as legacy-only routing.
+    if (result.body.routedBy) console.info('inbound routed by', result.body.routedBy)
     const userId = result.body.userId
     if (result.status === 200 && typeof userId === 'string') after(() => sendOwedNotices(userId))
     return Response.json(result.body, { status: result.status })

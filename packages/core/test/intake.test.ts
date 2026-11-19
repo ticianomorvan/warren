@@ -389,7 +389,13 @@ describe('handleResendWebhook', () => {
         { [TOKEN_A]: USER, [TOKEN_B]: OTHER },
         await forwarded(),
       )
-      expect(res.body).toMatchObject({ userId: OTHER, routedBy: 'token' })
+      // The bank signed USER's mailbox, so B's ledger refuses it: rule 4 still decides after routing.
+      expect(res.body).toMatchObject({
+        userId: OTHER,
+        routedBy: 'token',
+        outcome: 'rejected',
+        reason: 'not-addressed-to-user',
+      })
       expect(tenancy.user(USER).log.mails.size).toBe(0)
       expect(tenancy.user(OTHER).log.mails.size).toBe(1)
     })

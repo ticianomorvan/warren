@@ -155,7 +155,10 @@ export async function checkStructure(db: Database): Promise<Check[]> {
   const priv = await query<{ role: string; table: string; verb: string; yes: boolean }>(
     db,
     sql`select r.role, t.table, v.verb,
-               has_table_privilege(r.role, format('public.%I', t.table), v.verb) as yes
+               -- Any column counts: a grant on one column (update (x)) is invisible to has_table_privilege.
+               (has_table_privilege(r.role, format('public.%I', t.table), v.verb)
+                or (v.verb in ('select', 'insert', 'update')
+                    and has_any_column_privilege(r.role, format('public.%I', t.table), v.verb))) as yes
         from (values ('warren_app'), ('warren_auth')) r(role)
         cross join (select relname as table from pg_class c join pg_namespace n on n.oid = c.relnamespace
                     where n.nspname = 'public' and c.relkind in ('r', 'p')) t
