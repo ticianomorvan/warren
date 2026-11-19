@@ -1,4 +1,5 @@
 import { argentinaDay } from '../time/argentina'
+import { factDisplay } from './knowledge/display'
 import { FACTS } from './knowledge/facts'
 import { PRINCIPLES } from './knowledge/principles'
 import { TRAPS } from './knowledge/traps'
@@ -17,7 +18,11 @@ export { DENYLIST, policyViolations } from './policy'
 export * from './profile'
 export { FACTS, PRINCIPLES, TRAPS }
 
-export type FactView = Fact & {
+export type FactView = Omit<Fact, 'parts'> & {
+  /** `value` and `unit` as shown to the person, e.g. "$ 50.000.000,00 per person". */
+  display?: string
+  /** `parts`, each with its `display`. */
+  parts?: { label: string; value: string; unit: string; display: string }[]
   /** True once `now` is past `review_by`: the value must be checked at its source. */
   stale: boolean
 }
@@ -25,10 +30,18 @@ export type FactView = Fact & {
 /** The facts, optionally of one topic, each marked stale once its `review_by` day is over (Argentine time). */
 export function factsFor(now: Date, topic?: Topic): FactView[] {
   const today = argentinaDay(now)
-  return FACTS.filter((f) => topic === undefined || f.topic === topic).map((f) => ({
-    ...f,
-    stale: today > f.review_by,
-  }))
+  return FACTS.filter((f) => topic === undefined || f.topic === topic).map(
+    ({ parts, ...f }): FactView => {
+      return {
+        ...f,
+        ...(f.value !== undefined && f.unit ? { display: factDisplay(f.value, f.unit) } : {}),
+        ...(parts
+          ? { parts: parts.map((p) => ({ ...p, display: factDisplay(p.value, p.unit) })) }
+          : {}),
+        stale: today > f.review_by,
+      }
+    },
+  )
 }
 
 /** The principles that apply to a topic, or all of them. */

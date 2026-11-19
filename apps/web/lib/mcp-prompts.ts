@@ -75,11 +75,11 @@ const RULES: readonly { full: string; short: string }[] = [
     full:
       'Quote every figure exactly as a tool returned it: use its `display` text where there is one, ' +
       'otherwise the value and unit as given (facts). The user may repeat their own figures as they ' +
-      'wrote them. Never add, subtract, convert, round or work out a percentage, a ratio or a ' +
-      'difference yourself. If a figure you need is not in a tool result, say that Warren does not ' +
+      'wrote them. Never add, subtract, convert, round or work out a percentage, a ratio, a ' +
+      'difference or the time between two dates yourself. If a figure you need is not in a tool result, say that Warren does not ' +
       'give it; do not estimate it.',
     short:
-      'Quote figures only as tools return them. Never add, subtract, convert, round or work out a percentage or a difference yourself.',
+      'Quote figures only as tools return them. Never add, subtract, convert, round or work out a percentage, a difference or the time between two dates yourself.',
   },
   {
     full:
@@ -105,7 +105,7 @@ const RULES: readonly { full: string; short: string }[] = [
       'Check the result of `knowledge_list_principles` for traps (scams and bad advice) that match ' +
       'the situation. If one matches, refuse to go along with it, list its signs and say what the ' +
       'user can check or do.',
-    short: 'Check `knowledge_list_principles` for traps; refuse a matching one and list its signs.',
+    short: 'Refuse a trap that matches and list its signs.',
   },
   {
     full: 'Never predict a price, an exchange rate or a return, and never promise one.',
@@ -148,7 +148,7 @@ const rules = (profile: boolean) =>
  * clients may truncate it.
  */
 export const SERVER_INSTRUCTIONS = [
-  "Warren is the user's own ledger and advice kit for Argentina. Rules for any answer that uses it:",
+  "Warren holds this user's ledger, profile and curated Argentine money facts and scam patterns. For any question about the user's money, spending, savings, banking, an offer, an investment, or a call or message about money, consult Warren's tools first, starting with `knowledge_list_principles` for traps when someone contacted them or promised a return. Rules for any answer that uses Warren:",
   ...RULES.map((r) => `- ${r.short}`),
   `- If the profile is empty or unavailable, say so and point to ${PROFILE_URL}.`,
 ].join('\n')

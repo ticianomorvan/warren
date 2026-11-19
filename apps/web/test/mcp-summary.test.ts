@@ -537,13 +537,23 @@ describe('knowledge tools', () => {
         'topic',
         'volatility',
       ]
-      const optional = ['needs_professional', 'unit', 'value']
+      const optional = ['display', 'needs_professional', 'parts', 'unit', 'value']
       const keys = Object.keys(f)
       for (const key of required) expect(keys, `${f.id} ${key}`).toContain(key)
       for (const key of keys) expect([...required, ...optional], `${f.id} ${key}`).toContain(key)
       expect(f.source_url).toMatch(/^https:\/\//)
       expect(typeof f.stale).toBe('boolean')
+      if (f.value !== undefined) expect(typeof f.display, String(f.id)).toBe('string')
     }
+    const scale = out.facts.find((f) => f.id === 'monotributo-scale') as
+      | { parts: { label: string; value: string; unit: string; display: string }[] }
+      | undefined
+    expect(scale?.parts[0]).toEqual({
+      label: 'Category A',
+      value: '12009410.45',
+      unit: 'ARS',
+      display: '$ 12.009.410,45',
+    })
     const filtered = (await call(await client(a.token), 'knowledge_list_facts', { topic: 'taxes' }))
       .structuredContent as Facts
     expect(filtered.facts.length).toBeGreaterThan(0)

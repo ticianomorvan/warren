@@ -52,7 +52,7 @@ export function createMcpRoute({
       registerKnowledgeTools(server, { now })
       // Only for a token that was granted it: the tool is absent from the list otherwise.
       const profile = ctx.authInfo?.scopes?.includes(PROFILE_READ_SCOPE) === true
-      if (profile) registerProfileTools(server, { database, userId })
+      if (profile) registerProfileTools(server, { database, userId, now })
       registerPrompts(server, { now, profile })
       return server
     },

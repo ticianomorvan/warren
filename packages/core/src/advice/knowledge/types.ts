@@ -53,6 +53,8 @@ export type Fact = {
   /** Decimal string, when the fact is one number. */
   value?: string
   unit?: string
+  /** Further named amounts, for a fact that is a table or a list rather than one number. */
+  parts?: { label: string; value: string; unit: string }[]
   /** The day the value was read from its source. */
   as_of: string
   /** The day after which the value must be checked again. */

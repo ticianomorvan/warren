@@ -41,7 +41,15 @@ type Out = {
         saved_at: string
         saved_at_local: string
         monthly_income_display?: string
-        goals: (Profile['goals'][number] & { display: string })[]
+        risk_limits: Profile['risk_limits'] & {
+          emergency_months_display?: string
+          max_share_in_usd_display?: string
+        }
+        goals: (Profile['goals'][number] & {
+          display: string
+          days_left: number
+          time_left: string
+        })[]
         obligations: (Profile['obligations'][number] & { display: string })[]
       })
     | null
@@ -126,6 +134,9 @@ describe('profile_get and its scope', () => {
           currency: 'USD',
           display: 'US$ 3.000,50',
           date: '2027-12-31',
+          // Clock fixed at 2026-11-19 12:30 in Argentina.
+          days_left: 407,
+          time_left: '13 months, 12 days',
         },
       ],
       obligations: [
@@ -137,8 +148,19 @@ describe('profile_get and its scope', () => {
           due_day: 5,
         },
       ],
-      risk_limits: { emergency_months: 6, max_share_in_usd: 40 },
+      risk_limits: {
+        emergency_months: 6,
+        max_share_in_usd: 40,
+        emergency_months_display: '6 months',
+        max_share_in_usd_display: 'at most 40% of savings in USD',
+      },
     })
+    expect(Object.keys(p?.risk_limits ?? {}).sort()).toEqual([
+      'emergency_months',
+      'emergency_months_display',
+      'max_share_in_usd',
+      'max_share_in_usd_display',
+    ])
     expect(Object.keys(res.structuredContent?.profile ?? {}).sort()).toEqual([
       'currency',
       'goals',
@@ -153,9 +175,11 @@ describe('profile_get and its scope', () => {
     expect(Object.keys(p?.goals[0] ?? {}).sort()).toEqual([
       'currency',
       'date',
+      'days_left',
       'display',
       'name',
       'target',
+      'time_left',
     ])
     expect(Object.keys(p?.obligations[0] ?? {}).sort()).toEqual([
       'amount',
@@ -177,6 +201,23 @@ describe('profile_get and its scope', () => {
       (declared['~standard'].validate(v) as { issues?: unknown[] }).issues
     expect(issues(res.structuredContent)).toBeUndefined()
     expect(issues({ profile: { nope: 1 } })).toBeTruthy()
+  })
+
+  it('words the share limit at its two ends', async () => {
+    const u = await signedInUser()
+    const token = (await connect(u, { scope: BOTH })).access_token
+    const limits = async (max: number) => {
+      await save(u.id, {
+        ...profile('1.00'),
+        risk_limits: { emergency_months: 1, max_share_in_usd: max },
+      })
+      return (await get(token)).structuredContent?.profile?.risk_limits
+    }
+    expect(await limits(100)).toMatchObject({
+      emergency_months_display: '1 month',
+      max_share_in_usd_display: 'no limit on savings in USD',
+    })
+    expect(await limits(0)).toMatchObject({ max_share_in_usd_display: 'nothing in savings in USD' })
   })
 
   it('says so, with a strict output, when the stored profile no longer validates', async () => {

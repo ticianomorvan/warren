@@ -79,7 +79,7 @@ const REQUIRED: [string, RegExp][] = [
   ],
   [
     'no differences',
-    /Never add, subtract, convert, round or work out a percentage, a ratio or a\s+difference/,
+    /Never add, subtract, convert, round or work out a percentage, a ratio, a\s+difference or the time between two dates yourself/,
   ],
   ['profile page pointer', /https:\/\/heywarren\.app\/profile/],
 ]
@@ -204,10 +204,13 @@ describe('the server instructions', () => {
     expect(SERVER_INSTRUCTIONS.length).toBeLessThan(1500)
     expect(policyViolations([SERVER_INSTRUCTIONS])).toEqual([])
     for (const re of [
-      /Quote figures only as tools return them\. Never add, subtract/,
+      /^Warren holds this user's ledger, profile and curated Argentine money facts and scam patterns/,
+      /consult Warren's tools first, starting with `knowledge_list_principles` for traps/,
+      /Quote figures only as tools return them\. Never add, subtract.*the time between two dates yourself/,
       /`as_of` date and source/,
       /`stale` or a `moving`/,
-      /traps/,
+      /Refuse a trap that matches/,
+      /Rules for any answer that uses Warren:/,
       /Never name a security/,
       /never say buy, sell or hold/,
       /Never predict/,
