@@ -1,3 +1,5 @@
+import { ASSETS, type Currency } from '../../assets'
+
 /**
  * Validators for values read out of bank mail. Each returns the normalised value or throws
  * FieldError naming the field, so a layout change shows up as "schema-fail:<field>" instead of
@@ -9,8 +11,6 @@ export class FieldError extends Error {
   }
 }
 
-export type Currency = 'ARS' | 'USD'
-
 const CURRENCY_SYMBOLS: Record<string, Currency> = {
   ARS: 'ARS',
   $: 'ARS',
@@ -19,13 +19,33 @@ const CURRENCY_SYMBOLS: Record<string, Currency> = {
   US$: 'USD',
 }
 
-/** "ARS 1.234,56" or "$ 3,77" → { amount: "1234.56", currency: "ARS" }. Never a float. */
-export function parseMoney(text: string, field = 'amount'): { amount: string; currency: Currency } {
-  const m = /^(ARS|USD|U\$S|US\$|\$)\s*(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})$/.exec(text.trim())
-  const currency = m ? CURRENCY_SYMBOLS[m[1] ?? ''] : undefined
-  if (!m || !currency) throw new FieldError(field)
-  const whole = (m[2] ?? '').replaceAll('.', '').replace(/^0+(?=\d)/, '')
-  return { amount: `${whole}.${m[3]}`, currency }
+/** A code after the amount, as a wallet prints it. Both spellings of Tether are USDT. */
+const CURRENCY_SUFFIXES: Record<string, Currency> = { USD: 'USD', 'USD₮': 'USDT', USDT: 'USDT' }
+
+const WHOLE = String.raw`(\d{1,3}(?:\.\d{3})*|\d+)`
+const PREFIXED = new RegExp(String.raw`^(ARS|USD|U\$S|US\$|\$)\s*${WHOLE}(?:,(\d+))?$`)
+const SUFFIXED = new RegExp(String.raw`^${WHOLE}(?:,(\d+))?\s*(USD₮|USDT|USD)$`)
+
+/**
+ * "ARS 1.234,56" or "$ 3,77" → { amount: "1234.56", currency: "ARS" }. Never a float. A bank
+ * prints the places always. With `wallet`, the places may be left out ("$1695", which is
+ * "1695.00") and the currency may follow the amount ("99,99 USD₮").
+ */
+export function parseMoney(
+  text: string,
+  field = 'amount',
+  { wallet = false }: { wallet?: boolean } = {},
+): { amount: string; currency: Currency } {
+  const v = text.trim()
+  const pre = PREFIXED.exec(v)
+  const suf = wallet ? SUFFIXED.exec(v) : null
+  const [whole, places, code] = pre ? [pre[2], pre[3], pre[1]] : [suf?.[1], suf?.[2], suf?.[3]]
+  const currency = pre ? CURRENCY_SYMBOLS[code ?? ''] : CURRENCY_SUFFIXES[code ?? '']
+  if (whole === undefined || !currency) throw new FieldError(field)
+  const decimals = ASSETS[currency].decimals
+  if (places === undefined ? !wallet : places.length !== decimals) throw new FieldError(field)
+  const integer = whole.replaceAll('.', '').replace(/^0+(?=\d)/, '')
+  return { amount: `${integer}.${places ?? '0'.repeat(decimals)}`, currency }
 }
 
 /** "14/11/2026" → "2026-11-14", rejecting impossible dates. */
@@ -36,6 +56,13 @@ export function parseDate(text: string, field = 'date'): string {
   const d = new Date(`${iso}T00:00:00Z`)
   if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso) throw new FieldError(field)
   return iso
+}
+
+/** "14/11/2026 14:09:33" → date and time to the minute, as printed (Argentina local time). */
+export function parseTimestamp(text: string, field = 'date'): { date: string; time: string } {
+  const m = /^(\d{2}\/\d{2}\/\d{4})\s+([01]\d|2[0-3]):([0-5]\d):[0-5]\d$/.exec(text.trim())
+  if (!m) throw new FieldError(field)
+  return { date: parseDate(m[1] ?? '', field), time: `${m[2]}:${m[3]}` }
 }
 
 /** "14/11/2026 - 14:09" → date and time as printed (Argentina local time). */
@@ -90,9 +117,13 @@ export function parseText(text: string, field: string, max = 120): string {
   return v
 }
 
+/** The Argentine calendar date (UTC-3, no DST) of an instant, YYYY-MM-DD. */
+export const argentinaDate = (instant: Date): string =>
+  new Date(instant.getTime() - 3 * 3600_000).toISOString().slice(0, 10)
+
 /** Whole days between an ISO date and an instant, both read in Argentina time (UTC-3, no DST). */
 export function daysFromInstant(isoDate: string, instant: Date): number {
-  const local = new Date(instant.getTime() - 3 * 3600_000).toISOString().slice(0, 10)
+  const local = argentinaDate(instant)
   return Math.round(
     (Date.parse(`${isoDate}T00:00:00Z`) - Date.parse(`${local}T00:00:00Z`)) / 86_400_000,
   )

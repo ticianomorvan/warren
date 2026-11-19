@@ -66,17 +66,19 @@ export function message(over: { from?: string; to?: string; date?: string; body?
 export const RECEIVED_AT = new Date('2026-11-14T13:00:40Z')
 
 /** A synthetic Belo mail: layout and wording invented, never copied from a real one. */
-export function beloMessage(over: { from?: string; to?: string } = {}) {
+export function beloMessage(
+  over: { from?: string; to?: string; subject?: string; date?: string; html?: string } = {},
+) {
   return [
     `From: Belo <${over.from ?? 'transaction@belo.app'}>`,
     `To: ${over.to ?? MAILBOX}`,
-    'Subject: Test operation',
-    'Date: Sat, 14 Nov 2026 10:00:00 -0300',
+    `Subject: ${over.subject ?? 'Test operation'}`,
+    `Date: ${over.date ?? 'Sat, 14 Nov 2026 10:00:00 -0300'}`,
     'Message-ID: <abc@belo.app>',
     'MIME-Version: 1.0',
     'Content-Type: text/html; charset=utf-8',
     '',
-    '<p>synthetic body</p>',
+    over.html ?? '<p>synthetic body</p>',
     '',
   ].join('\r\n')
 }

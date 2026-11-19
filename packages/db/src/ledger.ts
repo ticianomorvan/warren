@@ -1,5 +1,6 @@
 import {
   type AccountSeed,
+  type Accounts,
   type BankOperation,
   type Candidate,
   eventId,
@@ -12,8 +13,9 @@ import {
   type RecordOptions,
   type RecordOutcome,
   TEMPLATE_SET_VERSION,
+  type TransferOperation,
 } from '@warren/core'
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import {
   canonicalUserId,
@@ -70,8 +72,65 @@ async function accountFor(
   return rows[0]?.accountId ?? null
 }
 
+/**
+ * The account a transfer that names no counterparty left from or went to, when another currency's
+ * movement says so: exactly one movement of the same date and the same decimal digits, in the
+ * other direction and another currency, whose own transfer targets this account. Digits are
+ * compared, not converted: Warren never knows the rate. It must also be the only such movement
+ * on this side: with two deposits of the same digits and one transfer out, neither is paired.
+ * Zero or two on either side, none.
+ */
+async function otherCurrencyLeg(
+  scope: Scope,
+  movementId: string,
+  op: TransferOperation,
+  accountId: string | null,
+): Promise<string | null> {
+  if (accountId === null) return null
+  const rivals = await scope.tx
+    .select({ id: movement.id })
+    .from(movement)
+    .where(
+      and(
+        eq(movement.userId, scope.userId),
+        ne(movement.id, movementId),
+        eq(movement.accountId, accountId),
+        eq(movement.date, op.date),
+        sql`${movement.amount} = ${op.amount}::numeric`,
+        eq(movement.currency, op.currency),
+        eq(movement.direction, direction(op)),
+        isNull(movement.counterpartyAccount),
+        ne(movement.type, 'card_purchase'),
+      ),
+    )
+    .limit(1)
+  if (rivals.length > 0) return null
+  const rows = await scope.tx
+    .select({ accountId: movement.accountId })
+    .from(movement)
+    .where(
+      and(
+        eq(movement.userId, scope.userId),
+        eq(movement.date, op.date),
+        sql`${movement.amount} = ${op.amount}::numeric`,
+        ne(movement.currency, op.currency),
+        ne(movement.direction, direction(op)),
+        eq(movement.type, 'own_transfer'),
+        eq(movement.counterAccountId, accountId),
+        isNotNull(movement.accountId),
+        isNotNull(movement.counterpartyAccount),
+      ),
+    )
+  return rows.length === 1 ? (rows[0]?.accountId ?? null) : null
+}
+
 /** The derived row for a movement: its sources merged, and its accounts resolved. */
-async function projection(scope: Scope, sources: MovementSource[], lastEventSeq: number) {
+async function projection(
+  scope: Scope,
+  movementId: string,
+  sources: MovementSource[],
+  lastEventSeq: number,
+) {
   const op = mergeSources(sources)
   if (op.kind === 'card_purchase') {
     return {
@@ -92,14 +151,21 @@ async function projection(scope: Scope, sources: MovementSource[], lastEventSeq:
       lastEventSeq,
     }
   }
-  const counterAccountId = await accountFor(scope, 'cbu', op.counterparty.account)
+  const accountId = await accountFor(scope, 'bank-label', op.ownAccount)
+  // A source that names a counterparty account says which account it is. One that names none (a
+  // wallet's) can still be the other currency's leg of a transfer another source describes.
+  const counterAccountId =
+    (await accountFor(scope, 'cbu', op.counterparty.account)) ??
+    (op.counterparty.account === null
+      ? await otherCurrencyLeg(scope, movementId, op, accountId)
+      : null)
   return {
     direction: direction(op),
     amount: op.amount,
     currency: op.currency,
     date: op.date,
     time: op.time,
-    accountId: await accountFor(scope, 'bank-label', op.ownAccount),
+    accountId,
     counterAccountId,
     counterpartyName: op.counterparty.name,
     counterpartyAccount: op.counterparty.account,
@@ -109,6 +175,38 @@ async function projection(scope: Scope, sources: MovementSource[], lastEventSeq:
     cardLastFour: null,
     type: counterAccountId ? ('own_transfer' as const) : ('unclassified' as const),
     lastEventSeq,
+  }
+}
+
+/**
+ * Projects again the movements whose account comes from another currency's leg (see
+ * `otherCurrencyLeg`) and could be affected by this operation: those of its date and digits that
+ * name no counterparty account, in any currency, since a second wallet deposit also takes the
+ * pairing away from the first. Whichever mail came first, the pair is found once both are in.
+ */
+async function settleOtherCurrencyLegs(scope: Scope, op: TransferOperation): Promise<void> {
+  const rows = await scope.tx
+    .select({ id: movement.id, seq: movement.lastEventSeq })
+    .from(movement)
+    .where(
+      and(
+        eq(movement.userId, scope.userId),
+        eq(movement.date, op.date),
+        sql`${movement.amount} = ${op.amount}::numeric`,
+        isNull(movement.counterpartyAccount),
+        ne(movement.type, 'card_purchase'),
+      ),
+    )
+  const sources = await sourcesOf(
+    scope,
+    rows.map((r) => r.id),
+  )
+  for (const r of rows) {
+    const next = await projection(scope, r.id, sources.get(r.id) ?? [], r.seq)
+    await scope.tx
+      .update(movement)
+      .set(next)
+      .where(and(eq(movement.userId, scope.userId), eq(movement.id, r.id)))
   }
 }
 
@@ -161,8 +259,13 @@ export function createLedger(scope: Scope): Ledger {
       }
 
       const op = mail.operation
+      // Either direction: the other bank's leg of a transfer is the opposite one.
       const rows = await tx
-        .select({ id: movement.id })
+        .select({
+          id: movement.id,
+          accountId: movement.accountId,
+          counterAccountId: movement.counterAccountId,
+        })
         .from(movement)
         .innerJoin(event, eq(event.id, movement.id))
         .where(
@@ -170,7 +273,6 @@ export function createLedger(scope: Scope): Ledger {
             eq(movement.date, op.date),
             eq(movement.amount, op.amount),
             eq(movement.currency, op.currency),
-            eq(movement.direction, direction(op)),
           ),
         )
         .orderBy(asc(event.seq))
@@ -181,8 +283,16 @@ export function createLedger(scope: Scope): Ledger {
       const candidates: Candidate[] = rows.map((r) => ({
         movementId: r.id,
         sources: known.get(r.id) ?? [],
+        accounts: { own: r.accountId, counter: r.counterAccountId },
       }))
-      const matched = matchMovement(mail, candidates)
+      const accounts: Accounts | undefined =
+        op.kind === 'card_purchase'
+          ? undefined
+          : {
+              own: await accountFor(scope, 'bank-label', op.ownAccount),
+              counter: await accountFor(scope, 'cbu', op.counterparty.account),
+            }
+      const matched = matchMovement({ ...mail, accounts }, candidates)
 
       const movementId = matched ?? eventId('movement', mail.mailId)
       const source: MovementSource = {
@@ -205,7 +315,7 @@ export function createLedger(scope: Scope): Ledger {
       if (seq === undefined) throw new Error('event insert returned no row')
 
       const sources = [...(known.get(movementId) ?? []), source]
-      const row = await projection(scope, sources, seq)
+      const row = await projection(scope, movementId, sources, seq)
       if (matched) {
         await tx
           .update(movement)
@@ -224,6 +334,7 @@ export function createLedger(scope: Scope): Ledger {
         operation: scope.json.seal(op, sourceAad(mail.mailId)),
         eventSeq: seq,
       })
+      if (op.kind !== 'card_purchase') await settleOtherCurrencyLegs(scope, op)
       return { movementId, outcome: matched ? 'linked' : 'created', type: row.type }
     },
 
@@ -298,6 +409,7 @@ export async function reprojectMovements(scope: Scope): Promise<number> {
       id: movement.id,
       type: movement.type,
       accountId: movement.accountId,
+      counterpartyAccount: movement.counterpartyAccount,
       seq: movement.lastEventSeq,
     })
     .from(movement)
@@ -307,8 +419,12 @@ export async function reprojectMovements(scope: Scope): Promise<number> {
     rows.map((r) => r.id),
   )
   let changed = 0
+  // Movements that name no counterparty account may take theirs from another's: those go last.
+  rows.sort(
+    (a, b) => Number(a.counterpartyAccount === null) - Number(b.counterpartyAccount === null),
+  )
   for (const r of rows) {
-    const next = await projection(scope, sources.get(r.id) ?? [], r.seq)
+    const next = await projection(scope, r.id, sources.get(r.id) ?? [], r.seq)
     if (next.type !== r.type || next.accountId !== r.accountId) changed++
     await tx
       .update(movement)

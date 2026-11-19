@@ -1,10 +1,10 @@
-import type { Currency } from './fields'
+import type { Currency } from '../../assets'
 import type { Doc } from './html'
 
 /** A transfer, as one bank mail states it. Values are exactly what the bank printed, validated. */
 export type TransferOperation = {
   kind: 'transfer_out' | 'transfer_in'
-  /** Positive decimal string with two places, e.g. "1234.56". */
+  /** Positive decimal string with the asset's places, e.g. "1234.56". */
   amount: string
   currency: Currency
   /** Operation date in Argentina, YYYY-MM-DD. */
@@ -13,6 +13,7 @@ export type TransferOperation = {
   time: string | null
   /** The owner's account as the bank masks it, e.g. "CA-ARS ***123/4". */
   ownAccount: string | null
+  /** All null when the mail names no counterparty (a wallet's mail names none). */
   counterparty: {
     /** Free text: a person's name as the bank holds it. */
     name: string | null
@@ -54,9 +55,22 @@ export type Template = {
   kind: TemplateKind
   version: number
   senderId: string
-  /** Tested against the decoded, signed Subject. Never against the body. */
+  /** Tested against the decoded, signed Subject. */
   subject: RegExp
-  parse(doc: Doc): BankOperation
+  /**
+   * For senders whose kinds share one subject: the wording of the body that picks this template.
+   * A mail it does not match is left to the next template, or to "no template".
+   */
+  body?: RegExp
+  parse(doc: Doc, signed: SignedHeaders): BankOperation
+}
+
+/** What the signature vouches for, for a template whose mail does not print everything itself. */
+export type SignedHeaders = {
+  /** The decoded Subject, whitespace collapsed. */
+  subject: string
+  /** The Date header. */
+  date: Date
 }
 
 export type ParseResult =

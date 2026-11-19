@@ -7,6 +7,43 @@ export function parseDocument(html: string): Doc {
   return parseHTML(html).document
 }
 
+const BLOCKS = new Set([
+  'ADDRESS',
+  'ARTICLE',
+  'BR',
+  'DIV',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'LI',
+  'OL',
+  'P',
+  'SECTION',
+  'TABLE',
+  'TBODY',
+  'TD',
+  'TH',
+  'TR',
+  'UL',
+])
+
+/** All the text of the document, whitespace collapsed, with a space where a block begins or ends. */
+export function bodyText(doc: Doc): string {
+  const parts: string[] = []
+  const walk = (node: Doc | Doc['documentElement']) => {
+    if (node.nodeType === 3) parts.push(node.textContent ?? '')
+    const block = node.nodeType === 1 && BLOCKS.has((node as Doc['documentElement']).tagName)
+    if (block) parts.push(' ')
+    for (const child of node.childNodes) walk(child as typeof node)
+    if (block) parts.push(' ')
+  }
+  walk(doc.documentElement)
+  return parts.join('').replace(/\s+/g, ' ').trim()
+}
+
 const clean = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim()
 
 /**
