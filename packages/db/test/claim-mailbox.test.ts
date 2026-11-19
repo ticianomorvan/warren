@@ -190,3 +190,37 @@ describe('rejectedNotAddressed', () => {
     expect(got.map((m) => m.mailId)).toEqual(['1'.repeat(64)])
   })
 })
+
+describe('rejectedUnknownSender', () => {
+  it('lists mails whose latest verdict is that rejection under an older policy, whatever their age', async () => {
+    const c = await t.newUser('d')
+    const rejected = {
+      verdict: 'rejected' as const,
+      reason: 'unknown-sender' as const,
+      fromAddress: 'transaction@belo.app',
+    }
+    await asUser(t.app, c, async (s) => {
+      const log = createMailLog(s)
+      const mail = (n: string, at: Date) =>
+        log.recordMail({
+          mailId: n.repeat(64),
+          pathname: `u/${c}/mail/${n.repeat(64)}.eml.sealed`,
+          bytes: 1,
+          provider: 'resend',
+          providerId: n,
+          receivedAt: at,
+        })
+      await mail('1', new Date(Date.now() - 90 * DAY))
+      await mail('2', new Date(Date.now() - DAY))
+      await mail('3', new Date(Date.now() - DAY))
+      await mail('4', new Date(Date.now() - DAY))
+      for (const n of ['1', '2', '3', '4']) await log.recordVerdict(n.repeat(64), rejected, 1)
+      // 2 was judged again under the current policy and is still unknown.
+      await log.recordVerdict('2'.repeat(64), rejected, 2)
+      // 3 now has another reason.
+      await log.recordVerdict('3'.repeat(64), { ...rejected, reason: 'date-skew' }, 2)
+    })
+    const got = await asUser(t.app, c, (s) => createMailLog(s).rejectedUnknownSender(2))
+    expect(got.map((m) => m.mailId)).toEqual(['1'.repeat(64), '4'.repeat(64)])
+  })
+})
