@@ -8,7 +8,7 @@ import { LEDGER_READ_SCOPE, PROFILE_READ_SCOPE } from './auth-config'
 import { registerKnowledgeTools } from './mcp-knowledge'
 import { registerLedgerTools } from './mcp-ledger'
 import { registerProfileTools } from './mcp-profile'
-import { registerPrompts } from './mcp-prompts'
+import { registerPrompts, SERVER_INSTRUCTIONS } from './mcp-prompts'
 
 type McpAuth = Parameters<typeof requireMcpAuth>[0]
 
@@ -41,7 +41,10 @@ export function createMcpRoute({
 }): (request: Request) => Promise<Response> {
   const mcp = createMcpHandler(
     (ctx) => {
-      const server = new McpServer({ name: 'warren', version: '0.0.0' })
+      const server = new McpServer(
+        { name: 'warren', version: '0.0.0' },
+        { instructions: SERVER_INSTRUCTIONS },
+      )
       const userId = ctx.authInfo?.extra?.userId
       // The route sets it for every request it serves; a missing one is a bug, not a guest.
       if (typeof userId !== 'string') throw new Error('mcp: no user on the request')

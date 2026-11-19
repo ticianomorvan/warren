@@ -83,8 +83,20 @@ const present = (version: number, createdAt: string, p: Profile) => ({
         monthly_income_display: formatMoney(p.monthly_income, p.currency),
       }),
   currency: p.currency,
-  goals: p.goals.map((g) => ({ ...g, display: formatMoney(g.target, g.currency) })),
-  obligations: p.obligations.map((o) => ({ ...o, display: formatMoney(o.amount, o.currency) })),
+  goals: p.goals.map((g) => ({
+    name: g.name,
+    target: g.target,
+    display: formatMoney(g.target, g.currency),
+    currency: g.currency,
+    date: g.date,
+  })),
+  obligations: p.obligations.map((o) => ({
+    name: o.name,
+    amount: o.amount,
+    display: formatMoney(o.amount, o.currency),
+    currency: o.currency,
+    ...(o.due_day === undefined ? {} : { due_day: o.due_day }),
+  })),
   risk_limits: p.risk_limits,
 })
 

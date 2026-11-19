@@ -1,10 +1,9 @@
-import { argentinaDay } from './argentina'
+import { argentinaDay } from '../time/argentina'
 import { FACTS } from './knowledge/facts'
 import { PRINCIPLES } from './knowledge/principles'
 import { TRAPS } from './knowledge/traps'
 import type { Fact, Principle, Topic, Trap } from './knowledge/types'
 
-export { argentinaDay, argentinaMinute } from './argentina'
 export {
   type Fact,
   PROFESSIONALS,

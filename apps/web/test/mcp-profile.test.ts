@@ -113,7 +113,8 @@ describe('profile_get and its scope', () => {
     await save(a.id, profile('100.00'))
     await save(a.id, profile('250000.50', 'Auto'))
     const res = await get(a.withProfile)
-    expect(res.structuredContent?.profile).toMatchObject({
+    const p = res.structuredContent?.profile
+    expect(p).toMatchObject({
       version: 2,
       monthly_income: '250000.50',
       monthly_income_display: '$ 250.000,50',
@@ -149,8 +150,21 @@ describe('profile_get and its scope', () => {
       'saved_at_local',
       'version',
     ])
+    expect(Object.keys(p?.goals[0] ?? {}).sort()).toEqual([
+      'currency',
+      'date',
+      'display',
+      'name',
+      'target',
+    ])
+    expect(Object.keys(p?.obligations[0] ?? {}).sort()).toEqual([
+      'amount',
+      'currency',
+      'display',
+      'due_day',
+      'name',
+    ])
     // Argentina is UTC-3 all year.
-    const p = res.structuredContent?.profile
     const saved = new Date(p?.saved_at ?? '')
     expect(p?.saved_at_local).toBe(
       new Date(saved.getTime() - 3 * 3_600_000).toISOString().slice(0, 16).replace('T', ' '),
