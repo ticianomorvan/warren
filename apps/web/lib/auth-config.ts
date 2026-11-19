@@ -47,23 +47,20 @@ export const LEDGER_READ_SCOPE = 'ledger:read'
 export const ACCESS_TOKEN_SECONDS = 15 * 60
 
 /**
- * Whose client ids may connect: a client's `client_id` is a URL Warren fetches, so only these
- * hosts are ever fetched. Extending the list is slice 11.
+ * The clients that may connect, by exact `client_id`. A client id is a URL Warren fetches, so
+ * only these are ever fetched: claude.ai (web and Desktop) and Claude Code, as seen when each
+ * first connected on 2026-11-19. Extending the list is slice 11.
  */
-export const CLIENT_ID_HOSTS: readonly string[] = ['claude.ai', 'claude.com']
+export const CLIENT_IDS: readonly string[] = [
+  'https://claude.ai/oauth/mcp-oauth-client-metadata',
+  'https://claude.ai/oauth/claude-code-client-metadata',
+]
 
 /** The MCP endpoint, which is also the audience of every access token (RFC 8707). */
 export const mcpResourceUrl = (baseURL: string) => new URL('/api/mcp', baseURL).href
 
-/** True for an https client id on one of `CLIENT_ID_HOSTS`. Checked before any fetch. */
-function clientIdAllowed(clientId: string): boolean {
-  try {
-    const url = new URL(clientId)
-    return url.protocol === 'https:' && CLIENT_ID_HOSTS.includes(url.hostname)
-  } catch {
-    return false
-  }
-}
+/** True only for a client id on `CLIENT_IDS`, compared as given. Checked before any fetch. */
+const clientIdAllowed = (clientId: string): boolean => CLIENT_IDS.includes(clientId)
 
 /**
  * Email and password only: no outbound mail exists yet, so no verification and no reset (the
@@ -184,7 +181,7 @@ export function createAuth(settings: AuthSettings) {
         // Public clients only (no secret exists for a metadata-document client): no client_credentials.
         grantTypes: ['authorization_code', 'refresh_token'],
         // Nobody registers, edits, lists or deletes a client over HTTP: a client exists only as a
-        // metadata document from an allowed host. Without this, any signed-in user could create
+        // metadata document on `CLIENT_IDS`. Without this, any signed-in user could create
         // one with their own redirect URI and so get a token around the allow-list below.
         clientPrivileges: () => false,
         accessTokenExpiresIn: ACCESS_TOKEN_SECONDS,
@@ -192,7 +189,7 @@ export function createAuth(settings: AuthSettings) {
         // replayed for 30 seconds to recover a lost response; a client that loses one signs in again.
         refreshTokenReuseInterval: 0,
       }),
-      // No Dynamic Client Registration: a client is its own metadata document, from an allowed host.
+      // No Dynamic Client Registration: a client is its own metadata document, on `CLIENT_IDS`.
       cimd({
         fetchClientMetadataResource: settings.fetchClientMetadataResource ?? fetchOverNode,
         metadataProfile: 'mcp-2026-07-28',

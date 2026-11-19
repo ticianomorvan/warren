@@ -10,7 +10,7 @@ import { createMcpRoute } from '../lib/mcp'
 export const BASE = 'http://localhost:3000'
 export const RESOURCE = mcpResourceUrl(BASE)
 export const PASSWORD = 'a long enough password'
-export const CLAIMS_CLIENT = 'https://claude.ai/oauth/test-client.json'
+export const CLAIMS_CLIENT = 'https://claude.ai/oauth/mcp-oauth-client-metadata'
 export const CLAUDE_CALLBACK = 'https://claude.ai/api/mcp/auth_callback'
 
 export let t: Awaited<ReturnType<typeof testDatabase>>
