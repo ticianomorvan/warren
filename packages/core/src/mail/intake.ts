@@ -18,7 +18,7 @@ import {
 } from './resend'
 import type { TxtResolver } from './resolver'
 import { SENDER_POLICY_VERSION, type SenderPolicy } from './senders'
-import { type MailVerdict, verifySignedMail } from './verify'
+import { type MailVerdict, type RejectReason, verifySignedMail } from './verify'
 
 /**
  * Where raw files live (Vercel Blob in production). Every store used for mail is per user: it
@@ -45,6 +45,8 @@ export type NewMail = {
 /** A mail's settled verdict: what parsing needs when verified, nothing more when rejected. */
 export type FinalVerdict = { verdict: 'rejected' } | ({ verdict: 'verified' } & VerifiedMail)
 
+export type RejectedMail = { mailId: string; pathname: string; receivedAt: Date }
+
 export type PendingParse = VerifiedMail & { mailId: string; pathname: string }
 
 /** Append-only record of one user's mail, verification attempts and parses. Writes are idempotent. */
@@ -64,9 +66,12 @@ export interface MailLog {
    * Mails received since `since` whose latest verdict is a rejection as `not-addressed-to-user`:
    * what a newly claimed mailbox may rescue.
    */
-  rejectedNotAddressed(
-    since: Date,
-  ): Promise<{ mailId: string; pathname: string; receivedAt: Date }[]>
+  rejectedNotAddressed(since: Date): Promise<RejectedMail[]>
+  /**
+   * Mails whose latest verdict is a rejection as `unknown-sender` recorded under a policy
+   * version older than `beforePolicyVersion`: what a sender added to the policy since may rescue.
+   */
+  rejectedUnknownSender(beforePolicyVersion: number): Promise<RejectedMail[]>
 }
 
 /** Google's forwarding confirmations, as the user's page will show them. Sealed at rest. */
@@ -371,16 +376,78 @@ export async function reverifyRejected(
   now: Date = new Date(),
 ): Promise<number> {
   const since = new Date(now.getTime() - CONFIRMATION_WINDOW_DAYS * 86_400_000)
+  const outcomes = await reverify(
+    deps,
+    userId,
+    (log) => log.rejectedNotAddressed(since),
+    (mail) => isNews(mail.receivedAt, now),
+  )
+  return outcomes.filter((o) => o === 'verified').length
+}
+
+/** Why a re-verified mail did not verify: a closed set, so counts by reason never carry free text. */
+export type NotVerifiedReason = RejectReason | 'dns-temperror'
+
+export type ReverifyCounts = {
+  checked: number
+  verified: number
+  stillRejected: number
+  /** Why the rest did not verify, by reason (a DNS failure counts as `dns-temperror`). */
+  reasons: Partial<Record<NotVerifiedReason, number>>
+}
+
+/**
+ * After the sender policy changes, checks again the user's mail rejected as `unknown-sender` under
+ * an older `SENDER_POLICY_VERSION`, from the sealed files and the current `SENDERS`. Each gets a
+ * new verdict appended; one that now verifies is parsed and recorded. It never notifies: this is
+ * old mail, which should not buzz the phone. A mail that still fails is rejected under the new
+ * version, so a second run finds nothing, except one the DNS could not answer, which stays a
+ * candidate. Counts only; nothing of the mail leaves this function.
+ */
+export async function reverifyUnknownSender(
+  deps: IntakeDeps,
+  userId: string,
+): Promise<ReverifyCounts> {
+  const outcomes = await reverify(
+    deps,
+    userId,
+    (log) => log.rejectedUnknownSender(SENDER_POLICY_VERSION),
+    () => false,
+  )
+  const reasons: Partial<Record<NotVerifiedReason, number>> = {}
+  for (const o of outcomes) if (o !== 'verified') reasons[o] = (reasons[o] ?? 0) + 1
+  const verified = outcomes.filter((o) => o === 'verified').length
+  return {
+    checked: outcomes.length,
+    verified,
+    stillRejected: outcomes.length - verified,
+    reasons,
+  }
+}
+
+/**
+ * Shared by the two re-verifications: reads each candidate from its sealed file, appends a new
+ * verdict (`settled: null`: the log is append-only and the latest verdict wins), and parses and
+ * records a mail that now verifies. DNS is fetched outside any transaction. Returns, per
+ * candidate, 'verified' or the reason it did not verify. A candidate whose file is missing or
+ * does not match its id is skipped.
+ */
+async function reverify(
+  deps: IntakeDeps,
+  userId: string,
+  find: (log: MailLog) => Promise<RejectedMail[]>,
+  notify: (mail: RejectedMail) => boolean,
+): Promise<('verified' | NotVerifiedReason)[]> {
   const { candidates, mailboxes, store, mailId } = await deps.tenancy.withUser(
     userId,
     async (ctx) => ({
-      candidates: await ctx.log.rejectedNotAddressed(since),
+      candidates: await find(ctx.log),
       mailboxes: ctx.mailboxes,
       store: ctx.store,
       mailId: ctx.mailId,
     }),
   )
-  let rescued = 0
+  const outcomes: ('verified' | NotVerifiedReason)[] = []
   for (const mail of candidates) {
     const raw = await store.get(mail.pathname)
     if (!raw || mailId(raw) !== mail.mailId) continue
@@ -391,13 +458,16 @@ export async function reverifyRejected(
       settled: null,
       done: false,
     })
-    if (verdict.verdict !== 'verified') continue
-    rescued++
-    await parseAndRecord(deps, userId, input, mail.mailId, verdict, {
-      notify: isNews(mail.receivedAt, now),
-    })
+    if (verdict.verdict !== 'verified') {
+      // With `settled: null` the verdict is always freshly checked, so it carries its reason.
+      if (!('reason' in verdict)) throw new Error('a fresh verdict always has a reason')
+      outcomes.push(verdict.reason)
+      continue
+    }
+    outcomes.push('verified')
+    await parseAndRecord(deps, userId, input, mail.mailId, verdict, { notify: notify(mail) })
   }
-  return rescued
+  return outcomes
 }
 
 export type ReplayResult = {

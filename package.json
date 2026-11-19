@@ -25,6 +25,7 @@
     "user:set-password": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/user-set-password.ts",
     "user:erase": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/user-erase.ts",
     "mail:skeleton": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/mail-skeleton.ts",
+    "mail:reverify": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/mail-reverify.ts",
     "mail:parse-pending": "tsx --env-file-if-exists=apps/web/.env.local --env-file-if-exists=.vercel/.env.development.local scripts/mail-parse-pending.ts",
     "ledger:accounts": "tsx --env-file-if-exists=apps/web/.env.local scripts/ledger-accounts.ts",
     "ledger:status": "tsx --env-file-if-exists=apps/web/.env.local scripts/ledger-status.ts",

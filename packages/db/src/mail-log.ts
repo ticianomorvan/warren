@@ -6,7 +6,7 @@ import type {
   ParseResult,
   PendingParse,
 } from '@warren/core'
-import { and, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, isNull, lt, type SQL, sql } from 'drizzle-orm'
 import type { Scope } from './client'
 import { blobFile, inboundMail, mailbox, mailDelivery, mailParse, mailVerdict } from './schema'
 
@@ -23,6 +23,38 @@ const text = (scope: Scope, sealed: Uint8Array, aad: string) =>
 /** One user's mail log. Reads and writes run under that user's row-level security. */
 export function createMailLog(scope: Scope): MailLog {
   const { tx } = scope
+  /**
+   * Mails whose latest verified-or-rejected verdict is a rejection for `reason`, oldest first,
+   * optionally received since a date or judged under a policy older than a version.
+   */
+  const rejectedBy = (reason: string, beforePolicyVersion?: number, since?: Date) => {
+    const latest = tx
+      .selectDistinctOn([mailVerdict.mailId], {
+        mailId: mailVerdict.mailId,
+        verdict: mailVerdict.verdict,
+        reason: mailVerdict.reason,
+        policyVersion: mailVerdict.policyVersion,
+      })
+      .from(mailVerdict)
+      .where(inArray(mailVerdict.verdict, ['verified', 'rejected']))
+      .orderBy(mailVerdict.mailId, desc(mailVerdict.id))
+      .as('latest')
+    const filters: SQL[] = [eq(latest.verdict, 'rejected'), eq(latest.reason, reason)]
+    if (beforePolicyVersion !== undefined)
+      filters.push(lt(latest.policyVersion, beforePolicyVersion))
+    if (since) filters.push(gte(inboundMail.receivedAt, since))
+    return tx
+      .select({
+        mailId: latest.mailId,
+        pathname: blobFile.pathname,
+        receivedAt: inboundMail.receivedAt,
+      })
+      .from(latest)
+      .innerJoin(blobFile, eq(blobFile.mailId, latest.mailId))
+      .innerJoin(inboundMail, eq(inboundMail.mailId, latest.mailId))
+      .where(and(...filters))
+      .orderBy(inboundMail.receivedAt)
+  }
   return {
     async hasMail(mailId) {
       const rows = await tx
@@ -109,33 +141,11 @@ export function createMailLog(scope: Scope): MailLog {
     },
 
     async rejectedNotAddressed(since) {
-      const latest = tx
-        .selectDistinctOn([mailVerdict.mailId], {
-          mailId: mailVerdict.mailId,
-          verdict: mailVerdict.verdict,
-          reason: mailVerdict.reason,
-        })
-        .from(mailVerdict)
-        .where(inArray(mailVerdict.verdict, ['verified', 'rejected']))
-        .orderBy(mailVerdict.mailId, desc(mailVerdict.id))
-        .as('latest')
-      return tx
-        .select({
-          mailId: latest.mailId,
-          pathname: blobFile.pathname,
-          receivedAt: inboundMail.receivedAt,
-        })
-        .from(latest)
-        .innerJoin(blobFile, eq(blobFile.mailId, latest.mailId))
-        .innerJoin(inboundMail, eq(inboundMail.mailId, latest.mailId))
-        .where(
-          and(
-            eq(latest.verdict, 'rejected'),
-            eq(latest.reason, 'not-addressed-to-user'),
-            gte(inboundMail.receivedAt, since),
-          ),
-        )
-        .orderBy(inboundMail.receivedAt)
+      return rejectedBy('not-addressed-to-user', undefined, since)
+    },
+
+    async rejectedUnknownSender(beforePolicyVersion) {
+      return rejectedBy('unknown-sender', beforePolicyVersion)
     },
 
     async hasParse(mailId, templateSetVersion) {

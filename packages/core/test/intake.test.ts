@@ -22,6 +22,7 @@ import {
   replayIncomplete,
   replayUnrouted,
   reverifyRejected,
+  reverifyUnknownSender,
   type Tenancy,
   type UserContext,
   userFilesPrefix,
@@ -29,11 +30,19 @@ import {
 import type { ParseResult } from '../src/mail/parse'
 import { fetchReceivedMail, verifyResendWebhook } from '../src/mail/resend'
 import type { TxtResolver } from '../src/mail/resolver'
-import { SENDERS } from '../src/mail/senders'
+import { SENDER_POLICY_VERSION, SENDERS } from '../src/mail/senders'
 import type { MailVerdict } from '../src/mail/verify'
 import { UserErasedError } from '../src/user'
 import { htmlMessage, transferSentHtml } from './fixtures'
-import { failingResolver, MAILBOX, makeSigner, message, RECEIVED_AT, resolverFor } from './helpers'
+import {
+  beloMessage,
+  failingResolver,
+  MAILBOX,
+  makeSigner,
+  message,
+  RECEIVED_AT,
+  resolverFor,
+} from './helpers'
 
 const SECRET = `whsec_${Buffer.from('a-test-secret-of-24-bytes').toString('base64')}`
 const NOW = new Date('2026-11-14T13:01:00Z')
@@ -47,7 +56,7 @@ function signedHeaders(body: string, id = 'msg_1', at = NOW) {
 class MemoryLog implements MailLog {
   mails = new Map<string, NewMail>()
   deliveries = new Map<string, string>()
-  verdicts: { mailId: string; verdict: MailVerdict }[] = []
+  verdicts: { mailId: string; verdict: MailVerdict; policyVersion: number }[] = []
   async hasMail(mailId: string) {
     return this.mails.has(mailId)
   }
@@ -65,8 +74,8 @@ class MemoryLog implements MailLog {
       ? { verdict: 'verified', senderId: v.senderId, subject: v.subject, signedDate: v.signedDate }
       : { verdict: 'rejected' }
   }
-  async recordVerdict(mailId: string, verdict: MailVerdict) {
-    this.verdicts.push({ mailId, verdict })
+  async recordVerdict(mailId: string, verdict: MailVerdict, policyVersion: number) {
+    this.verdicts.push({ mailId, verdict, policyVersion })
   }
   async hasParse(mailId: string, set: number) {
     return this.parses.has(`${mailId}:${set}`)
@@ -82,6 +91,21 @@ class MemoryLog implements MailLog {
         v?.verdict === 'rejected' &&
         v.reason === 'not-addressed-to-user' &&
         mail.receivedAt >= since
+      ) {
+        out.push({ mailId, pathname: mail.pathname, receivedAt: mail.receivedAt })
+      }
+    }
+    return out
+  }
+  async rejectedUnknownSender(before: number) {
+    const out: { mailId: string; pathname: string; receivedAt: Date }[] = []
+    for (const [mailId, mail] of this.mails) {
+      const latest = await this.latestAny(mailId)
+      const v = latest?.verdict
+      if (
+        v?.verdict === 'rejected' &&
+        v.reason === 'unknown-sender' &&
+        (latest?.policyVersion ?? 0) < before
       ) {
         out.push({ mailId, pathname: mail.pathname, receivedAt: mail.receivedAt })
       }
@@ -933,5 +957,101 @@ describe('reverifyRejected', () => {
     expect(ledger.recorded).toEqual([])
     // And it is not looked at again.
     expect(await reverifyRejected(deps, USER, NOW)).toBe(0)
+  })
+})
+
+describe('reverifyUnknownSender', () => {
+  const belo = makeSigner('belo.app')
+  const unknown: MailVerdict = {
+    verdict: 'rejected',
+    reason: 'unknown-sender',
+    fromAddress: 'transaction@belo.app',
+  }
+
+  /** Stores a mail and its rejection as an earlier policy version left them. */
+  async function stored(
+    tenancy: MemoryTenancy,
+    text: string,
+    verdict: MailVerdict,
+    policyVersion: number,
+  ) {
+    const raw = new TextEncoder().encode(text)
+    return tenancy.withUser(USER, async (ctx) => {
+      const id = ctx.mailId(raw)
+      const pathname = rawMailPathname(USER, id)
+      await ctx.store.put(pathname, raw, 'message/rfc822')
+      await ctx.log.recordMail({
+        mailId: id,
+        pathname,
+        bytes: raw.length,
+        provider: 'resend',
+        providerId: `em_${id.slice(0, 6)}`,
+        receivedAt: RECEIVED_AT,
+      })
+      await ctx.log.recordVerdict(id, verdict, policyVersion)
+      return id
+    })
+  }
+
+  it('verifies a mail rejected under policy 1, silently, and finds nothing the second time', async () => {
+    const { deps, tenancy, log, ledger } = await setup(resolverFor({ [belo.dnsName]: belo.record }))
+    const id = await stored(tenancy, await belo.sign(beloMessage()), unknown, 1)
+
+    expect(await reverifyUnknownSender(deps, USER)).toEqual({
+      checked: 1,
+      verified: 1,
+      stillRejected: 0,
+      reasons: {},
+    })
+    expect(log.verdicts.at(-1)).toMatchObject({
+      mailId: id,
+      verdict: { verdict: 'verified', senderId: 'belo' },
+      policyVersion: SENDER_POLICY_VERSION,
+    })
+    expect((await log.finalVerdict(id))?.verdict).toBe('verified')
+    // Parsed under the current templates: no Belo template yet, so unparsed, and nothing ledgered.
+    expect(log.parses.size).toBe(1)
+    expect(ledger.recorded).toEqual([])
+
+    const verdicts = log.verdicts.length
+    expect(await reverifyUnknownSender(deps, USER)).toEqual({
+      checked: 0,
+      verified: 0,
+      stillRejected: 0,
+      reasons: {},
+    })
+    expect(log.verdicts).toHaveLength(verdicts)
+  })
+
+  it('counts what still fails by reason, and leaves other rejections and newer verdicts alone', async () => {
+    const { deps, tenancy, log } = await setup(resolverFor({ [belo.dnsName]: belo.record }))
+    // Still unknown: a From that is on no policy.
+    await stored(tenancy, await belo.sign(beloMessage({ from: 'other@belo.app' })), unknown, 1)
+    // Rejected for another reason: untouched.
+    const other = await stored(
+      tenancy,
+      await belo.sign(beloMessage({ to: 'stranger@example.com' })),
+      { verdict: 'rejected', reason: 'not-addressed-to-user', fromAddress: 'transaction@belo.app' },
+      1,
+    )
+    // Already judged under the current policy: untouched.
+    const current = await stored(
+      tenancy,
+      await belo.sign(beloMessage({ from: 'x@belo.app' })),
+      unknown,
+      SENDER_POLICY_VERSION,
+    )
+
+    expect(await reverifyUnknownSender(deps, USER)).toEqual({
+      checked: 1,
+      verified: 0,
+      stillRejected: 1,
+      reasons: { 'unknown-sender': 1 },
+    })
+    for (const id of [other, current]) {
+      expect(log.verdicts.filter((v) => v.mailId === id)).toHaveLength(1)
+    }
+    // The still-unknown mail is now judged under the current version: a second run skips it.
+    expect((await reverifyUnknownSender(deps, USER)).checked).toBe(0)
   })
 })

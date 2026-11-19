@@ -14,7 +14,7 @@ export type SenderPolicy = {
 }
 
 /** Bump when a policy below changes, so stored verdicts say which rules produced them. */
-export const SENDER_POLICY_VERSION = 1
+export const SENDER_POLICY_VERSION = 2
 
 export const SENDERS: readonly SenderPolicy[] = [
   {
@@ -30,6 +30,14 @@ export const SENDERS: readonly SenderPolicy[] = [
     id: 'bbva-transfers',
     fromAddresses: ['avisos@bbva.com.ar'],
     allowedSigners: ['bbva.com.ar'],
+    requiredSignedHeaders: ['from', 'to', 'date', 'subject'],
+    minKeyBits: 1024,
+  },
+  {
+    // Belo wallet operations. The mail also carries an amazonses.com signature, which is ignored.
+    id: 'belo',
+    fromAddresses: ['transaction@belo.app'],
+    allowedSigners: ['belo.app'],
     requiredSignedHeaders: ['from', 'to', 'date', 'subject'],
     minKeyBits: 1024,
   },
