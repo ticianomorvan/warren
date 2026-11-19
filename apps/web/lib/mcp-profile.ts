@@ -91,6 +91,13 @@ const outputSchema = z.object({
     ),
 })
 
+const shareText = (percent: number) =>
+  percent === 100
+    ? 'no limit on savings in USD'
+    : percent === 0
+      ? 'nothing in savings in USD'
+      : `at most ${percent}% of savings in USD`
+
 /** Field by field on top of the validated profile: each amount gets its `display`, as in the ledger tools. */
 const present = (version: number, createdAt: string, p: Profile, now: Date) => ({
   version,
@@ -128,7 +135,7 @@ const present = (version: number, createdAt: string, p: Profile, now: Date) => (
     ...(p.risk_limits.max_share_in_usd === undefined
       ? {}
       : {
-          max_share_in_usd_display: `${p.risk_limits.max_share_in_usd === 100 ? '' : 'at most '}${p.risk_limits.max_share_in_usd}% of savings in USD`,
+          max_share_in_usd_display: shareText(p.risk_limits.max_share_in_usd),
         }),
   },
 })
@@ -149,10 +156,10 @@ export function registerProfileTools(
         "Returns the user's latest financial profile, as they wrote it on their Warren profile " +
         'page: monthly income, savings goals (name, target amount, currency, target date), ' +
         'monthly obligations (name, amount, currency, due day) and risk limits (months of ' +
-        'emergency fund, maximum share held in dollars), each with a `_display` text. Each goal ' +
-        'also has the time left to its date, computed in Argentina time: `days_left` (zero or ' +
-        'negative means today or past) and `time_left` as text, e.g. "6 months, 13 days"; quote ' +
-        'it as given and never work out time left yourself. Amounts are exact decimal strings, each ' +
+        'emergency fund, maximum share held in dollars), with `emergency_months_display` and ' +
+        '`max_share_in_usd_display` texts. Each goal also has the time left to its date, computed ' +
+        'in Argentina time: `days_left` (zero or negative means today or past) and `time_left`, ' +
+        'text such as "6 months, 13 days", "today" or "overdue by 3 months, 2 days". Amounts are exact decimal strings, each ' +
         'with a `display` text to show the person; quote them as given and never add, convert or ' +
         'round them. The save time comes in UTC and in Argentina time (`saved_at_local`). Returns `{ "profile": null }` when ' +
         'the user has not saved one, and also `"stored_profile_invalid": true` when the saved ' +

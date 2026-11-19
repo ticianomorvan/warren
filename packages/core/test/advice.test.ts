@@ -137,8 +137,8 @@ describe('fact displays', () => {
     expect(scale?.statement).not.toMatch(/\d{1,3},\d{3}/)
   })
 
-  it('knows no display for a unit it cannot read', () => {
-    expect(factDisplay('1', 'widgets')).toBeUndefined()
+  it('throws on a unit it cannot read', () => {
+    expect(() => factDisplay('1', 'widgets')).toThrow(/no display for unit/)
   })
 })
 

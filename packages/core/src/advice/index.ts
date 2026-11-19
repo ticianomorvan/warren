@@ -32,12 +32,11 @@ export function factsFor(now: Date, topic?: Topic): FactView[] {
   const today = argentinaDay(now)
   return FACTS.filter((f) => topic === undefined || f.topic === topic).map(
     ({ parts, ...f }): FactView => {
-      const display = f.value === undefined || !f.unit ? undefined : factDisplay(f.value, f.unit)
       return {
         ...f,
-        ...(display === undefined ? {} : { display }),
+        ...(f.value !== undefined && f.unit ? { display: factDisplay(f.value, f.unit) } : {}),
         ...(parts
-          ? { parts: parts.map((p) => ({ ...p, display: factDisplay(p.value, p.unit) ?? '' })) }
+          ? { parts: parts.map((p) => ({ ...p, display: factDisplay(p.value, p.unit) })) }
           : {}),
         stale: today > f.review_by,
       }

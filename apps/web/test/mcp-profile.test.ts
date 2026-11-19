@@ -203,6 +203,23 @@ describe('profile_get and its scope', () => {
     expect(issues({ profile: { nope: 1 } })).toBeTruthy()
   })
 
+  it('words the share limit at its two ends', async () => {
+    const u = await signedInUser()
+    const token = (await connect(u, { scope: BOTH })).access_token
+    const limits = async (max: number) => {
+      await save(u.id, {
+        ...profile('1.00'),
+        risk_limits: { emergency_months: 1, max_share_in_usd: max },
+      })
+      return (await get(token)).structuredContent?.profile?.risk_limits
+    }
+    expect(await limits(100)).toMatchObject({
+      emergency_months_display: '1 month',
+      max_share_in_usd_display: 'no limit on savings in USD',
+    })
+    expect(await limits(0)).toMatchObject({ max_share_in_usd_display: 'nothing in savings in USD' })
+  })
+
   it('says so, with a strict output, when the stored profile no longer validates', async () => {
     const u = await signedInUser()
     const token = (await connect(u, { scope: BOTH })).access_token

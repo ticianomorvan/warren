@@ -105,8 +105,8 @@ export function registerKnowledgeTools(server: McpServer, { now }: { now: () => 
       description:
         'Returns dated facts about Argentina (exchange rates, deposit rates, inflation, ' +
         'monotributo, deposit guarantee, tax and pension figures), filtered by `topic` when ' +
-        'given. Each has its statement, value and unit, a `display` text of the value to show the ' +
-        'person (quote it as given), `parts` when it holds several named amounts, the date it was read (`as_of`), the ' +
+        'given. Each has its statement, value and unit, a `display` text of the value, ' +
+        '`parts` when it holds several named amounts, the date it was read (`as_of`), the ' +
         'date to check it again by (`review_by`), `stale` (true when the Argentine calendar ' +
         'date, America/Argentina/Buenos_Aires, is past `review_by`), whether it is a `slow` regulatory figure or a `moving` market value, ' +
         'and its source name and link.',
