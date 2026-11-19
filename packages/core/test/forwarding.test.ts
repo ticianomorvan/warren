@@ -154,9 +154,15 @@ describe('the policy itself', () => {
 })
 
 describe('isConfirmUrl', () => {
-  it('accepts only https on mail-settings.google.com with a vf- path', () => {
+  it("accepts only https on Google's two confirm hosts with a vf- path", () => {
     expect(isConfirmUrl(LINK)).toBe(true)
+    // The second confirmation seen in production carried its link on mail.google.com.
+    expect(isConfirmUrl('https://mail.google.com/mail/vf-%5BANGjdJ-abc%5D-xyz')).toBe(true)
     for (const bad of [
+      'http://mail.google.com/mail/vf-abc',
+      'https://mail.google.com/mail/uf-abc',
+      'https://mail.google.com.evil.example/mail/vf-abc',
+      'https://xmail.google.com/mail/vf-abc',
       CANCEL,
       'http://mail-settings.google.com/mail/vf-abc',
       'https://mail-settings.google.com/other/vf-abc',

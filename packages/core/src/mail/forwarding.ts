@@ -25,12 +25,13 @@ export const GOOGLE_FORWARDING_POLICY: SenderPolicy = {
  */
 export const CONFIRMATION_WINDOW_DAYS = 7
 
-const CONFIRM_HOST = 'mail-settings.google.com'
+/** Google sends the confirm link on either host (seen in real confirmations, 2026-11-19). */
+const CONFIRM_HOSTS = ['mail-settings.google.com', 'mail.google.com']
 const CONFIRM_PATH = '/mail/vf-'
 /** Where an address ends: ASCII `local@domain` only, so punctuation around one never joins it. */
 const ADDRESS = /[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+/gi
 
-/** True for exactly Google's confirm link: https, no userinfo, that host, a `vf-` path. */
+/** True for exactly Google's confirm link: https, no userinfo, one of Google's two hosts, a `vf-` path. */
 export function isConfirmUrl(candidate: string): boolean {
   try {
     const url = new URL(candidate)
@@ -38,7 +39,7 @@ export function isConfirmUrl(candidate: string): boolean {
       url.protocol === 'https:' &&
       url.username === '' &&
       url.password === '' &&
-      url.hostname === CONFIRM_HOST &&
+      CONFIRM_HOSTS.includes(url.hostname) &&
       url.pathname.startsWith(CONFIRM_PATH)
     )
   } catch {
@@ -56,7 +57,7 @@ export const looksLikeGoogleForwarding = (fromAddresses: readonly string[]): boo
 /**
  * Pulls the two facts out of a verified confirmation, with no language-specific wording: the
  * requesting address is the one address in the signed Subject that is not the Warren address,
- * and the link is the `vf-` URL on mail-settings.google.com in the text body. Null when either
+ * and the link is the `vf-` URL on one of Google's confirm hosts in the text body. Null when either
  * is missing or ambiguous. Pure: the caller has already verified the mail.
  */
 export async function extractForwardingConfirmation(
