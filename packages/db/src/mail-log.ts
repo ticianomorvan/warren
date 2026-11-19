@@ -354,8 +354,9 @@ export type MailProgress =
 
 /**
  * For the onboarding page: of the mails whose latest verdict came after the user's first mailbox
- * was connected (so a mail the claim re-checked counts, and history from before does not), a
- * verified one wins, else the newest rejected one, else waiting. Reads the clear verdict columns
+ * was connected (so a mail the claim re-checked counts, and history from before does not), the
+ * earliest verified one wins, else the newest rejected one, else waiting. Two queries of one row
+ * each, so a flood of rejections cannot push a verified mail out. Reads the clear verdict columns
  * and the template id only; no mail is opened.
  */
 export async function firstMailProgress(scope: Scope): Promise<MailProgress> {
@@ -376,26 +377,27 @@ export async function firstMailProgress(scope: Scope): Promise<MailProgress> {
     .from(mailParse)
     .orderBy(mailParse.mailId, desc(mailParse.templateSetVersion))
     .as('parse')
-  const rows = await tx
-    .select({
-      verdict: latest.verdict,
-      reason: latest.reason,
-      signedDate: latest.signedDate,
-      templateId: parse.templateId,
-    })
+  const columns = {
+    reason: latest.reason,
+    signedDate: latest.signedDate,
+    templateId: parse.templateId,
+  }
+  const after = gte(latest.checkedAt, new Date(since))
+  const first = await tx
+    .select(columns)
     .from(latest)
     .leftJoin(parse, eq(parse.mailId, latest.mailId))
-    .where(
-      and(
-        gte(latest.checkedAt, new Date(since)),
-        inArray(latest.verdict, ['verified', 'rejected']),
-      ),
-    )
+    .where(and(after, eq(latest.verdict, 'verified')))
+    .orderBy(latest.id)
+    .limit(1)
+  const ok = first[0]
+  if (ok?.signedDate)
+    return { state: 'verified', templateId: ok.templateId, signedDate: ok.signedDate }
+  const bad = await tx
+    .select({ reason: latest.reason })
+    .from(latest)
+    .where(and(after, eq(latest.verdict, 'rejected')))
     .orderBy(desc(latest.id))
-    .limit(50)
-  const verified = rows.find((r) => r.verdict === 'verified' && r.signedDate)
-  if (verified?.signedDate)
-    return { state: 'verified', templateId: verified.templateId, signedDate: verified.signedDate }
-  const rejected = rows.find((r) => r.verdict === 'rejected')
-  return rejected ? { state: 'rejected', reason: rejected.reason } : { state: 'waiting' }
+    .limit(1)
+  return bad[0] ? { state: 'rejected', reason: bad[0].reason } : { state: 'waiting' }
 }

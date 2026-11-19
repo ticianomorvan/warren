@@ -4,7 +4,7 @@ import { errorTag, reverifyRejected } from '@warren/core'
 import { asUser, type ClaimStatus, claimMailbox } from '@warren/db'
 import { database } from '@/lib/db'
 import { intakeDeps } from '@/lib/intake'
-import { type FirstMail, loadOnboarding } from '@/lib/onboarding'
+import { type FirstMail, loadStatus } from '@/lib/onboarding'
 import { getSession } from '@/lib/session'
 
 /*
@@ -50,15 +50,15 @@ export type StatusResult =
 
 /**
  * The page's poll: how many Gmails wait for a yes, whether a mailbox exists, and where the first
- * mail stands. Counts and words only: no address, link or mail content. The page compares it with
- * what it shows and reloads itself when something moved.
+ * mail stands. One light transaction, and counts and words only: no address, link or mail
+ * content. The page compares it with what it shows and reloads itself when something moved.
  */
 export async function onboardingStatus(): Promise<StatusResult> {
   const session = await getSession()
   if (!session) return { ok: false }
   try {
-    const { pending, mailboxes, firstMail } = await loadOnboarding(session.user.id)
-    return { ok: true, pending: pending.length, hasMailbox: mailboxes.length > 0, mail: firstMail }
+    const { pending, hasMailbox, mail } = await loadStatus(session.user.id)
+    return { ok: true, pending, hasMailbox, mail }
   } catch (error) {
     console.error('onboarding status failed:', errorTag(error))
     return { ok: false }

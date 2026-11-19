@@ -596,3 +596,7 @@ a.button-link.quiet {
   background: transparent;
   border-color: var(--line);
 }
+
+.addr {
+  overflow-wrap: anywhere;
+}

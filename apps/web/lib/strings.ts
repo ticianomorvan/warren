@@ -75,7 +75,10 @@ export const t = {
     ],
     filterSettings: 'Abrir filtros de Gmail',
     filterManual: 'Si preferís hacerlo a mano, creá un filtro con esta búsqueda en "De":',
-    filterManualAction: (address: string) => `Elegí "Reenviar a ${address}" y tocá "Crear filtro".`,
+    filterManualBefore: 'Elegí "Reenviar a ',
+    filterManualAfter: '" y tocá "Crear filtro".',
+    yourAddress: 'Tu dirección:',
+    pendingMore: 'Otro Gmail pidió reenviar a Warren:',
     filterOld:
       'Si antes reenviabas todo tu correo a Warren, cuando el filtro esté andando podés apagar ese reenvío.',
     waiting: 'Todavía no llegó ningún aviso de tu banco. Cuando llegue, lo ves acá.',

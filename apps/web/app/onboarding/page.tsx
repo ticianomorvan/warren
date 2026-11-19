@@ -3,7 +3,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { OnboardingPanel } from '@/components/onboarding-panel'
-import { loadOnboarding, stepStates } from '@/lib/onboarding'
+import { loadOnboarding } from '@/lib/onboarding'
 import { getSession } from '@/lib/session'
 import { t } from '@/lib/strings'
 
@@ -17,11 +17,6 @@ export default async function OnboardingPage() {
   const { address, pending, mailboxes, hasConfirmation, firstMail } = await loadOnboarding(
     session.user.id,
   )
-  const states = stepStates({
-    hasConfirmation,
-    hasMailbox: mailboxes.length > 0,
-    verified: firstMail.state === 'verified',
-  })
 
   return (
     <main className="screen">
@@ -35,7 +30,7 @@ export default async function OnboardingPage() {
           address={address}
           pending={pending}
           mailboxes={mailboxes}
-          states={states}
+          hasConfirmation={hasConfirmation}
           firstMail={firstMail}
           search={gmailFromQuery()}
         />

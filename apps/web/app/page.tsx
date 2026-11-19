@@ -1,5 +1,5 @@
 import { errorTag } from '@warren/core'
-import { asUser, firstMailProgress, mailboxesOf, movementCount } from '@warren/db'
+import { asUser, movementCount, onboardingProgress } from '@warren/db'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { NotificationsCard } from '@/components/notifications-card'
@@ -29,13 +29,14 @@ export default async function Home() {
   // Through asUser, so row-level security shows only this user's movements. An erased user has
   // no session (erasure deletes them, and none can be made), so this never meets one.
   const vapid = vapidPublicKey()
-  const { count, connected } = await asUser(database(), session.user.id, async (scope) => ({
-    count: await movementCount(scope),
-    // Connected: a Gmail claimed and a verified bank mail since. Until then, onboarding is the next step.
-    connected:
-      (await mailboxesOf(scope)).length > 0 &&
-      (await firstMailProgress(scope)).state === 'verified',
-  }))
+  const { count, connected } = await asUser(database(), session.user.id, async (scope) => {
+    const progress = await onboardingProgress(scope)
+    return {
+      count: await movementCount(scope),
+      // Connected: a Gmail claimed and a verified bank mail since. Until then, onboarding is the next step.
+      connected: progress.hasMailbox && progress.mail.state === 'verified',
+    }
+  })
 
   return (
     <main className="screen">

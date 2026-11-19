@@ -230,3 +230,14 @@ describe('bbva card purchase', () => {
     expect(await reason(cardPurchaseHtml({ merchant: '  ' }))).toBe('schema-fail:merchant')
   })
 })
+
+describe('templateKind', () => {
+  it('says what each template reads, and null for an unknown id', async () => {
+    const { templateKind, TEMPLATES } = await import('../src/mail/parse')
+    expect(templateKind('bbva.card-purchase')).toBe('card')
+    expect(templateKind('bbva.transfer-sent')).toBe('transfer')
+    expect(templateKind('nope')).toBeNull()
+    expect(templateKind(null)).toBeNull()
+    for (const template of TEMPLATES) expect(templateKind(template.id)).toBe(template.kind)
+  })
+})

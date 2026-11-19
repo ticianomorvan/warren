@@ -1,7 +1,7 @@
 import type { MailVerdict } from '@warren/core'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { asUser } from '../src/client'
-import { claimMailbox, createForwardingConfirmations } from '../src/forwarding'
+import { claimMailbox, createForwardingConfirmations, onboardingProgress } from '../src/forwarding'
 import { createMailLog, firstMailProgress } from '../src/mail-log'
 import { sha, testDatabase } from './helpers'
 
@@ -62,5 +62,45 @@ describe('firstMailProgress', () => {
       templateId: null,
       signedDate: new Date('2026-11-14T13:00:00Z'),
     })
+  })
+})
+
+describe('a flood of rejections', () => {
+  it('does not push a verified mail out, and onboardingProgress counts without opening anything', async () => {
+    const b = await t.newUser('flood')
+    const as = <T>(fn: Parameters<typeof asUser<T>>[2]) => asUser(t.app, b, fn)
+    const record = (id: string, verdict: MailVerdict) =>
+      as(async (scope) => {
+        const log = createMailLog(scope)
+        await log.recordMail({
+          mailId: id,
+          pathname: `u/x/mail/${id}.eml.sealed`,
+          bytes: 10,
+          provider: 'resend',
+          providerId: `em_${id}`,
+          receivedAt: new Date(),
+        })
+        await log.recordVerdict(id, verdict, 1)
+      })
+    const confirm = (address: string) =>
+      as((s) =>
+        createForwardingConfirmations(s).record(
+          { address, url: 'https://mail-settings.google.com/mail/vf-x' },
+          new Date(),
+        ),
+      )
+    await confirm('uno@gmail.com')
+    await confirm('dos@gmail.com')
+    expect(await as((s) => claimMailbox(s, 'uno@gmail.com'))).toBe('claimed')
+    expect(await as((s) => onboardingProgress(s))).toMatchObject({
+      pending: 1,
+      hasConfirmation: true,
+      hasMailbox: true,
+      mail: { state: 'waiting' },
+    })
+    await record(sha('d'), verified)
+    for (let i = 0; i < 51; i++) await record(i.toString(16).padStart(2, '0').repeat(32), rejected)
+    expect((await as(firstMailProgress)).state).toBe('verified')
+    expect((await as((s) => onboardingProgress(s))).mail.state).toBe('verified')
   })
 })

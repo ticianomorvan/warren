@@ -3,12 +3,15 @@
 import { useRouter } from 'next/navigation'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { claimGmail, onboardingStatus } from '@/app/onboarding/actions'
-import type { FirstMail, StepState } from '@/lib/onboarding'
+import type { FirstMail } from '@/lib/onboarding'
+import { type StepState, stepStates } from '@/lib/steps'
 import { t } from '@/lib/strings'
 
 const CONNECTOR_URL = 'https://heywarren.app/api/mcp'
 const CLAUDE_CODE_COMMAND = `claude mcp add --transport http warren ${CONNECTOR_URL}`
-const GMAIL_FILTERS = 'https://mail.google.com/mail/u/0/#settings/filters'
+// "/u/0/" is the first signed-in account; with several, the connected Gmail's own address names the right one.
+const gmailFilters = (account: string | undefined) =>
+  `https://mail.google.com/mail/u/${account ? encodeURIComponent(account) : '0'}/#settings/filters`
 const POLL_MS = 5000
 
 type Message = { text: string; failed: boolean } | null
@@ -64,10 +67,12 @@ function Step({
   children,
 }: {
   n: number
-  state: StepState
+  /** 'neutral' while the browser has not yet said whether Google's link was opened. */
+  state: StepState | 'neutral'
   title: string
   children?: ReactNode
 }) {
+  const quiet = state === 'todo' || state === 'neutral'
   return (
     <li className={`step ${state}`} aria-current={state === 'current' ? 'step' : undefined}>
       <span className="step-mark" aria-hidden="true">
@@ -76,12 +81,15 @@ function Step({
       <div className="step-body">
         <h2>
           {title}
-          <span className="step-state">
-            <span className="visually-hidden">{t.onboarding.stepLabel(n)}: </span>
-            {t.onboarding.stepState[state]}
-          </span>
+          {state === 'neutral' ? null : (
+            <span className="step-state">
+              <span className="visually-hidden">{t.onboarding.stepLabel(n)}: </span>
+              {t.onboarding.stepState[state]}
+            </span>
+          )}
         </h2>
-        {state === 'todo' ? null : children}
+        {/* Always mounted, so a live region inside is already there when it fills. */}
+        <div hidden={quiet}>{children}</div>
       </div>
     </li>
   )
@@ -98,20 +106,21 @@ export function OnboardingPanel({
   address,
   pending,
   mailboxes,
-  states,
+  hasConfirmation,
   firstMail,
   search,
 }: {
   address: string
   pending: { address: string; url: string }[]
   mailboxes: string[]
-  states: StepState[]
+  hasConfirmation: boolean
   firstMail: FirstMail
   /** The Gmail search for the manual filter, built on the server from the sender policy. */
   search: string
 }) {
   const router = useRouter()
   const [opened, setOpened] = useState<string[]>([])
+  const [mounted, setMounted] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [message, setMessage] = useState<Message>(null)
   const [mail, setMail] = useState(firstMail)
@@ -119,7 +128,10 @@ export function OnboardingPanel({
   const pendingCount = pending.length
   const verified = mail.state === 'verified'
 
-  useEffect(() => setOpened(pending.map((p) => p.address).filter(wasOpened)), [pending])
+  useEffect(() => {
+    setOpened(pending.map((p) => p.address).filter(wasOpened))
+    setMounted(true)
+  }, [pending])
   useEffect(() => setMail(firstMail), [firstMail])
 
   const poll = useCallback(async () => {
@@ -185,41 +197,48 @@ export function OnboardingPanel({
     }
   }
 
-  // The server's states, moved on one step when a pending Gmail's link was opened.
   const anyOpened = pending.some((p) => opened.includes(p.address))
-  const shown = [...states]
-  if (shown[1] === 'current' && anyOpened) {
-    shown[1] = 'done'
-    shown[2] = 'current'
-  }
+  const shown = stepStates({ hasConfirmation, hasMailbox, verified, opened: anyOpened })
+  // Until the browser has read which links were opened, steps 2 and 3 cannot say which is current.
+  const unsure = !mounted && !hasMailbox && pending.length > 0
   const s = t.onboarding.steps
 
   return (
     <ol className="steps">
       <Step n={1} state={shown[0] ?? 'todo'} title={s.address}>
-        <p className="note">{t.onboarding.addressHint}</p>
-        <p>
-          <code data-testid="warren-address" style={{ wordBreak: 'break-all' }}>
-            {address}
-          </code>
-        </p>
+        {shown[0] === 'done' ? (
+          <p>
+            {t.onboarding.yourAddress}{' '}
+            <code className="addr" data-testid="warren-address">
+              {address}
+            </code>
+          </p>
+        ) : (
+          <>
+            <p className="note">{t.onboarding.addressHint}</p>
+            <p>
+              <code className="addr" data-testid="warren-address">
+                {address}
+              </code>
+            </p>
+          </>
+        )}
         <CopyButton value={address} label={`${t.onboarding.copy}: ${address}`} />
       </Step>
 
-      <Step n={2} state={shown[1] ?? 'todo'} title={s.confirm}>
+      <Step n={2} state={unsure ? 'neutral' : (shown[1] ?? 'todo')} title={s.confirm}>
         {hasMailbox ? (
           <ul className="plain" data-testid="mailboxes">
             {mailboxes.map((m) => (
               <li key={m}>{t.onboarding.connected(m)}</li>
             ))}
           </ul>
-        ) : pending.length === 0 ? (
-          <p className="note" data-testid="pending">
-            {t.onboarding.waitingGoogle}
-          </p>
-        ) : (
+        ) : null}
+        {pending.length > 0 ? (
           <>
-            <p className="note">{t.onboarding.confirmHint}</p>
+            <p className="note">
+              {hasMailbox ? t.onboarding.pendingMore : t.onboarding.confirmHint}
+            </p>
             <ul className="plain" data-testid="pending">
               {pending.map((p) => (
                 <li key={p.address}>
@@ -233,11 +252,15 @@ export function OnboardingPanel({
               ))}
             </ul>
           </>
+        ) : hasMailbox ? null : (
+          <p className="note" data-testid="pending">
+            {t.onboarding.waitingGoogle}
+          </p>
         )}
       </Step>
 
-      <Step n={3} state={shown[2] ?? 'todo'} title={s.mine}>
-        {hasMailbox ? null : (
+      <Step n={3} state={unsure ? 'neutral' : (shown[2] ?? 'todo')} title={s.mine}>
+        {pending.length > 0 ? (
           <>
             <p className="note">{t.onboarding.mineWarning}</p>
             <ul className="plain">
@@ -257,14 +280,14 @@ export function OnboardingPanel({
                     </div>
                   ) : (
                     <p className="note">
-                      <strong>{p.address}</strong>: {t.onboarding.openFirst}
+                      <strong className="addr">{p.address}</strong>: {t.onboarding.openFirst}
                     </p>
                   )}
                 </li>
               ))}
             </ul>
           </>
-        )}
+        ) : null}
         <p
           className={message?.failed ? 'error' : 'status'}
           role={message?.failed ? 'alert' : 'status'}
@@ -282,7 +305,7 @@ export function OnboardingPanel({
           </a>
           <a
             className="button-link quiet"
-            href={GMAIL_FILTERS}
+            href={gmailFilters(mailboxes[0])}
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -296,10 +319,14 @@ export function OnboardingPanel({
         </ol>
         <p className="note">{t.onboarding.filterManual}</p>
         <p>
-          <code style={{ wordBreak: 'break-all' }}>{search}</code>
+          <code className="addr">{search}</code>
         </p>
         <CopyButton value={search} label={`${t.onboarding.copy}: ${search}`} />
-        <p className="note">{t.onboarding.filterManualAction(address)}</p>
+        <p className="note">
+          {t.onboarding.filterManualBefore}
+          <code className="addr">{address}</code>
+          {t.onboarding.filterManualAfter}
+        </p>
         <p className="note">{t.onboarding.filterOld}</p>
       </Step>
 
@@ -329,13 +356,13 @@ export function OnboardingPanel({
       <Step n={6} state={shown[5] ?? 'todo'} title={s.agent}>
         <p className="note">{t.onboarding.agentLead}</p>
         <p>
-          <code style={{ wordBreak: 'break-all' }}>{CONNECTOR_URL}</code>
+          <code className="addr">{CONNECTOR_URL}</code>
         </p>
         <CopyButton value={CONNECTOR_URL} label={`${t.onboarding.copy}: ${CONNECTOR_URL}`} />
         <p className="note">{t.onboarding.claudeAi}</p>
         <p className="note">{t.onboarding.claudeCode}</p>
         <p>
-          <code style={{ wordBreak: 'break-all' }}>{CLAUDE_CODE_COMMAND}</code>
+          <code className="addr">{CLAUDE_CODE_COMMAND}</code>
         </p>
         <CopyButton value={CLAUDE_CODE_COMMAND} label={`${t.onboarding.copy}: Claude Code`} />
       </Step>

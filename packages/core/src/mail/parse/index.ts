@@ -11,6 +11,7 @@ export type {
   CardPurchaseOperation,
   ParseResult,
   Template,
+  TemplateKind,
   TransferOperation,
 } from './types'
 
@@ -20,6 +21,10 @@ export const TEMPLATES: readonly Template[] = [
   bbvaTransferCredited,
   bbvaCardPurchase,
 ]
+
+/** The kind of notice a stored template id reads, or null for an id no template has. */
+export const templateKind = (templateId: string | null) =>
+  TEMPLATES.find((t) => t.id === templateId)?.kind ?? null
 
 /** Recorded with "no template" results, so they are retried once new templates ship. */
 export const TEMPLATE_SET_VERSION = 2

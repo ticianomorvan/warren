@@ -1,7 +1,10 @@
 import { REJECT_REASONS } from '@warren/core'
+import { asUser, createForwardingConfirmations } from '@warren/db'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { onboardingStatus } from '../app/onboarding/actions'
 import { GET } from '../app/onboarding/filter.xml/route'
-import { kindText, reasonText, stepStates } from '../lib/onboarding'
+import { kindText, reasonText } from '../lib/onboarding'
+import { stepStates } from '../lib/steps'
 import { t as strings } from '../lib/strings'
 import { setup, signedInUser, t } from './harness'
 
@@ -32,13 +35,28 @@ describe('reject reasons', () => {
 })
 
 describe('stepStates', () => {
-  const states = (hasConfirmation: boolean, hasMailbox: boolean, verified: boolean) =>
-    stepStates({ hasConfirmation, hasMailbox, verified })
+  const states = (
+    hasConfirmation: boolean,
+    hasMailbox: boolean,
+    verified: boolean,
+    opened = false,
+  ) => stepStates({ hasConfirmation, hasMailbox, verified, opened })
   it('starts at step 1', () => {
     expect(states(false, false, false)).toEqual(['current', 'todo', 'todo', 'todo', 'todo', 'todo'])
   })
   it('moves to step 2 once Google asked', () => {
     expect(states(true, false, false)).toEqual(['done', 'current', 'todo', 'todo', 'todo', 'todo'])
+  })
+  it('moves to step 3 once the link was opened', () => {
+    expect(states(true, false, false, true)).toEqual([
+      'done',
+      'done',
+      'current',
+      'todo',
+      'todo',
+      'todo',
+    ])
+    expect(states(false, false, false, true)[1]).toBe('todo')
   })
   it('a claim finishes 1 to 3', () => {
     expect(states(true, true, false)).toEqual(['done', 'done', 'done', 'current', 'todo', 'todo'])
@@ -46,6 +64,26 @@ describe('stepStates', () => {
   })
   it('a verified mail leaves only the agent', () => {
     expect(states(true, true, true)).toEqual(['done', 'done', 'done', 'done', 'done', 'current'])
+  })
+})
+
+describe('onboardingStatus', () => {
+  it('refuses without a session', async () => {
+    state.userId = null
+    expect(await onboardingStatus()).toEqual({ ok: false })
+  })
+  it('holds counts and words only, never an address or a link', async () => {
+    const id = (await signedInUser()).id
+    state.userId = id
+    await asUser(t.app, id, (s) =>
+      createForwardingConfirmations(s).record(
+        { address: 'ana@gmail.com', url: 'https://mail-settings.google.com/mail/vf-secret' },
+        new Date(),
+      ),
+    )
+    const status = await onboardingStatus()
+    expect(status).toEqual({ ok: true, pending: 1, hasMailbox: false, mail: { state: 'waiting' } })
+    expect(JSON.stringify(status)).not.toMatch(/gmail|mail-settings|vf-secret/)
   })
 })
 

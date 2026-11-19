@@ -25,6 +25,8 @@ export {
   claimMailbox,
   createForwardingConfirmations,
   mailboxesOf,
+  type OnboardingProgress,
+  onboardingProgress,
   pendingConfirmations,
 } from './forwarding'
 export { inboundAddressFor, revokeInboundAddress } from './inbound-address'
