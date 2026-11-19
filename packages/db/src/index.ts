@@ -48,7 +48,9 @@ export {
 } from './ledger'
 export {
   createMailLog,
+  firstMailProgress,
   type MailCounts,
+  type MailProgress,
   type MailStatusRow,
   mailCounts,
   recentMail,

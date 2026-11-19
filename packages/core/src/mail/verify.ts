@@ -3,18 +3,22 @@ import { addressesIn, headerValue } from './headers'
 import type { TxtResolver } from './resolver'
 import type { SenderPolicy } from './senders'
 
-export type RejectReason =
-  | 'from-invalid'
-  | 'unknown-sender'
-  | 'no-signature-from-sender'
-  | 'signature-failed'
-  | 'not-aligned'
-  | 'body-length-limited'
-  | 'header-not-signed'
-  | 'weak-key'
-  | 'not-addressed-to-user'
-  | 'date-missing'
-  | 'date-skew'
+/** Every reason a mail can be rejected. A const list, so a page can map each one and a test can check it did. */
+export const REJECT_REASONS = [
+  'from-invalid',
+  'unknown-sender',
+  'no-signature-from-sender',
+  'signature-failed',
+  'not-aligned',
+  'body-length-limited',
+  'header-not-signed',
+  'weak-key',
+  'not-addressed-to-user',
+  'date-missing',
+  'date-skew',
+] as const
+
+export type RejectReason = (typeof REJECT_REASONS)[number]
 
 export type MailVerdict =
   | {

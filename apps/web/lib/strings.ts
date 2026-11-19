@@ -16,6 +16,7 @@ export const t = {
     onboarding: 'Conectar tu correo',
     onboardingHint: 'Reenviá los avisos de tu banco a tu dirección de Warren.',
     onboardingLink: 'Conectar Gmail',
+    mailboxQuiet: 'Conexión de correo',
   },
   onboarding: {
     title: 'Conectar tu correo',
@@ -23,20 +24,30 @@ export const t = {
     loading: 'Cargando…',
     loadError: 'No pudimos cargar esta página.',
     retry: 'Reintentar',
-    lead: 'Warren lee los avisos de tu banco que le reenvíes. Primero agregá tu dirección de Warren como dirección de reenvío en Gmail.',
-    addressTitle: 'Tu dirección de Warren',
+    lead: 'Warren lee los avisos de tu banco que le reenvíes. Seguí los pasos en orden: la página recuerda dónde quedaste.',
+    stepState: { done: 'Hecho', current: 'Ahora', todo: 'Falta' },
+    stepLabel: (n: number) => `Paso ${n}`,
+    steps: {
+      address: 'Agregá tu dirección de Warren en Gmail',
+      confirm: 'Confirmá en Google',
+      mine: 'Confirmá que es tu Gmail',
+      filter: 'Importá el filtro',
+      first: 'Esperando tu primer aviso',
+      agent: 'Conectá tu agente',
+    },
     addressHint:
-      'En Gmail: Configuración, Reenvío y correo POP/IMAP, Añadir una dirección de reenvío. Pegá esta dirección.',
+      'En Gmail: Configuración (la ruedita), Ver todos los ajustes, Reenvío y correo POP/IMAP, Añadir una dirección de reenvío. Pegá esta dirección.',
     copy: 'Copiar',
-    copied: 'Copiada',
-    copyFailed: 'No pudimos copiarla. Seleccionala y copiala a mano.',
-    pendingTitle: 'Gmails que pidieron reenviar a Warren',
-    pendingWarning:
-      'Tocá "Sí, ... es mi Gmail" solo en el Gmail que es tuyo. Si no lo es, no lo toques: sus avisos entrarían en tus cuentas.',
-    pendingHint: 'Confirmá en Google y volvé acá.',
-    noPending:
-      'Todavía no llegó el pedido de Google. Cuando agregues la dirección en Gmail, aparece acá.',
+    copied: 'Copiado',
+    copyFailed: 'No pudimos copiarlo. Seleccionalo y copialo a mano.',
+    waitingGoogle:
+      'Cuando la agregues, Google le manda un pedido de confirmación a Warren y aparece acá solo.',
+    confirmHint:
+      'Google pidió confirmar estos Gmails. Abrí el link de tu Gmail, confirmá allá y volvé acá.',
     confirmInGoogle: 'Confirmar en Google',
+    mineWarning:
+      'Tocá "Sí, ... es mi Gmail" solo en el Gmail que es tuyo. Si no lo es, no lo toques: sus avisos entrarían en tus cuentas.',
+    openFirst: 'Se habilita después de abrir "Confirmar en Google".',
     itsMine: (address: string) => `Sí, ${address} es mi Gmail`,
     claiming: 'Confirmando…',
     claim: {
@@ -52,8 +63,46 @@ export const t = {
         : `Recuperamos ${n} avisos que habían llegado antes.`,
     signedOut: 'Tu sesión terminó. Entrá de nuevo.',
     failed: 'No pudimos confirmar el Gmail. Probá de nuevo en un momento.',
-    mailboxesTitle: 'Gmails conectados',
-    noMailboxes: 'Todavía no conectaste ningún Gmail.',
+    connected: (address: string) => `Conectado: ${address}`,
+    filterLead:
+      'Un filtro de Gmail reenvía solo los avisos de tu banco a Warren, en vez de todo tu correo.',
+    filterDownload: 'Descargar filtro',
+    filterSteps: [
+      'Abrí la configuración de filtros de Gmail.',
+      'Tocá "Importar filtros".',
+      'Elegí el archivo warren-filtro.xml y tocá "Abrir archivo".',
+      'Tocá "Crear filtros".',
+    ],
+    filterSettings: 'Abrir filtros de Gmail',
+    filterManual: 'Si preferís hacerlo a mano, creá un filtro con esta búsqueda en "De":',
+    filterManualAction: (address: string) => `Elegí "Reenviar a ${address}" y tocá "Crear filtro".`,
+    filterOld:
+      'Si antes reenviabas todo tu correo a Warren, cuando el filtro esté andando podés apagar ese reenvío.',
+    waiting: 'Todavía no llegó ningún aviso de tu banco. Cuando llegue, lo ves acá.',
+    waitingHint: 'Revisamos cada 5 segundos mientras esta página está abierta.',
+    rejectedTitle: 'Llegó un correo, pero no lo pudimos aceptar.',
+    verifiedTitle: 'Llegó tu primer aviso.',
+    verified: (kind: string, date: string) => `${kind}, ${date}.`,
+    kinds: { card: 'Compra con tarjeta', transfer: 'Transferencia', other: 'Aviso del banco' },
+    reasonUnknown: 'Warren no pudo verificarlo.',
+    reasons: {
+      'from-invalid': 'No pudimos leer de quién venía el correo.',
+      'unknown-sender': 'Venía de un remitente que Warren no reconoce como tu banco.',
+      'no-signature-from-sender': 'No traía la firma digital de tu banco.',
+      'signature-failed': 'La firma digital de tu banco no coincidió con el contenido.',
+      'not-aligned': 'La firma digital no era del dominio del banco.',
+      'body-length-limited': 'La firma digital cubría solo una parte del mensaje.',
+      'header-not-signed':
+        'La firma digital no cubría el remitente, el destinatario, la fecha y el asunto.',
+      'weak-key': 'La firma digital usaba una clave demasiado débil.',
+      'not-addressed-to-user':
+        'La firma digital no nombraba tu Gmail. Confirmá que conectaste el Gmail desde el que reenviás.',
+      'date-missing': 'El correo no traía fecha firmada.',
+      'date-skew': 'La fecha firmada del correo no coincide con cuándo llegó.',
+    },
+    agentLead: 'Agregá Warren como conector en tu agente, con esta dirección:',
+    claudeAi: 'En claude.ai: Configuración, Conectores, Agregar conector personalizado.',
+    claudeCode: 'En Claude Code, corré:',
   },
   profile: {
     title: 'Perfil financiero',
