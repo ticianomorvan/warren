@@ -172,6 +172,20 @@ Each slice names its research file and a proof that can fail. Read the file befo
 6. **Onboarding.** Per-user address, captured Gmail confirmation, filter helper, first-mail
    check, agent connect page.
    Proof: the stranger's first hour, recorded in a browser on a fresh Gmail account.
+   Done 2026-11-19:
+   - **Built:** mail is routed by the delivered-to token `u-<token>@in.heywarren.app`, and rule 4 is
+     unchanged. Gmail's confirmation is captured under Google DKIM, and the mailbox is claimed through
+     `claim_mailbox`. `/onboarding` has six steps and a filter file generated from `SENDERS`.
+   - **Proved:** the maintainer re-onboarded through the page, and a bank mail delivered to their token
+     verified. A second Google account was recorded from sign-up to "waiting for the first mail",
+     including the filter import.
+   - **Open:**
+     - Remove the legacy To-header route once a week passes without it being used (the webhook logs
+       `routedBy`).
+     - Warn on the page about Google's phone challenge, which Gmail shows when a forwarding address
+       is added and again on filter import.
+     - Settle the one-click Gmail API option, which needs a restricted scope and a yearly security
+       assessment, with a free test project before slice 13.
 7. **Belo.** Forward real Belo mails; sender policy and templates if they are signed.
    Proof: `pnpm mail:verify belo.eml` passes, then a Belo operation appears as a movement.
 8. **Rules and allowance.** Per-user rules and budgets; notices end with the amount left.
