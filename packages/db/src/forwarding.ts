@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto'
-import type { ForwardingConfirmation, ForwardingConfirmations } from '@warren/core'
+import {
+  CONFIRMATION_WINDOW_DAYS,
+  type ForwardingConfirmation,
+  type ForwardingConfirmations,
+} from '@warren/core'
 import { desc, eq, gt, sql } from 'drizzle-orm'
 import { rowsOf, type Scope } from './client'
 import { forwardingConfirmation, mailbox } from './schema'
@@ -7,9 +11,6 @@ import { forwardingConfirmation, mailbox } from './schema'
 // Sealed: the address and the link. The scope adds the user; this names the table, row and column.
 const aad = (hash: string, receivedAt: Date) =>
   `forwarding_confirmation:${hash}:${receivedAt.toISOString()}:data`
-
-/** How long a confirmation counts toward a claim. The same 7 days as `claim_mailbox` (0013). */
-export const CONFIRMATION_DAYS = 7
 
 /** The lowercased, trimmed address: what is hashed, and what `mailbox` holds. */
 export const normalizeAddress = (address: string): string => address.trim().toLowerCase()
@@ -35,26 +36,34 @@ export function createForwardingConfirmations(scope: Scope): ForwardingConfirmat
   }
 }
 
-/** The newest confirmation received in the last 7 days, opened, or null. For the page. */
-export async function latestConfirmation(
+/**
+ * Every confirmation received in the window, opened, one per address (the newest of each),
+ * newest first. For the page: anyone who learns a Warren address can make their own Gmail send
+ * a confirmation to it, so the person must see all of them and pick theirs.
+ */
+export async function pendingConfirmations(
   scope: Scope,
   now: Date = new Date(),
-): Promise<(ForwardingConfirmation & { receivedAt: Date }) | null> {
-  const since = new Date(now.getTime() - CONFIRMATION_DAYS * 86_400_000)
-  const row = (
-    await scope.tx
-      .select()
-      .from(forwardingConfirmation)
-      .where(gt(forwardingConfirmation.receivedAt, since))
-      .orderBy(desc(forwardingConfirmation.id))
-      .limit(1)
-  )[0]
-  if (!row) return null
-  const data = scope.json.open<ForwardingConfirmation>(
-    row.data,
-    aad(row.addressHash, row.receivedAt),
-  )
-  return { address: data.address, url: data.url, receivedAt: row.receivedAt }
+): Promise<(ForwardingConfirmation & { receivedAt: Date })[]> {
+  const since = new Date(now.getTime() - CONFIRMATION_WINDOW_DAYS * 86_400_000)
+  const rows = await scope.tx
+    .select()
+    .from(forwardingConfirmation)
+    .where(gt(forwardingConfirmation.receivedAt, since))
+    .orderBy(desc(forwardingConfirmation.id))
+    .limit(50)
+  const seen = new Set<string>()
+  const out: (ForwardingConfirmation & { receivedAt: Date })[] = []
+  for (const row of rows) {
+    if (seen.has(row.addressHash)) continue
+    seen.add(row.addressHash)
+    const data = scope.json.open<ForwardingConfirmation>(
+      row.data,
+      aad(row.addressHash, row.receivedAt),
+    )
+    out.push({ address: data.address, url: data.url, receivedAt: row.receivedAt })
+  }
+  return out
 }
 
 export type ClaimStatus = 'claimed' | 'already-yours' | 'taken' | 'no-confirmation'

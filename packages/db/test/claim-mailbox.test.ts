@@ -5,8 +5,8 @@ import {
   addressHash,
   claimMailbox,
   createForwardingConfirmations,
-  latestConfirmation,
   mailboxesOf,
+  pendingConfirmations,
 } from '../src/forwarding'
 import { createMailLog } from '../src/mail-log'
 import { testDatabase } from './helpers'
@@ -45,9 +45,9 @@ describe('forwarding confirmations', () => {
     expect(bytes.includes(Buffer.from('gmail.com'))).toBe(false)
     expect(bytes.includes(Buffer.from('mail-settings'))).toBe(false)
     expect(rows[0]?.address_hash).toBe(addressHash('ana@gmail.com'))
-    const got = await asUser(t.app, a, (s) => latestConfirmation(s))
-    expect(got).toMatchObject({ address: 'ana@gmail.com', url: URL_ })
-    expect(await asUser(t.app, b, (s) => latestConfirmation(s))).toBeNull()
+    const got = await asUser(t.app, a, (s) => pendingConfirmations(s))
+    expect(got).toMatchObject([{ address: 'ana@gmail.com', url: URL_ }])
+    expect(await asUser(t.app, b, (s) => pendingConfirmations(s))).toEqual([])
   })
 
   it('are append-only for the app', async () => {
@@ -63,6 +63,18 @@ describe('forwarding confirmations', () => {
       t.pg.query('update forwarding_confirmation set address_hash = address_hash'),
     ).rejects.toThrow(/append-only/)
     await expect(t.pg.query('truncate forwarding_confirmation')).rejects.toThrow(/append-only/)
+  })
+})
+
+describe('pendingConfirmations', () => {
+  it('lists each address once, newest first, and leaves out expired ones', async () => {
+    const c = await t.newUser('pend')
+    await confirm(c, 'uno@gmail.com', 3)
+    await confirm(c, 'dos@gmail.com', 2)
+    await confirm(c, 'uno@gmail.com', 1)
+    await confirm(c, 'viejo@gmail.com', 9)
+    const got = await asUser(t.app, c, (s) => pendingConfirmations(s))
+    expect(got.map((g) => g.address)).toEqual(['uno@gmail.com', 'dos@gmail.com'])
   })
 })
 

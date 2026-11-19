@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   extractForwardingConfirmation,
   GOOGLE_FORWARDING_POLICY,
+  isConfirmUrl,
   recognizeForwardingConfirmation,
 } from '../src/mail/forwarding'
 import { SENDERS } from '../src/mail/senders'
+import { verifySignedMail } from '../src/mail/verify'
 import { makeSigner, resolverFor } from './helpers'
 
 const google = makeSigner('google.com')
@@ -125,5 +127,65 @@ describe('extractForwardingConfirmation', () => {
       WARREN,
     )
     expect(got?.address).toBe(GMAIL)
+  })
+})
+
+describe('the policy itself', () => {
+  it('requires From, To and Subject to be signed, and rejects mail whose Subject is not', async () => {
+    expect([...GOOGLE_FORWARDING_POLICY.requiredSignedHeaders].sort()).toEqual([
+      'from',
+      'subject',
+      'to',
+    ])
+    // The verifier alone, with this policy: a signature that leaves Subject out is refused for that.
+    const verdict = await verifySignedMail(bytes(await google.sign(mail(), 'From:To:Date')), {
+      senders: [GOOGLE_FORWARDING_POLICY],
+      mailboxes: [WARREN],
+      resolver,
+      receivedAt: RECEIVED,
+      maxDateSkewMinutes: 120,
+    })
+    expect(verdict).toMatchObject({
+      verdict: 'rejected',
+      reason: 'header-not-signed',
+      detail: 'subject',
+    })
+  })
+})
+
+describe('isConfirmUrl', () => {
+  it('accepts only https on mail-settings.google.com with a vf- path', () => {
+    expect(isConfirmUrl(LINK)).toBe(true)
+    for (const bad of [
+      CANCEL,
+      'http://mail-settings.google.com/mail/vf-abc',
+      'https://mail-settings.google.com/other/vf-abc',
+      'https://mail-settings.google.com.evil.example/mail/vf-abc',
+      'https://evil.example/mail/vf-abc',
+      'https://xmail-settings.google.com/mail/vf-abc',
+      'https://google.com/mail/vf-abc',
+      'https://mail-settings.google.com@evil.example/mail/vf-abc',
+      'https://user:pw@mail-settings.google.com/mail/vf-abc',
+      'https://evil.example/?u=https://mail-settings.google.com/mail/vf-abc',
+      'not a url',
+    ]) {
+      expect(isConfirmUrl(bad), bad).toBe(false)
+    }
+  })
+})
+
+describe('the requesting address in the subject', () => {
+  const subjectOf = async (subject: string) =>
+    (await extractForwardingConfirmation(bytes(mail()), subject, WARREN))?.address
+  it('ignores punctuation around it', async () => {
+    for (const subject of [
+      `Confirmación: [${GMAIL}]`,
+      `Confirmation for <${GMAIL}>.`,
+      `Confirmación de reenvío: recibir correo de ${GMAIL}.`,
+      `"${GMAIL}", y listo (${GMAIL})`,
+      `¿Recibir correo de ${GMAIL.toUpperCase()}?`,
+    ]) {
+      expect(await subjectOf(subject), subject).toBe(GMAIL)
+    }
   })
 })

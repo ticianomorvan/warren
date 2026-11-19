@@ -22,15 +22,23 @@ export async function claimGmail(address: unknown): Promise<ClaimResult> {
   const session = await getSession()
   if (!session) return { ok: false, reason: 'signed-out' }
   if (typeof address !== 'string' || address.length > 320) return { ok: false, reason: 'failed' }
+  let status: ClaimStatus
   try {
-    const status = await asUser(database(), session.user.id, (scope) =>
-      claimMailbox(scope, address),
-    )
-    // After the claim is committed: the second look does DNS and file reads of its own.
-    const rescued = status === 'claimed' ? await reverifyRejected(intakeDeps(), session.user.id) : 0
-    return { ok: true, status, rescued }
+    status = await asUser(database(), session.user.id, (scope) => claimMailbox(scope, address))
   } catch (error) {
     console.error('claim mailbox failed:', errorTag(error))
     return { ok: false, reason: 'failed' }
   }
+  // The second look comes after the claim has committed, and its failure never undoes it: the
+  // person has the mailbox either way. It runs again on 'already-yours' (a retry after a failure
+  // here, or a mail whose first look hit DNS trouble): a mail it already settled is not touched.
+  let rescued = 0
+  if (status === 'claimed' || status === 'already-yours') {
+    try {
+      rescued = await reverifyRejected(intakeDeps(), session.user.id)
+    } catch (error) {
+      console.error('second look after claim failed:', errorTag(error))
+    }
+  }
+  return { ok: true, status, rescued }
 }

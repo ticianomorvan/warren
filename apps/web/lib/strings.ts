@@ -30,14 +30,14 @@ export const t = {
     copy: 'Copiar',
     copied: 'Copiada',
     copyFailed: 'No pudimos copiarla. Seleccionala y copiala a mano.',
-    pendingTitle: 'Gmail pidió reenviar a Warren',
-    pending: (address: string) => `Gmail ${address} pidió reenviar a Warren.`,
-    pendingHint:
-      'Primero confirmá en Google con el botón de abajo. Después volvé acá y avisanos que es tu Gmail.',
+    pendingTitle: 'Gmails que pidieron reenviar a Warren',
+    pendingWarning:
+      'Tocá "Sí, ... es mi Gmail" solo en el Gmail que es tuyo. Si no lo es, no lo toques: sus avisos entrarían en tus cuentas.',
+    pendingHint: 'Confirmá en Google y volvé acá.',
     noPending:
       'Todavía no llegó el pedido de Google. Cuando agregues la dirección en Gmail, aparece acá.',
     confirmInGoogle: 'Confirmar en Google',
-    itsMine: 'Sí, es mi Gmail',
+    itsMine: (address: string) => `Sí, ${address} es mi Gmail`,
     claiming: 'Confirmando…',
     claim: {
       claimed: 'Listo: ya recibimos los avisos de ese Gmail.',

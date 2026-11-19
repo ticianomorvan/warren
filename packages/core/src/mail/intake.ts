@@ -1,6 +1,7 @@
 import { isNews, type Ledger, type RecordOptions, type RecordOutcome } from '../ledger'
 import { canonicalUserId, UserErasedError } from '../user'
 import {
+  CONFIRMATION_WINDOW_DAYS,
   type ForwardingConfirmation,
   looksLikeGoogleForwarding,
   recognizeForwardingConfirmation,
@@ -17,7 +18,7 @@ import {
 } from './resend'
 import type { TxtResolver } from './resolver'
 import { SENDER_POLICY_VERSION, type SenderPolicy } from './senders'
-import { type MailVerdict, verifyBankMail } from './verify'
+import { type MailVerdict, verifySignedMail } from './verify'
 
 /**
  * Where raw files live (Vercel Blob in production). Every store used for mail is per user: it
@@ -288,7 +289,7 @@ async function settleVerdict(
   stored: Stored,
 ): Promise<MailVerdict | FinalVerdict> {
   if (stored.settled) return stored.settled
-  const verdict = await verifyBankMail(input.raw, {
+  const verdict = await verifySignedMail(input.raw, {
     senders: deps.senders,
     mailboxes: stored.mailboxes,
     resolver: deps.resolver,
@@ -356,12 +357,9 @@ export async function intakeForUser(
   return parseAndRecord(deps, userId, input, stored.mailId, verdict, options)
 }
 
-/** How long a stored rejection stays eligible for a second look after a claim, and how long a confirmation counts. */
-export const CLAIM_WINDOW_DAYS = 7
-
 /**
- * After a mailbox is claimed, checks again the user's mail rejected as `not-addressed-to-user`
- * in the last `CLAIM_WINDOW_DAYS`: it arrived between adding the forward and claiming. Each is
+ * After a mailbox is claimed (or found already claimed), checks again the user's mail rejected as
+ * `not-addressed-to-user` in the last `CONFIRMATION_WINDOW_DAYS`: it arrived between adding the forward and claiming. Each is
  * read from its sealed file, verified with the mailboxes now held, and a new verdict is
  * appended (the log is append-only; the latest verdict wins). A mail that now verifies is parsed
  * and recorded like live mail, with a notice only if it is still news. DNS is fetched outside
@@ -372,7 +370,7 @@ export async function reverifyRejected(
   userId: string,
   now: Date = new Date(),
 ): Promise<number> {
-  const since = new Date(now.getTime() - CLAIM_WINDOW_DAYS * 86_400_000)
+  const since = new Date(now.getTime() - CONFIRMATION_WINDOW_DAYS * 86_400_000)
   const { candidates, mailboxes, store, mailId } = await deps.tenancy.withUser(
     userId,
     async (ctx) => ({

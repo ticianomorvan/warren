@@ -49,6 +49,7 @@ begin
     select 1 from public.forwarding_confirmation f
     where f.user_id = v_user
       and f.address_hash = encode(sha256(convert_to(v_address, 'UTF8')), 'hex')
+      -- The literal matches CONFIRMATION_WINDOW_DAYS in packages/core/src/mail/forwarding.ts.
       and f.received_at > now() - interval '7 days'
   ) then
     return 'no-confirmation';
@@ -56,6 +57,10 @@ begin
   begin
     insert into public.mailbox (user_id, address) values (v_user, v_address);
   exception when unique_violation then
+    -- Two claims of one address by the same user at once: the loser finds it already theirs.
+    if exists (select 1 from public.mailbox m where m.user_id = v_user and m.address = v_address) then
+      return 'already-yours';
+    end if;
     return 'taken';
   end;
   return 'claimed';

@@ -24,8 +24,8 @@ export {
   type ClaimStatus,
   claimMailbox,
   createForwardingConfirmations,
-  latestConfirmation,
   mailboxesOf,
+  pendingConfirmations,
 } from './forwarding'
 export { inboundAddressFor, revokeInboundAddress } from './inbound-address'
 export {

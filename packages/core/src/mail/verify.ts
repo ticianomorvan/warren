@@ -66,11 +66,12 @@ const REASON_ORDER: RejectReason[] = [
 ]
 
 /**
- * Decides whether raw mail bytes are a genuine, unmodified mail from an allow-listed bank
- * sender, addressed to one of the user's mailboxes. Everything it reads comes from header lines the bank's
+ * Decides whether raw mail bytes are a genuine, unmodified mail from an allow-listed sender (a
+ * bank, or Google's forwarding confirmation under its own policy), addressed to one of the
+ * given mailboxes. Everything it reads comes from header lines the bank's
  * signature covers; unsigned headers (which anyone can add) are never consulted.
  */
-export async function verifyBankMail(raw: Uint8Array, opts: VerifyOptions): Promise<MailVerdict> {
+export async function verifySignedMail(raw: Uint8Array, opts: VerifyOptions): Promise<MailVerdict> {
   const result = await dkimVerify(Buffer.from(raw), {
     resolver: opts.resolver,
     minBitLength: 1024,

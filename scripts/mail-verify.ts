@@ -6,7 +6,7 @@
  * Prints only the verdict and signed header facts, never the body.
  */
 import { readFile, stat } from 'node:fs/promises'
-import { defaultTxtResolver, SENDERS, sha256Hex, verifyBankMail } from '@warren/core'
+import { defaultTxtResolver, SENDERS, sha256Hex, verifySignedMail } from '@warren/core'
 
 const args = process.argv.slice(2)
 const mailboxes = args.flatMap((a, i) =>
@@ -19,7 +19,7 @@ if (!file || mailboxes.length === 0) {
 }
 
 const raw = new Uint8Array(await readFile(file))
-const verdict = await verifyBankMail(raw, {
+const verdict = await verifySignedMail(raw, {
   senders: SENDERS,
   mailboxes,
   resolver: defaultTxtResolver,

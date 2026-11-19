@@ -1,5 +1,5 @@
 import { inboundAddressOf } from '@warren/core'
-import { asUser, inboundAddressFor, latestConfirmation, mailboxesOf } from '@warren/db'
+import { asUser, inboundAddressFor, mailboxesOf, pendingConfirmations } from '@warren/db'
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
@@ -16,17 +16,19 @@ export default async function OnboardingPage() {
   // The proxy already sent people without a session away; this is the check that counts.
   const session = await getSession()
   if (!session) redirect('/sign-in')
-  const { token, confirmation, mailboxes } = await asUser(
+  const { token, confirmations, mailboxes } = await asUser(
     database(),
     session.user.id,
     async (scope) => ({
       token: await inboundAddressFor(scope),
-      confirmation: await latestConfirmation(scope),
+      confirmations: await pendingConfirmations(scope),
       mailboxes: await mailboxesOf(scope),
     }),
   )
   // A confirmation whose address is already connected has nothing left to ask.
-  const pending = confirmation && !mailboxes.includes(confirmation.address) ? confirmation : null
+  const pending = confirmations
+    .filter((c) => !mailboxes.includes(c.address))
+    .map((c) => ({ address: c.address, url: c.url }))
 
   return (
     <main className="screen">
@@ -38,7 +40,7 @@ export default async function OnboardingPage() {
         <p className="note lead">{t.onboarding.lead}</p>
         <OnboardingPanel
           address={inboundAddressOf(token, env.inboundDomain())}
-          pending={pending ? { address: pending.address, url: pending.url } : null}
+          pending={pending}
           mailboxes={mailboxes}
         />
       </div>

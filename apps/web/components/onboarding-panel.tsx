@@ -18,11 +18,11 @@ export function OnboardingPanel({
   mailboxes,
 }: {
   address: string
-  pending: { address: string; url: string } | null
+  pending: { address: string; url: string }[]
   mailboxes: string[]
 }) {
   const router = useRouter()
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
   const [copied, setCopied] = useState<Message>(null)
   const [message, setMessage] = useState<Message>(null)
 
@@ -35,12 +35,11 @@ export function OnboardingPanel({
     }
   }
 
-  async function claim() {
-    if (!pending) return
-    setBusy(true)
+  async function claim(address: string) {
+    setBusy(address)
     setMessage(null)
     try {
-      const result = await claimGmail(pending.address)
+      const result = await claimGmail(address)
       if (!result.ok) {
         setMessage({
           text: result.reason === 'signed-out' ? t.onboarding.signedOut : t.onboarding.failed,
@@ -55,7 +54,7 @@ export function OnboardingPanel({
     } catch {
       setMessage({ text: t.onboarding.failed, failed: true })
     } finally {
-      setBusy(false)
+      setBusy(null)
     }
   }
 
@@ -65,7 +64,7 @@ export function OnboardingPanel({
         <h2 id="address">{t.onboarding.addressTitle}</h2>
         <p className="note">{t.onboarding.addressHint}</p>
         <p>
-          <code data-testid="warren-address" style={{ overflowWrap: 'anywhere' }}>
+          <code data-testid="warren-address" style={{ wordBreak: 'break-all' }}>
             {address}
           </code>
         </p>
@@ -84,21 +83,37 @@ export function OnboardingPanel({
 
       <section aria-labelledby="pending" data-testid="pending">
         <h2 id="pending">{t.onboarding.pendingTitle}</h2>
-        {pending ? (
+        {pending.length > 0 ? (
           <>
-            <p className="note">{t.onboarding.pending(pending.address)}</p>
-            <p className="note">{t.onboarding.pendingHint}</p>
-            <div className="actions">
-              <button
-                type="button"
-                onClick={() => window.open(pending.url, '_blank', 'noopener,noreferrer')}
-              >
-                {t.onboarding.confirmInGoogle}
-              </button>
-              <button type="button" className="quiet" onClick={claim} disabled={busy}>
-                {busy ? t.onboarding.claiming : t.onboarding.itsMine}
-              </button>
-            </div>
+            <p className="note">{t.onboarding.pendingWarning}</p>
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+              {pending.map((p) => (
+                <li key={p.address} style={{ marginTop: 16 }}>
+                  <p style={{ margin: 0, fontWeight: 600, overflowWrap: 'anywhere' }}>
+                    {p.address}
+                  </p>
+                  <p className="note" style={{ marginTop: 4 }}>
+                    {t.onboarding.pendingHint}
+                  </p>
+                  <div className="actions">
+                    <button
+                      type="button"
+                      onClick={() => window.open(p.url, '_blank', 'noopener,noreferrer')}
+                    >
+                      {t.onboarding.confirmInGoogle}
+                    </button>
+                    <button
+                      type="button"
+                      className="quiet"
+                      onClick={() => claim(p.address)}
+                      disabled={busy !== null}
+                    >
+                      {busy === p.address ? t.onboarding.claiming : t.onboarding.itsMine(p.address)}
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
           </>
         ) : (
           <p className="note">{t.onboarding.noPending}</p>
