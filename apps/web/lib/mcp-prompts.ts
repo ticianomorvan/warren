@@ -148,7 +148,7 @@ const rules = (profile: boolean) =>
  * clients may truncate it.
  */
 export const SERVER_INSTRUCTIONS = [
-  "Warren is the user's own ledger and advice kit for Argentina. Rules for any answer that uses it:",
+  "Warren holds this user's ledger, profile and curated Argentine money facts and scam patterns. For any question about the user's money, spending, savings, banking, an offer, an investment, or a call or message about money, consult Warren's tools first, starting with `knowledge_list_principles` for traps when someone contacted them or promised a return. Rules for any answer that uses it:",
   ...RULES.map((r) => `- ${r.short}`),
   `- If the profile is empty or unavailable, say so and point to ${PROFILE_URL}.`,
 ].join('\n')

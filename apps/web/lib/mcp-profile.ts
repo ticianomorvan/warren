@@ -5,6 +5,7 @@ import {
   formatMoney,
   PROFILE_CURRENCIES,
   type Profile,
+  timeLeft,
 } from '@warren/core'
 import { asUser, type Database, latestProfile } from '@warren/db'
 import { z } from 'zod'
@@ -31,6 +32,17 @@ const profileSchema = z.object({
       display: z.string().describe('`target` as shown to the person.'),
       currency,
       date: z.string().describe('yyyy-mm-dd: when the person wants to have it.'),
+      days_left: z
+        .number()
+        .int()
+        .describe(
+          'Calendar days from today in Argentina to `date`; zero or negative: today or past.',
+        ),
+      time_left: z
+        .string()
+        .describe(
+          '`date` relative to today, e.g. "6 months, 13 days", "today", "overdue by 3 months, 2 days".',
+        ),
     }),
   ),
   obligations: z
@@ -50,11 +62,19 @@ const profileSchema = z.object({
       .int()
       .optional()
       .describe('Months of expenses the person wants kept liquid first.'),
+    emergency_months_display: z
+      .string()
+      .optional()
+      .describe('`emergency_months` as shown to the person, e.g. "3 months".'),
     max_share_in_usd: z
       .number()
       .int()
       .optional()
       .describe('The most they accept holding in dollars, as a whole percent of savings.'),
+    max_share_in_usd_display: z
+      .string()
+      .optional()
+      .describe('`max_share_in_usd` as shown to the person, e.g. "at most 40% of savings in USD".'),
   }),
 })
 
@@ -72,7 +92,7 @@ const outputSchema = z.object({
 })
 
 /** Field by field on top of the validated profile: each amount gets its `display`, as in the ledger tools. */
-const present = (version: number, createdAt: string, p: Profile) => ({
+const present = (version: number, createdAt: string, p: Profile, now: Date) => ({
   version,
   saved_at: createdAt,
   saved_at_local: argentinaMinute(new Date(createdAt)),
@@ -89,6 +109,7 @@ const present = (version: number, createdAt: string, p: Profile) => ({
     display: formatMoney(g.target, g.currency),
     currency: g.currency,
     date: g.date,
+    ...timeLeft(now, g.date),
   })),
   obligations: p.obligations.map((o) => ({
     name: o.name,
@@ -97,7 +118,19 @@ const present = (version: number, createdAt: string, p: Profile) => ({
     currency: o.currency,
     ...(o.due_day === undefined ? {} : { due_day: o.due_day }),
   })),
-  risk_limits: p.risk_limits,
+  risk_limits: {
+    ...p.risk_limits,
+    ...(p.risk_limits.emergency_months === undefined
+      ? {}
+      : {
+          emergency_months_display: `${p.risk_limits.emergency_months} ${p.risk_limits.emergency_months === 1 ? 'month' : 'months'}`,
+        }),
+    ...(p.risk_limits.max_share_in_usd === undefined
+      ? {}
+      : {
+          max_share_in_usd_display: `${p.risk_limits.max_share_in_usd === 100 ? '' : 'at most '}${p.risk_limits.max_share_in_usd}% of savings in USD`,
+        }),
+  },
 })
 
 /**
@@ -106,7 +139,7 @@ const present = (version: number, createdAt: string, p: Profile) => ({
  */
 export function registerProfileTools(
   server: McpServer,
-  { database, userId }: { database: Database; userId: string },
+  { database, userId, now }: { database: Database; userId: string; now: () => Date },
 ) {
   server.registerTool(
     'profile_get',
@@ -116,7 +149,10 @@ export function registerProfileTools(
         "Returns the user's latest financial profile, as they wrote it on their Warren profile " +
         'page: monthly income, savings goals (name, target amount, currency, target date), ' +
         'monthly obligations (name, amount, currency, due day) and risk limits (months of ' +
-        'emergency fund, maximum share held in dollars). Amounts are exact decimal strings, each ' +
+        'emergency fund, maximum share held in dollars), each with a `_display` text. Each goal ' +
+        'also has the time left to its date, computed in Argentina time: `days_left` (zero or ' +
+        'negative means today or past) and `time_left` as text, e.g. "6 months, 13 days"; quote ' +
+        'it as given and never work out time left yourself. Amounts are exact decimal strings, each ' +
         'with a `display` text to show the person; quote them as given and never add, convert or ' +
         'round them. The save time comes in UTC and in Argentina time (`saved_at_local`). Returns `{ "profile": null }` when ' +
         'the user has not saved one, and also `"stored_profile_invalid": true` when the saved ' +
@@ -130,7 +166,7 @@ export function registerProfileTools(
         const stored = await asUser(database, userId, latestProfile)
         // `latestProfile` returns only what `parseProfile` keeps, so no stray field can pass.
         const output = stored?.profile
-          ? { profile: present(stored.version, stored.created_at, stored.profile) }
+          ? { profile: present(stored.version, stored.created_at, stored.profile, now()) }
           : stored
             ? { profile: null, stored_profile_invalid: true }
             : { profile: null }

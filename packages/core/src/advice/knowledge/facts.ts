@@ -83,11 +83,22 @@ export const FACTS: readonly Fact[] = [
     id: 'monotributo-scale',
     topic: 'taxes',
     statement:
-      'Monotributo maximum annual gross income by category, in pesos, from 2026-08-01: ' +
-      'A 12,009,410.45; B 17,595,182.74; C 24,670,494.31; D 30,628,651.43; E 36,028,231.33; ' +
-      'F 45,151,659.41; G 53,995,798.87; H 81,924,660.37; I 91,699,761.90; J 105,012,519.20; ' +
-      'K 126,610,838.75. The scale is updated twice a year; the next update is expected from ' +
-      'February 2027.',
+      'Monotributo maximum annual gross income by category, in pesos, from 2026-08-01; ' +
+      'one amount per category in `parts`. The scale is updated twice a year; the next update ' +
+      'is expected from February 2027.',
+    parts: [
+      ['A', '12009410.45'],
+      ['B', '17595182.74'],
+      ['C', '24670494.31'],
+      ['D', '30628651.43'],
+      ['E', '36028231.33'],
+      ['F', '45151659.41'],
+      ['G', '53995798.87'],
+      ['H', '81924660.37'],
+      ['I', '91699761.90'],
+      ['J', '105012519.20'],
+      ['K', '126610838.75'],
+    ].map(([label, value]) => ({ label: `Category ${label}`, value: value ?? '', unit: 'ARS' })),
     as_of: '2026-11-19',
     review_by: '2027-02-01',
     volatility: 'slow',
@@ -150,9 +161,12 @@ export const FACTS: readonly Fact[] = [
     id: 'pension-minimum-2026-11',
     topic: 'pensions',
     statement:
-      'Minimum SIPA pension (haber mínimo) in the November 2026 publication: ARS 444,158. The ' +
-      'November extraordinary bonus is ARS 70,000, and the Prestación Básica Universal (PBU) ' +
-      'is ARS 203,182.',
+      'Minimum SIPA pension (haber mínimo) in the November 2026 publication. The November ' +
+      'extraordinary bonus and the Prestación Básica Universal (PBU) are in `parts`.',
+    parts: [
+      { label: 'November extraordinary bonus', value: '70000', unit: 'ARS' },
+      { label: 'Prestación Básica Universal (PBU)', value: '203182', unit: 'ARS per month' },
+    ],
     value: '444158',
     unit: 'ARS per month',
     as_of: '2026-11-19',

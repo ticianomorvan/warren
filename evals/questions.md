@@ -3,6 +3,8 @@
 The human proof for the advice kit. Each question is asked with the Warren connector on, in
 claude.ai, in a fresh chat. You can ask in Spanish; the answer should come back in Spanish.
 
+Run in claude.ai or in Claude Code started outside the Warren repo, so the repo's own files don't leak into answers.
+
 How to run:
 
 1. Connect Warren in claude.ai and grant both scopes (movements and profile).

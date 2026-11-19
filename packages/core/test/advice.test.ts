@@ -9,6 +9,7 @@ import {
   TOPICS,
   TRAPS,
 } from '../src/advice'
+import { factDisplay } from '../src/advice/knowledge/display'
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/
 const topics: readonly string[] = TOPICS
@@ -92,6 +93,52 @@ describe('knowledge lint', () => {
     expect(
       policyViolations(['Pay the full balance; compare the cash price with the price in cuotas.']),
     ).toEqual([])
+  })
+})
+
+describe('fact displays', () => {
+  const view = factsFor(new Date('2026-11-19T12:00:00Z'))
+  const byId = (id: string) => view.find((f) => f.id === id)
+
+  it('gives every fact with a value, and every part, a display', () => {
+    for (const f of view) {
+      if (f.value !== undefined) expect(f.display, f.id).toBeTruthy()
+      for (const p of f.parts ?? []) expect(p.display, `${f.id} ${p.label}`).toBeTruthy()
+    }
+    for (const f of FACTS) {
+      expect(f.value === undefined || f.unit !== undefined, f.id).toBe(true)
+      for (const p of f.parts ?? []) expect(p.value, `${f.id} ${p.label}`).toMatch(/^\d+(\.\d+)?$/)
+    }
+  })
+
+  it('formats money, rates and percentages from the decimal strings', () => {
+    expect(byId('fx-official-wholesale')?.display).toBe('$ 1.558,2427 per US$')
+    expect(byId('rate-badlar-private')?.display).toBe('23,25 % TNA')
+    expect(byId('cpi-monthly-2026-10')?.display).toBe('2,17 % month over month')
+    expect(byId('card-foreign-perception')?.display).toBe('30 % of the peso amount')
+    expect(byId('sedesa-deposit-guarantee')?.display).toBe('$ 50.000.000,00 per person')
+    expect(byId('bienes-personales-minimum-2025')?.display).toBe('$ 384.728.044,57')
+    expect(byId('pension-minimum-2026-11')?.parts?.map((p) => p.display)).toEqual([
+      '$ 70.000,00',
+      '$ 203.182,00 per month',
+    ])
+  })
+
+  it('shows each monotributo category with its own display and none in the statement', () => {
+    const scale = byId('monotributo-scale')
+    expect(scale?.parts).toHaveLength(11)
+    expect(scale?.parts?.[0]).toEqual({
+      label: 'Category A',
+      value: '12009410.45',
+      unit: 'ARS',
+      display: '$ 12.009.410,45',
+    })
+    expect(scale?.parts?.[10]?.display).toBe('$ 126.610.838,75')
+    expect(scale?.statement).not.toMatch(/\d{1,3},\d{3}/)
+  })
+
+  it('knows no display for a unit it cannot read', () => {
+    expect(factDisplay('1', 'widgets')).toBeUndefined()
   })
 })
 

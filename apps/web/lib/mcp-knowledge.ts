@@ -31,6 +31,21 @@ const factSchema = z.object({
   statement: z.string(),
   value: z.string().optional().describe('Decimal string, present when the fact is one number.'),
   unit: z.string().optional(),
+  display: z
+    .string()
+    .optional()
+    .describe('`value` and `unit` as shown to the person, e.g. "$ 50.000.000,00 per person".'),
+  parts: z
+    .array(
+      z.object({
+        label: z.string(),
+        value: z.string().describe('Decimal string, in `unit`.'),
+        unit: z.string(),
+        display: z.string().describe('`value` and `unit` as shown to the person.'),
+      }),
+    )
+    .optional()
+    .describe('Further named amounts, e.g. one per monotributo category.'),
   as_of: z.string().describe('yyyy-mm-dd, the day the value was read from its source.'),
   review_by: z.string().describe('yyyy-mm-dd, the day after which it must be checked again.'),
   stale: z.boolean().describe('True when today (in Argentina) is past `review_by`.'),
@@ -70,7 +85,9 @@ export function registerKnowledgeTools(server: McpServer, { now }: { now: () => 
         "Returns Warren's general personal-finance principles for Argentina (each with a " +
         'title, a body and the topics it applies to), filtered by `topic` when given, and ' +
         'always the known scam and bad-advice patterns (traps), each with its signs and what ' +
-        'a person can check. The content is general and does not depend on the user.',
+        'a person can check: calls or messages asking for a card code or password, promised ' +
+        'returns, requests for money up front. The content is general and does not depend on ' +
+        'the user.',
       inputSchema: z.object({ topic }),
       outputSchema: z.object({
         principles: z.array(principleSchema),
@@ -88,7 +105,8 @@ export function registerKnowledgeTools(server: McpServer, { now }: { now: () => 
       description:
         'Returns dated facts about Argentina (exchange rates, deposit rates, inflation, ' +
         'monotributo, deposit guarantee, tax and pension figures), filtered by `topic` when ' +
-        'given. Each has its statement, value and unit, the date it was read (`as_of`), the ' +
+        'given. Each has its statement, value and unit, a `display` text of the value to show the ' +
+        'person (quote it as given), `parts` when it holds several named amounts, the date it was read (`as_of`), the ' +
         'date to check it again by (`review_by`), `stale` (true when the Argentine calendar ' +
         'date, America/Argentina/Buenos_Aires, is past `review_by`), whether it is a `slow` regulatory figure or a `moving` market value, ' +
         'and its source name and link.',
