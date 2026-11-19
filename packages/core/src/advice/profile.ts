@@ -93,6 +93,12 @@ function isAmount(value: unknown): value is string {
   return typeof value === 'string' && AMOUNT.test(value) && /[1-9]/.test(value)
 }
 
+/**
+ * A money input as the profile takes it: a positive decimal string with at most two decimals and
+ * at most thirteen integer digits. Returns it unchanged, or null. Other amounts use this too.
+ */
+export const parseAmount = (value: unknown): string | null => (isAmount(value) ? value : null)
+
 /** True for a real calendar day written yyyy-mm-dd, from the year 2000. */
 function isDay(value: unknown): value is string {
   if (typeof value !== 'string') return false

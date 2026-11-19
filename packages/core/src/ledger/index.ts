@@ -70,3 +70,20 @@ export async function recordPending(
   }
   return out
 }
+
+export {
+  COMBINING_MARKS,
+  FOLD_FROM,
+  FOLD_SPACE,
+  FOLD_TO,
+  foldMerchant,
+  MERCHANT_MAX,
+  parseRule,
+  RULE_CLASSES,
+  RULE_SCHEMES,
+  type RuleClass,
+  type RuleInput,
+  type RuleIssue,
+  type RuleResult,
+  type RuleScheme,
+} from './rules'

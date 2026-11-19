@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { BankOperation } from '@warren/core'
 import { eq, getTableColumns, getTableName, sql } from 'drizzle-orm'
+import { addRule, setAllowance } from './allowance'
 import { asUser, type Database, inSystemContext, inUserContext, rowsOf } from './client'
 import { createForwardingConfirmations } from './forwarding'
 import { inboundAddressFor } from './inbound-address'
@@ -526,6 +527,8 @@ export async function seedFixtures(
       obligations: [],
       risk_limits: {},
     })
+    await setAllowance(scope, '200000.00', '2026-11')
+    await addRule(scope, { scheme: 'merchant', value: `Comercio ${tag}`, class: 'excluded' })
     const outbox = createOutbox(scope)
     const [owed] = await outbox.owed()
     if (!owed) throw new Error('recording the movement made no notice')

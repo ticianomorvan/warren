@@ -1,4 +1,14 @@
 export {
+  AllowanceInputError,
+  type AllowanceMonth,
+  activeRules,
+  addRule,
+  allowanceMonth,
+  revokeRule,
+  type StoredRule,
+  setAllowance,
+} from './allowance'
+export {
   type AuthErasure,
   allowAction,
   authSchema,

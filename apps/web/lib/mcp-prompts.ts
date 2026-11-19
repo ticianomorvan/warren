@@ -1,32 +1,24 @@
 import type { McpServer } from '@modelcontextprotocol/server'
-import { argentinaDay } from '@warren/core'
+import {
+  argentinaDay,
+  MONTH_FORMAT,
+  type MonthRange,
+  monthRange,
+  monthText,
+  parseMonth,
+  shiftMonth,
+} from '@warren/core'
 import { z } from 'zod'
 
 const PROFILE_URL = 'https://heywarren.app/profile'
 export const MAX_QUESTION_LENGTH = 1000
-const MONTH = /^(\d{4})-(\d{2})$/
 
 /** A request the prompt cannot honour; the client shows the message to the person. */
 export class PromptArgumentError extends Error {}
 
-const two = (n: number) => String(n).padStart(2, '0')
-const monthText = (year: number, month: number) => `${year}-${two(month)}`
-
-/** `Date.UTC` rolls month 0 and 13 into the neighbouring year, which is the arithmetic we need. */
-const shift = (year: number, month: number, by: number) => {
-  const d = new Date(Date.UTC(year, month - 1 + by, 1))
-  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1 }
-}
-const lastDay = (year: number, month: number) => new Date(Date.UTC(year, month, 0)).getUTCDate()
-const range = (year: number, month: number) => ({
-  month: monthText(year, month),
-  from: `${monthText(year, month)}-01`,
-  to: `${monthText(year, month)}-${two(lastDay(year, month))}`,
-})
-
 export type MonthPlan = {
-  month: ReturnType<typeof range>
-  before: ReturnType<typeof range>
+  month: MonthRange
+  before: MonthRange
   /** True when the month has not ended in Argentina, so its figures are partial. */
   inProgress: boolean
 }
@@ -39,24 +31,23 @@ export type MonthPlan = {
 export function planMonth(now: Date, month?: string): MonthPlan {
   const today = argentinaDay(now)
   const current = { year: Number(today.slice(0, 4)), month: Number(today.slice(5, 7)) }
-  let target = shift(current.year, current.month, -1)
+  let target = shiftMonth(current.year, current.month, -1)
   if (month !== undefined) {
-    const m = MONTH.exec(month)
-    const year = Number(m?.[1])
-    const number = Number(m?.[2])
-    if (!m || number < 1 || number > 12) {
+    const parsed = parseMonth(month)
+    if (!parsed) {
       throw new PromptArgumentError('`month` must look like 2026-10 (year, dash, month 01 to 12).')
     }
+    const { year, month: number } = parsed
     if (year < 2000) throw new PromptArgumentError('`month` cannot be before 2000.')
     if (monthText(year, number) > monthText(current.year, current.month)) {
       throw new PromptArgumentError('`month` cannot be in the future.')
     }
     target = { year, month: number }
   }
-  const before = shift(target.year, target.month, -1)
+  const before = shiftMonth(target.year, target.month, -1)
   return {
-    month: range(target.year, target.month),
-    before: range(before.year, before.month),
+    month: monthRange(target.year, target.month),
+    before: monthRange(before.year, before.month),
     inProgress: monthText(target.year, target.month) === monthText(current.year, current.month),
   }
 }
@@ -233,7 +224,7 @@ export function registerPrompts(
       argsSchema: z.object({
         month: z
           .string()
-          .regex(MONTH, 'Use the form 2026-10.')
+          .regex(MONTH_FORMAT, 'Use the form 2026-10.')
           .optional()
           .describe('The month to review as YYYY-MM; last month when left out.'),
       }),
