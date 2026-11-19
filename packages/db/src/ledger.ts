@@ -337,12 +337,15 @@ export async function recentMovements(scope: Scope, limit = 20): Promise<Movemen
   return rows.map((r) => ({ ...r.movement, sources: r.sources }))
 }
 
+/** The kinds of movement, as the `movement_type` check allows them. */
+export const MOVEMENT_TYPES = ['own_transfer', 'unclassified', 'card_purchase'] as const
+
 export type MovementListItem = {
   id: string
   /** yyyy-mm-dd */
   date: string
   time: string | null
-  type: 'own_transfer' | 'unclassified' | 'card_purchase'
+  type: (typeof MOVEMENT_TYPES)[number]
   direction: 'in' | 'out'
   /** Decimal string, as stored. */
   amount: string

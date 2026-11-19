@@ -5,32 +5,47 @@ import { canonicalUserId, errorTag } from '@warren/core'
 import { type Database, userIdentity } from '@warren/db'
 import { APIError } from 'better-auth'
 import { LEDGER_READ_SCOPE } from './auth-config'
+import { registerLedgerTools } from './mcp-ledger'
 
 type McpAuth = Parameters<typeof requireMcpAuth>[0]
 
 /**
- * `/api/mcp`: an MCP server with no tools yet (step 2 adds `ledger_list_movements`), stateless,
+ * `/api/mcp`: an MCP server with one tool, `ledger_list_movements`, stateless,
  * behind `requireMcpAuth`. That checks the JWT's signature, issuer, audience, expiry and the
  * `ledger:read` scope, and answers 401 or 403 with the `WWW-Authenticate` challenge itself.
  *
  * A JWT outlives the user's erasure by up to 15 minutes, so the door has one more check: the
  * token's `sub` must be a user that exists and was not erased, read as `warren_auth` (`auth`
- * is that connection). A tool will run through `asUser(database, sub, ...)` from here, which
- * is why `sub` is handed on in `authInfo.extra`. Nothing about the token, its claims or the
- * request is logged.
+ * is that connection). The tool runs through `asUser(database, userId, ...)`, which is why the
+ * id is handed on in `authInfo.extra`; it is never an argument. Nothing about the token, its
+ * claims or the request is logged.
  */
 export function createMcpRoute({
   auth,
   authDatabase,
+  database,
   resource,
+  now = () => new Date(),
 }: {
   auth: McpAuth
+  /** `warren_auth`: only the user check. */
   authDatabase: Database
+  /** `warren_app`: the ledger, reached through `asUser`. */
+  database: Database
   resource: string
+  now?: () => Date
 }): (request: Request) => Promise<Response> {
-  const mcp = createMcpHandler(() => new McpServer({ name: 'warren', version: '0.0.0' }), {
-    onerror: (error) => console.error('mcp:', errorTag(error)),
-  })
+  const mcp = createMcpHandler(
+    (ctx) => {
+      const server = new McpServer({ name: 'warren', version: '0.0.0' })
+      const userId = ctx.authInfo?.extra?.userId
+      // The route sets it for every request it serves; a missing one is a bug, not a guest.
+      if (typeof userId !== 'string') throw new Error('mcp: no user on the request')
+      registerLedgerTools(server, { database, userId, now })
+      return server
+    },
+    { onerror: (error) => console.error('mcp:', errorTag(error)) },
+  )
   // The plugin's own 401 for a token that failed, so this one reads like the others.
   const refused = (request: Request) => {
     const error = createResourceServerChallenge(
@@ -81,7 +96,8 @@ export function createMcpRoute({
         },
       })
     },
-    // No `scope` in the challenge: it is the bare RFC 9728 pointer to the metadata, where the scopes are.
+    // No `scope` in the challenge: it is the bare RFC 9728 pointer to the metadata, where the
+    // scopes are.
     { resource, requiredScopes: [LEDGER_READ_SCOPE], challengeScopes: [] },
   )
 }

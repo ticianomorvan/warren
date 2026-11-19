@@ -1,5 +1,6 @@
 import { auth, authDatabase } from '@/lib/auth'
 import { mcpResourceUrl } from '@/lib/auth-config'
+import { database } from '@/lib/db'
 import { env } from '@/lib/env'
 import { createMcpRoute } from '@/lib/mcp'
 
@@ -13,6 +14,7 @@ const serve = (request: Request) => {
   route ??= createMcpRoute({
     auth: auth(),
     authDatabase: authDatabase(),
+    database: database(),
     resource: mcpResourceUrl(env.authOrigins().baseURL),
   })
   return route(request)
