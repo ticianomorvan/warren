@@ -407,6 +407,103 @@ export async function listMovements(
   }
 }
 
+/** Totals of one group of movements: decimal strings, summed by the database as `numeric`. */
+export type MovementTotals = {
+  /** Movements in the group. */
+  count: number
+  /** Money received. */
+  in: string
+  /** Money spent. */
+  out: string
+  /** `in` minus `out`; negative when more went out than came in. */
+  net: string
+}
+
+export type CurrencySummary = MovementTotals & {
+  currency: string
+  by_type: (MovementTotals & { type: MovementListItem['type'] })[]
+  by_account: (MovementTotals & { account: string | null })[]
+}
+
+export type MovementSummary = {
+  /** Spending and income per currency. Own transfers are not in these totals. */
+  currencies: CurrencySummary[]
+  /** Transfers to an account registered as the user's own, apart: not spending or income. */
+  own_transfers: { currency: string; count: number; in: string; out: string }[]
+}
+
+type SummaryRow = {
+  currency: string
+  own: boolean
+  type: MovementListItem['type'] | null
+  account: string | null
+  /** `grouping(type, account)`: 3 per currency, 1 per type, 2 per account. */
+  level: number
+  count: number
+  in: string
+  out: string
+  net: string
+}
+
+const PER_CURRENCY = 3
+const PER_TYPE = 1
+const PER_ACCOUNT = 2
+
+/**
+ * The user's totals for movements dated `from` to `to`, both included (yyyy-mm-dd): per
+ * currency, in, out and net, by type and by account. One query (one snapshot): every sum is
+ * made in SQL as `numeric`, so no number passes through a float, and returns a decimal
+ * string. Movements of type `own_transfer`, those to an account registered as the user's own
+ * (`counter_account_id`), are reported apart from the totals.
+ */
+export async function summarizeMovements(
+  scope: Scope,
+  { from, to }: { from: string; to: string },
+): Promise<MovementSummary> {
+  const rows = rowsOf<SummaryRow>(
+    await scope.tx.execute(sql`
+      select m.currency, m.own, m.type, m.account,
+             grouping(m.type, m.account)::int as level,
+             count(*)::int as count,
+             coalesce(sum(m.amount) filter (where m.direction = 'in'), 0::numeric(28,8))::text as "in",
+             coalesce(sum(m.amount) filter (where m.direction = 'out'), 0::numeric(28,8))::text as "out",
+             (coalesce(sum(m.amount) filter (where m.direction = 'in'), 0::numeric(28,8))
+              - coalesce(sum(m.amount) filter (where m.direction = 'out'), 0::numeric(28,8)))::text as net
+      from (
+        select x.*, (x.type = 'own_transfer') as own, a.name as account
+        from movement x
+        left join account a on a.user_id = x.user_id and a.id = x.account_id
+        where x.date >= ${from}::date and x.date <= ${to}::date
+      ) m
+      group by grouping sets ((m.currency, m.own), (m.currency, m.own, m.type), (m.currency, m.own, m.account))
+      order by m.currency, m.type, m.account nulls last`),
+  )
+  const totals = (r: SummaryRow): MovementTotals => ({
+    count: Number(r.count),
+    in: r.in,
+    out: r.out,
+    net: r.net,
+  })
+  const at = (level: number, currency: string) =>
+    rows.filter((r) => !r.own && r.level === level && r.currency === currency)
+  return {
+    currencies: rows
+      .filter((r) => !r.own && r.level === PER_CURRENCY)
+      .map((r) => ({
+        currency: r.currency,
+        ...totals(r),
+        by_type: at(PER_TYPE, r.currency).map((t) => ({
+          type: t.type as MovementListItem['type'],
+          ...totals(t),
+        })),
+        by_account: at(PER_ACCOUNT, r.currency).map((a) => ({ account: a.account, ...totals(a) })),
+      })),
+    own_transfers: rows
+      .filter((r) => r.own && r.level === PER_CURRENCY)
+      .map((r) => ({ currency: r.currency, count: Number(r.count), in: r.in, out: r.out })),
+  }
+}
+
 /** How many movements the user has. */
 export async function movementCount(scope: Scope): Promise<number> {
   const rows = await scope.tx.select({ n: sql<number>`count(*)::int` }).from(movement)

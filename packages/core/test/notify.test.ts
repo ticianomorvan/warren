@@ -4,6 +4,8 @@ import {
   type AttemptRecord,
   flushNotices,
   formatAmount,
+  formatMoney,
+  formatSignedMoney,
   memoryPushSender,
   type NoticeMovement,
   noticeText,
@@ -36,6 +38,15 @@ describe('notice text', () => {
     expect(formatAmount('0.12345678')).toBe('0,12345678')
     expect(formatAmount('12345678901234567890.01')).toBe('12.345.678.901.234.567.890,01')
     expect(() => formatAmount('1e3')).toThrow()
+    // The notifier's formatters are strict about a sign; only the signed one takes it.
+    expect(() => formatAmount('-1')).toThrow()
+    expect(() => formatMoney('-1', 'ARS')).toThrow()
+    expect(formatSignedMoney('-1234.5', 'ARS')).toBe('-$ 1.234,50')
+    expect(formatSignedMoney('-3.00', 'USD')).toBe('-US$ 3,00')
+    expect(formatSignedMoney('1234.5', 'ARS')).toBe('$ 1.234,50')
+    expect(formatSignedMoney('-0', 'ARS')).toBe('$ 0,00')
+    expect(formatSignedMoney('-0.00000000', 'USD')).toBe('US$ 0,00')
+    expect(() => formatSignedMoney('--1', 'ARS')).toThrow()
   })
 
   it('describes a transfer sent to someone else', () => {

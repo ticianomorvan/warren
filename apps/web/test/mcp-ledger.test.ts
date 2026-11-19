@@ -114,8 +114,13 @@ const list = async (c: Client, args: Record<string, unknown> = {}) => {
 describe('ledger_list_movements', () => {
   it('is listed with its annotations and an output schema', async () => {
     const { tools } = await (await client(a.token)).listTools()
-    expect(tools.map((x) => x.name)).toEqual(['ledger_list_movements'])
-    const tool = tools[0]
+    expect(tools.map((x) => x.name)).toEqual([
+      'ledger_list_movements',
+      'ledger_summarize',
+      'knowledge_list_principles',
+      'knowledge_list_facts',
+    ])
+    const tool = tools.find((x) => x.name === 'ledger_list_movements')
     expect(tool?.title).toBeTruthy()
     expect(tool?.description).toMatch(/^Lists the user's ledger movements, newest first/)
     expect(tool?.annotations).toMatchObject({
@@ -227,7 +232,9 @@ describe('ledger_list_movements', () => {
   it('validates against the declared output schema', async () => {
     const c = await client(a.token)
     const { tools } = await c.listTools()
-    const schema = fromJsonSchema<Out>(tools[0]?.outputSchema as never)
+    const schema = fromJsonSchema<Out>(
+      tools.find((x) => x.name === 'ledger_list_movements')?.outputSchema as never,
+    )
     const valid = (value: unknown) => {
       const r = schema['~standard'].validate(value) as { issues?: unknown[] }
       return !r.issues
