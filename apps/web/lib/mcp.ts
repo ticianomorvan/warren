@@ -8,12 +8,13 @@ import { LEDGER_READ_SCOPE, PROFILE_READ_SCOPE } from './auth-config'
 import { registerKnowledgeTools } from './mcp-knowledge'
 import { registerLedgerTools } from './mcp-ledger'
 import { registerProfileTools } from './mcp-profile'
+import { registerPrompts } from './mcp-prompts'
 
 type McpAuth = Parameters<typeof requireMcpAuth>[0]
 
 /**
  * `/api/mcp`: an MCP server with the ledger tools (`ledger_list_movements`, `ledger_summarize`), the
- * knowledge tools (`knowledge_list_*`) and, for a token with `profile:read`, `profile_get`, stateless,
+ * knowledge tools (`knowledge_list_*`), the prompts (`review_month`, `should_i`) and, for a token with `profile:read`, `profile_get`, stateless,
  * behind `requireMcpAuth`. That checks the JWT's signature, issuer, audience, expiry and the
  * `ledger:read` scope, and answers 401 or 403 with the `WWW-Authenticate` challenge itself.
  *
@@ -47,9 +48,9 @@ export function createMcpRoute({
       registerLedgerTools(server, { database, userId, now })
       registerKnowledgeTools(server, { now })
       // Only for a token that was granted it: the tool is absent from the list otherwise.
-      if (ctx.authInfo?.scopes?.includes(PROFILE_READ_SCOPE)) {
-        registerProfileTools(server, { database, userId })
-      }
+      const profile = ctx.authInfo?.scopes?.includes(PROFILE_READ_SCOPE) === true
+      if (profile) registerProfileTools(server, { database, userId })
+      registerPrompts(server, { now, profile })
       return server
     },
     { onerror: (error) => console.error('mcp:', errorTag(error)) },

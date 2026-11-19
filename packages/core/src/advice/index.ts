@@ -1,8 +1,10 @@
+import { argentinaDay } from './argentina'
 import { FACTS } from './knowledge/facts'
 import { PRINCIPLES } from './knowledge/principles'
 import { TRAPS } from './knowledge/traps'
 import type { Fact, Principle, Topic, Trap } from './knowledge/types'
 
+export { argentinaDay, argentinaMinute } from './argentina'
 export {
   type Fact,
   PROFESSIONALS,
@@ -21,17 +23,9 @@ export type FactView = Fact & {
   stale: boolean
 }
 
-/** The ledger's days are Argentine days, so a fact is stale by the date there, not in UTC. */
-const argentinaDay = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'America/Argentina/Buenos_Aires',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-})
-
 /** The facts, optionally of one topic, each marked stale once its `review_by` day is over (Argentine time). */
 export function factsFor(now: Date, topic?: Topic): FactView[] {
-  const today = argentinaDay.format(now)
+  const today = argentinaDay(now)
   return FACTS.filter((f) => topic === undefined || f.topic === topic).map((f) => ({
     ...f,
     stale: today > f.review_by,

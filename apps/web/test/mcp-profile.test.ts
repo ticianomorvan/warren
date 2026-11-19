@@ -34,7 +34,18 @@ const profile = (income: string, goal = 'Viaje'): Profile => ({
 })
 const save = (id: string, p: Profile) => asUser(t.app, id, (s) => appendProfile(s, p))
 
-type Out = { profile: (Profile & { version: number; saved_at: string }) | null }
+type Out = {
+  profile:
+    | (Omit<Profile, 'goals' | 'obligations'> & {
+        version: number
+        saved_at: string
+        saved_at_local: string
+        monthly_income_display?: string
+        goals: (Profile['goals'][number] & { display: string })[]
+        obligations: (Profile['obligations'][number] & { display: string })[]
+      })
+    | null
+}
 const get = async (token: string) => {
   const res = await (await client(token)).callTool({ name: 'profile_get', arguments: {} })
   return res as typeof res & { structuredContent?: Out }
@@ -104,17 +115,46 @@ describe('profile_get and its scope', () => {
     const res = await get(a.withProfile)
     expect(res.structuredContent?.profile).toMatchObject({
       version: 2,
-      ...profile('250000.50', 'Auto'),
+      monthly_income: '250000.50',
+      monthly_income_display: '$ 250.000,50',
+      currency: 'ARS',
+      goals: [
+        {
+          name: 'Auto',
+          target: '3000.50',
+          currency: 'USD',
+          display: 'US$ 3.000,50',
+          date: '2027-12-31',
+        },
+      ],
+      obligations: [
+        {
+          name: 'Alquiler',
+          amount: '600000',
+          currency: 'ARS',
+          display: '$ 600.000,00',
+          due_day: 5,
+        },
+      ],
+      risk_limits: { emergency_months: 6, max_share_in_usd: 40 },
     })
     expect(Object.keys(res.structuredContent?.profile ?? {}).sort()).toEqual([
       'currency',
       'goals',
       'monthly_income',
+      'monthly_income_display',
       'obligations',
       'risk_limits',
       'saved_at',
+      'saved_at_local',
       'version',
     ])
+    // Argentina is UTC-3 all year.
+    const p = res.structuredContent?.profile
+    const saved = new Date(p?.saved_at ?? '')
+    expect(p?.saved_at_local).toBe(
+      new Date(saved.getTime() - 3 * 3_600_000).toISOString().slice(0, 16).replace('T', ' '),
+    )
     const { tools } = await (await client(a.withProfile)).listTools()
     const declared = fromJsonSchema<unknown>(
       tools.find((x) => x.name === 'profile_get')?.outputSchema as never,
