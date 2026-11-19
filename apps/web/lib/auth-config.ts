@@ -40,8 +40,11 @@ const SIGNUP_CLOSED = { message: 'signup_closed' } as const
  */
 const CREDENTIAL_ROUTE_LIMIT = { window: 60, max: 5 } as const
 
-/** The one scope a token carries until slice 11 adds more. */
+/** Reading the ledger: movements and their totals. Every token on `/api/mcp` carries it. */
 export const LEDGER_READ_SCOPE = 'ledger:read'
+
+/** Reading the person's financial profile (`profile_get`). Asked for separately, so a client that holds only `ledger:read` never sees that tool. */
+export const PROFILE_READ_SCOPE = 'profile:read'
 
 /** Access tokens live this long, in seconds; a refresh token renews them. */
 export const ACCESS_TOKEN_SECONDS = 15 * 60
@@ -177,7 +180,7 @@ export function createAuth(settings: AuthSettings) {
         loginPage: '/sign-in',
         consentPage: '/oauth/consent',
         resource: mcpResourceUrl(settings.baseURL),
-        scopes: [LEDGER_READ_SCOPE, 'offline_access'],
+        scopes: [LEDGER_READ_SCOPE, PROFILE_READ_SCOPE, 'offline_access'],
         // Public clients only (no secret exists for a metadata-document client): no client_credentials.
         grantTypes: ['authorization_code', 'refresh_token'],
         // Nobody registers, edits, lists or deletes a client over HTTP: a client exists only as a

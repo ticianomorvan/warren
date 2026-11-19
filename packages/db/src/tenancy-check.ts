@@ -5,6 +5,7 @@ import { asUser, type Database, inSystemContext, inUserContext, rowsOf } from '.
 import { createLedger, seedAccounts } from './ledger'
 import { createMailLog } from './mail-log'
 import { createOutbox } from './outbox'
+import { appendProfile } from './profile'
 import { createPushStore } from './push'
 import { erasure, noticeAttempt, user } from './schema'
 import * as system from './system'
@@ -480,6 +481,12 @@ export async function seedFixtures(
       p256dh:
         'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4',
       auth: 'BTBZMqHH6r4Tts7J_aSIgg',
+    })
+    await appendProfile(scope, {
+      currency: 'ARS',
+      goals: [],
+      obligations: [],
+      risk_limits: {},
     })
     const outbox = createOutbox(scope)
     const [owed] = await outbox.owed()

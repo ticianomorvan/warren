@@ -5,7 +5,7 @@ import {
 } from '@better-auth/oauth-provider'
 import { eraseUser } from '@warren/db'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { LEDGER_READ_SCOPE, mcpResourceUrl } from '../lib/auth-config'
+import { LEDGER_READ_SCOPE, mcpResourceUrl, PROFILE_READ_SCOPE } from '../lib/auth-config'
 import {
   api,
   asOwner,
@@ -65,7 +65,7 @@ describe('discovery documents', () => {
     const doc = await res.json()
     expect(doc.resource).toBe('http://localhost:3000/api/mcp')
     expect(doc.authorization_servers).toEqual([`${BASE}/api/auth`])
-    expect(doc.scopes_supported).toEqual([LEDGER_READ_SCOPE])
+    expect(doc.scopes_supported).toEqual([LEDGER_READ_SCOPE, PROFILE_READ_SCOPE])
   })
 
   it('builds the resource from the base URL, so a preview gets its own', () => {

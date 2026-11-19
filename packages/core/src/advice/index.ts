@@ -13,6 +13,7 @@ export {
   type Trap,
 } from './knowledge/types'
 export { DENYLIST, policyViolations } from './policy'
+export * from './profile'
 export { FACTS, PRINCIPLES, TRAPS }
 
 export type FactView = Fact & {
