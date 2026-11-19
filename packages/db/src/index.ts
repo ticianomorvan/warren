@@ -24,6 +24,7 @@ export {
   type ChainReport,
   createLedger,
   listMovements,
+  MOVEMENT_TYPES,
   type MovementListItem,
   type MovementPage,
   type MovementRow,
