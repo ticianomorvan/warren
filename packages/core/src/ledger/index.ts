@@ -2,7 +2,13 @@ import type { BankOperation } from '../mail/parse'
 import { isNews } from './notice-policy'
 
 export { eventId } from './ids'
-export { type Candidate, type MovementSource, matchMovement, mergeSources } from './match'
+export {
+  type Accounts,
+  type Candidate,
+  type MovementSource,
+  matchMovement,
+  mergeSources,
+} from './match'
 export { isNews, NOTICE_MAX_AGE_HOURS } from './notice-policy'
 
 export type AccountKind = 'asset' | 'liability'

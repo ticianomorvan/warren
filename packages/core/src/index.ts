@@ -1,4 +1,5 @@
 export * from './advice'
+export { ASSETS, type Currency, isAsset } from './assets'
 export * from './crypto'
 export { errorTag } from './error-tag'
 export { sha256Hex } from './hash'

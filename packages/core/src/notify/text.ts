@@ -1,3 +1,4 @@
+import { ASSETS, isAsset } from '../assets'
 import type { PushPayload } from './push'
 
 /** What a notice needs to know about a movement. Names come from the ledger, never a model. */
@@ -19,8 +20,6 @@ export type NoticeMovement = {
   cardLastFour?: string | null
 }
 
-const SYMBOLS: Record<string, string> = { ARS: '$', USD: 'US$' }
-
 /** "1500.00000000" becomes "1.500,00". Pure string work: no floating point. */
 export function formatAmount(amount: string): string {
   const match = /^(\d+)(?:\.(\d+))?$/.exec(amount)
@@ -31,7 +30,7 @@ export function formatAmount(amount: string): string {
 }
 
 export function formatMoney(amount: string, currency: string): string {
-  return `${SYMBOLS[currency] ?? currency} ${formatAmount(amount)}`
+  return `${isAsset(currency) ? ASSETS[currency].symbol : currency} ${formatAmount(amount)}`
 }
 
 /**
