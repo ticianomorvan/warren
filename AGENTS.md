@@ -40,7 +40,7 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 apps/web        Next.js 16 app: webhooks, sign-up/sign-in/home, /api/auth, the installable web app, push, /movements, and /api/mcp with its OAuth consent page
 packages/core   Pure logic and ports: sender policy, DKIM, templates, ledger matching, notices
 packages/db     Drizzle schema, SQL migrations (roles, RLS, triggers), asUser, mail log, ledger, outbox
-scripts         Operator commands (mail:*, ledger:*, notice:*, mailbox:add, user:set-password, user:erase, db:tenancy-check, github-settings.sh)
+scripts         Operator commands (mail:*, ledger:*, notice:*, mailbox:add, inbound:address, user:set-password, user:erase, db:tenancy-check, github-settings.sh)
 docs            architecture.md and docs/research/ (dated research, not legal advice)
 ```
 

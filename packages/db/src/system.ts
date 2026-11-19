@@ -7,7 +7,7 @@ import { mailbox, unroutedDelivery } from './schema'
  * through `asUser`. Keep this file small: each function is a hole in "no query without a user".
  */
 
-type LookupFunction = 'user_for_mailbox'
+type LookupFunction = 'user_for_mailbox' | 'user_for_inbound_address'
 
 /** Calls a `security definer` lookup, which returns a user id or null. */
 async function lookup(tx: Tx, fn: LookupFunction, key: string): Promise<string | null> {
@@ -20,6 +20,14 @@ async function lookup(tx: Tx, fn: LookupFunction, key: string): Promise<string |
 /** The user who registered this address, or null. A `security definer` function reads the table. */
 export async function userForMailbox(database: Database, address: string): Promise<string | null> {
   return inSystemContext(database, (tx) => lookup(tx, 'user_for_mailbox', address))
+}
+
+/** The user whose active inbound address has this token, or null. Revoked addresses match nobody. */
+export async function userForInboundAddress(
+  database: Database,
+  token: string,
+): Promise<string | null> {
+  return inSystemContext(database, (tx) => lookup(tx, 'user_for_inbound_address', token))
 }
 
 /** Notes a delivery nobody claimed. No content: only the provider's id and when it arrived. */

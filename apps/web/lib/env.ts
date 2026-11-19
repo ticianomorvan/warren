@@ -1,4 +1,4 @@
-import { type MasterKeys, masterKeysFromEnv } from '@warren/core'
+import { inboundDomain, type MasterKeys, masterKeysFromEnv } from '@warren/core'
 import { type AuthOrigins, authOrigins } from './auth-origin'
 
 function required(name: string): string {
@@ -21,6 +21,8 @@ export const env = {
   authOrigins: (): AuthOrigins => authOrigins(process.env),
   /** Who may sign up: emails separated by commas. Unset means nobody (see core/signup.ts). */
   signupEmails: () => process.env.WARREN_SIGNUP_EMAILS,
+  /** The domain of users' own inbound addresses; defaults to in.heywarren.app. */
+  inboundDomain: () => inboundDomain(process.env.WARREN_INBOUND_DOMAIN),
   resendApiKey: () => required('RESEND_API_KEY'),
   resendWebhookSecret: () => required('RESEND_WEBHOOK_SECRET'),
   /** Wraps each user's data key (see packages/core/src/crypto). */

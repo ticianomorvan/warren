@@ -38,6 +38,7 @@ const DERIVED = [
   'movement_source',
   'notice',
   'mailbox',
+  'inbound_address',
   'user_key',
   'push_subscription',
   'profile',

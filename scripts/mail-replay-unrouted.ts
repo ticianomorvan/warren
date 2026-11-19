@@ -19,6 +19,7 @@ import {
   defaultTxtResolver,
   fetchReceivedMail,
   type IntakeDeps,
+  inboundDomain,
   replayIncomplete,
   replayUnrouted,
   SENDERS,
@@ -43,6 +44,7 @@ const deps: IntakeDeps = {
   resolver: defaultTxtResolver,
   senders: SENDERS,
   maxDateSkewMinutes: 120,
+  inboundDomain: inboundDomain(process.env.WARREN_INBOUND_DOMAIN),
 }
 const results = await replayUnrouted(deps, pending, (id) => fetchReceivedMail(id, apiKey))
 await app.pool.end()

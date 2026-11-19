@@ -20,6 +20,7 @@ export {
 } from './client'
 export { createTenancy, sealedStore, userContext } from './context'
 export { type ErasureDatabases, type ErasureReport, eraseUser } from './erase'
+export { inboundAddressFor, revokeInboundAddress } from './inbound-address'
 export {
   type ChainReport,
   type CurrencySummary,

@@ -26,7 +26,7 @@ import {
   userFilesPrefix,
 } from '../src/mail/intake'
 import type { ParseResult } from '../src/mail/parse'
-import { verifyResendWebhook } from '../src/mail/resend'
+import { fetchReceivedMail, verifyResendWebhook } from '../src/mail/resend'
 import type { TxtResolver } from '../src/mail/resolver'
 import { SENDERS } from '../src/mail/senders'
 import type { MailVerdict } from '../src/mail/verify'
@@ -112,6 +112,9 @@ class MemoryLedger implements Ledger {
 
 const USER = '11111111-1111-4111-8111-111111111111'
 const OTHER = '22222222-2222-4222-8222-222222222222'
+const DOMAIN = 'in.heywarren.app'
+const TOKEN_A = 'u-aaaaaaaaaaaaaaaaaaaaaa'
+const TOKEN_B = 'u-bbbbbbbbbbbbbbbbbbbbbb'
 
 /** In-memory tenancy: each user has their own key, log, ledger and files. */
 class MemoryTenancy implements Tenancy {
@@ -126,6 +129,10 @@ class MemoryTenancy implements Tenancy {
   erased = false
   unrouted: { provider: string; providerId: string; receivedAt: Date }[] = []
   users = new Map<string, { key: Buffer; log: MemoryLog; ledger: MemoryLedger }>()
+  /** Active inbound tokens and their users; a revoked token is simply absent. */
+  tokens: Record<string, string> = {}
+  /** Tokens looked up, in order: what reached the database. */
+  tokenLookups: string[] = []
   constructor(readonly mailboxes: Record<string, string>) {
     for (const id of Object.values(mailboxes)) {
       this.users.set(id, { key: newDataKey(), log: new MemoryLog(), ledger: new MemoryLedger() })
@@ -135,6 +142,10 @@ class MemoryTenancy implements Tenancy {
     const u = this.users.get(id)
     if (!u) throw new Error('unknown user')
     return u
+  }
+  async userForInboundAddress(token: string) {
+    this.tokenLookups.push(token)
+    return this.tokens[token] ?? null
   }
   async userForMailbox(address: string) {
     return this.mailboxes[address.toLowerCase()] ?? null
@@ -175,9 +186,16 @@ class MemoryTenancy implements Tenancy {
   }
 }
 
-async function setup(resolver?: TxtResolver, unsigned = message()) {
+/** The Resend API's `to`: where the mail was delivered. */
+async function setup(
+  resolver?: TxtResolver,
+  unsigned = message(),
+  recipients: string[] = [],
+  tokens: Record<string, string> = {},
+) {
   const raw = new TextEncoder().encode(await bank.sign(unsigned))
   const tenancy = new MemoryTenancy({ [MAILBOX]: USER, 'other@example.com': OTHER })
+  tenancy.tokens = tokens
   const calls: string[] = []
   const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url)
@@ -187,6 +205,7 @@ async function setup(resolver?: TxtResolver, unsigned = message()) {
       return Response.json({
         id: 'em_1',
         created_at: RECEIVED_AT.toISOString(),
+        to: recipients,
         raw: { download_url: 'https://cdn.example/raw/em_1' },
       })
     }
@@ -202,6 +221,7 @@ async function setup(resolver?: TxtResolver, unsigned = message()) {
     },
     senders: SENDERS,
     maxDateSkewMinutes: 120,
+    inboundDomain: DOMAIN,
     webhookSecret: SECRET,
     apiKey: 're_test',
     fetchFn,
@@ -225,6 +245,29 @@ describe('verifyResendWebhook', () => {
   })
 })
 
+describe('fetchReceivedMail', () => {
+  it("returns the API's `to` as recipients, and [] when it is missing or not a list", async () => {
+    const raw = new TextEncoder().encode(message())
+    const fetchWith = (to: unknown) =>
+      (async (url: string | URL | Request) =>
+        String(url).includes('api.resend.com')
+          ? Response.json({
+              created_at: RECEIVED_AT.toISOString(),
+              ...(to === undefined ? {} : { to }),
+              raw: { download_url: 'https://cdn.example/raw' },
+            })
+          : new Response(raw)) as typeof fetch
+    const got = (to: unknown) =>
+      fetchReceivedMail('em_1', 'k', fetchWith(to)).then((m) => m.recipients)
+    expect(await got([`${TOKEN_A}@${DOMAIN}`, 'b@example.com'])).toEqual([
+      `${TOKEN_A}@${DOMAIN}`,
+      'b@example.com',
+    ])
+    expect(await got(undefined)).toEqual([])
+    expect(await got('not-a-list')).toEqual([])
+  })
+})
+
 describe('handleResendWebhook', () => {
   it('stores sealed, records and verifies a forwarded bank mail', async () => {
     const { deps, body, raw, tenancy, log, mailId } = await setup()
@@ -237,6 +280,7 @@ describe('handleResendWebhook', () => {
         outcome: 'verified',
         parse: 'unparsed',
         parseReason: 'no-html',
+        routedBy: 'legacy',
       },
     })
     const path = rawMailPathname(USER, mailId)
@@ -304,6 +348,124 @@ describe('handleResendWebhook', () => {
     })
     // It was checked in USER's ledger only; the other user has nothing.
     expect(tenancy.user(OTHER).log.mails.size).toBe(0)
+  })
+
+  describe('routing by the delivered-to address', () => {
+    /** Signed To names the user's mailbox; only the delivered-to recipients can say who it is for. */
+    const forwarded = async () => bank.sign(message())
+    /** Neither the To header nor a token names anyone. */
+    const stranger = async () => bank.sign(message({ to: 'stranger@example.com' }))
+    const run = async (recipients: string[], tokens: Record<string, string>, unsigned?: string) => {
+      const ctx = await setup(undefined, undefined, recipients, tokens)
+      if (unsigned !== undefined) {
+        const raw = new TextEncoder().encode(unsigned)
+        ctx.deps.fetchFn = (async (url: string | URL | Request) =>
+          String(url).includes('api.resend.com')
+            ? Response.json({
+                id: 'em_1',
+                created_at: RECEIVED_AT.toISOString(),
+                to: recipients,
+                raw: { download_url: 'https://cdn.example/raw/em_1' },
+              })
+            : new Response(raw)) as typeof fetch
+      }
+      const res = await handleResendWebhook(ctx.deps, ctx.body, signedHeaders(ctx.body))
+      return { ...ctx, res }
+    }
+
+    it('routes by the token and verifies when the signed To names the user mailbox', async () => {
+      const { res, tenancy } = await run(
+        [`${TOKEN_A}@${DOMAIN}`],
+        { [TOKEN_A]: USER },
+        await forwarded(),
+      )
+      expect(res.body).toMatchObject({ userId: USER, outcome: 'verified', routedBy: 'token' })
+      expect(tenancy.user(OTHER).log.mails.size).toBe(0)
+    })
+
+    it("routes B's token to B, never A", async () => {
+      const { res, tenancy } = await run(
+        [`${TOKEN_B}@${DOMAIN}`],
+        { [TOKEN_A]: USER, [TOKEN_B]: OTHER },
+        await forwarded(),
+      )
+      // The bank signed USER's mailbox, so B's ledger refuses it: rule 4 still decides after routing.
+      expect(res.body).toMatchObject({
+        userId: OTHER,
+        routedBy: 'token',
+        outcome: 'rejected',
+        reason: 'not-addressed-to-user',
+      })
+      expect(tenancy.user(USER).log.mails.size).toBe(0)
+      expect(tenancy.user(OTHER).log.mails.size).toBe(1)
+    })
+
+    it('rejects a token-routed mail whose signed To is not one of the user mailboxes (rule 4)', async () => {
+      // Signed To names an address nobody registered: routing found the user, rule 4 refuses.
+      const signed = await bank.sign(message({ to: 'unregistered@example.com' }))
+      const { res } = await run(
+        [`${TOKEN_A}@${DOMAIN}`],
+        { [TOKEN_A]: USER },
+        `To: ${MAILBOX}\r\n${signed}`,
+      )
+      expect(res.body).toMatchObject({
+        userId: USER,
+        outcome: 'rejected',
+        reason: 'not-addressed-to-user',
+        routedBy: 'token',
+      })
+    })
+
+    it('takes the first recipient that matches, display names and case included', async () => {
+      const { res, tenancy } = await run(
+        [
+          'Other <x@example.com>',
+          `Warren <${TOKEN_B.toUpperCase()}@${DOMAIN.toUpperCase()}>`,
+          `${TOKEN_A}@${DOMAIN}`,
+        ],
+        { [TOKEN_A]: USER, [TOKEN_B]: OTHER },
+        await forwarded(),
+      )
+      // Addresses are lower-cased before matching, and the first hit ends the search.
+      expect(tenancy.tokenLookups).toEqual([TOKEN_B])
+      expect(res.body).toMatchObject({ userId: OTHER, routedBy: 'token' })
+    })
+
+    it('treats an unknown token as unrouted when no mailbox matches either', async () => {
+      const { res, tenancy } = await run([`${TOKEN_A}@${DOMAIN}`], {}, await stranger())
+      expect(res.body).toEqual({ outcome: 'unrouted' })
+      expect(tenancy.unrouted).toHaveLength(1)
+      expect(tenancy.files.size).toBe(0)
+    })
+
+    it('does not match a revoked token (the lookup returns null) and falls back to the legacy To', async () => {
+      // No token in the map: revoked. The unsigned To names the operator mailbox.
+      const { res } = await run([`${TOKEN_A}@${DOMAIN}`], {})
+      expect(res.body).toMatchObject({ userId: USER, outcome: 'verified', routedBy: 'legacy' })
+    })
+
+    it('never looks up a malformed token or a recipient on another domain', async () => {
+      const { res, tenancy } = await run(
+        [
+          `u-short@${DOMAIN}`,
+          `u-${'a'.repeat(21)}@${DOMAIN}`,
+          `u-${'1'.repeat(22)}@${DOMAIN}`,
+          `${'a'.repeat(22)}@${DOMAIN}`,
+          `${TOKEN_A}@elsewhere.example`,
+          `${TOKEN_A}@sub.${DOMAIN}`,
+        ],
+        { [TOKEN_A]: USER },
+        await stranger(),
+      )
+      expect(tenancy.tokenLookups).toEqual([])
+      expect(res.body).toEqual({ outcome: 'unrouted' })
+    })
+
+    it('prefers the token over the legacy To header', async () => {
+      // Unsigned To names USER's mailbox, but the delivered-to token is OTHER's.
+      const { res } = await run([`${TOKEN_B}@${DOMAIN}`], { [TOKEN_B]: OTHER })
+      expect(res.body).toMatchObject({ userId: OTHER, routedBy: 'token' })
+    })
   })
 
   it('refuses an unsigned call before touching anything', async () => {
@@ -514,7 +676,7 @@ describe('replayUnrouted', () => {
     await replayUnrouted(
       { ...deps, maxDateSkewMinutes: null },
       [{ provider: 'resend', providerId: 'em_1', receivedAt }],
-      async () => ({ raw, receivedAt }),
+      async () => ({ raw, receivedAt, recipients: [] }),
       () => NOW,
     )
     return ledger
@@ -545,7 +707,7 @@ describe('replayUnrouted', () => {
     const fetched: string[] = []
     const fetchMail = async (id: string) => {
       fetched.push(id)
-      return { raw, receivedAt: RECEIVED_AT }
+      return { raw, receivedAt: RECEIVED_AT, recipients: [] }
     }
     const pending = [{ provider: 'resend', providerId: 'em_1', receivedAt: RECEIVED_AT }]
     const first = await replayUnrouted(deps, pending, fetchMail)
@@ -557,6 +719,23 @@ describe('replayUnrouted', () => {
     const second = await replayUnrouted(deps, pending, fetchMail)
     expect(second[0]?.outcome).toBe('duplicate')
     expect(log.verdicts).toHaveLength(1)
+  })
+
+  it('routes a replayed delivery by the recipients the provider reports now', async () => {
+    const { deps, tenancy } = await setup()
+    tenancy.tokens = { [TOKEN_A]: USER }
+    const forwarded = new TextEncoder().encode(await bank.sign(message()))
+    const out = await replayUnrouted(
+      deps,
+      [{ provider: 'resend', providerId: 'em_1', receivedAt: RECEIVED_AT }],
+      async () => ({
+        raw: forwarded,
+        receivedAt: RECEIVED_AT,
+        recipients: [`${TOKEN_A}@${DOMAIN}`],
+      }),
+    )
+    expect(out[0]?.outcome).toBe('verified')
+    expect(tenancy.tokenLookups).toEqual([TOKEN_A])
   })
 
   it('leaves a delivery that cannot be fetched for the next run, naming the error class only', async () => {
@@ -576,7 +755,7 @@ describe('replayUnrouted', () => {
     const { deps, raw } = await setup()
     // Noted three weeks before the signed date: the date check must see that time.
     const early = new Date('2026-10-20T13:00:00Z')
-    const fetchMail = async () => ({ raw, receivedAt: RECEIVED_AT })
+    const fetchMail = async () => ({ raw, receivedAt: RECEIVED_AT, recipients: [] })
     const out = await replayUnrouted(
       deps,
       [{ provider: 'resend', providerId: 'em_1', receivedAt: early }],
@@ -590,7 +769,7 @@ describe('replayUnrouted', () => {
     const out = await replayUnrouted(
       deps,
       [{ provider: 'other', providerId: 'x_1', receivedAt: RECEIVED_AT }],
-      async () => ({ raw, receivedAt: RECEIVED_AT }),
+      async () => ({ raw, receivedAt: RECEIVED_AT, recipients: [] }),
     )
     expect(out[0]?.outcome).toBe('verified')
     expect(log.mails.size).toBe(1)
@@ -599,7 +778,7 @@ describe('replayUnrouted', () => {
   it('reports a delivery whose verdict is retry as incomplete, and finishes it next time', async () => {
     const { deps, raw, log } = await setup(failingResolver)
     const d = { provider: 'resend', providerId: 'em_1', receivedAt: RECEIVED_AT }
-    const fetchMail = async () => ({ raw, receivedAt: RECEIVED_AT })
+    const fetchMail = async () => ({ raw, receivedAt: RECEIVED_AT, recipients: [] })
     const first = await replayUnrouted(deps, [d], fetchMail)
     expect(first[0]?.outcome).toBe('retry')
     expect(first.some(replayIncomplete)).toBe(true)
@@ -630,4 +809,5 @@ const input = (raw: Uint8Array) => ({
   provider: 'resend',
   providerId: 'em_1',
   receivedAt: RECEIVED_AT,
+  recipients: [] as string[],
 })
