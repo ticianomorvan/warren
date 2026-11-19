@@ -223,3 +223,20 @@ export async function setup(now?: () => Date) {
     ...(now ? { now } : {}),
   })
 }
+
+/**
+ * A published output schema with every object closed (`additionalProperties: false`). The
+ * published schemas stay open so that a field added later cannot break a client that cached
+ * them; tests validate real results against this closed copy, so a field the server sends but
+ * does not declare still fails here, at any depth.
+ */
+export function closedSchema<T>(schema: T): T {
+  const walk = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(walk)
+    if (!node || typeof node !== 'object') return node
+    const o = Object.fromEntries(Object.entries(node).map(([k, v]) => [k, walk(v)]))
+    if ('properties' in o) o.additionalProperties = false
+    return o
+  }
+  return walk(schema) as T
+}

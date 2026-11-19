@@ -4,7 +4,18 @@ import { asUser, schema, seedAccounts } from '@warren/db'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { createMcpRoute } from '../lib/mcp'
 import { decodeCursor, encodeCursor, rangeError } from '../lib/mcp-ledger'
-import { asOwner, auth, callMcp, connect, mcp, RESOURCE, setup, signedInUser, t } from './harness'
+import {
+  asOwner,
+  auth,
+  callMcp,
+  closedSchema,
+  connect,
+  mcp,
+  RESOURCE,
+  setup,
+  signedInUser,
+  t,
+} from './harness'
 
 const NOW = new Date('2026-11-19T15:30:00.000Z')
 const OCT = { from: '2026-10-01', to: '2026-10-31' }
@@ -471,6 +482,37 @@ describe('knowledge tools', () => {
       resource: RESOURCE,
       now: () => new Date(now),
     })
+
+  it('returns no field beyond what each tool declares, at any depth', async () => {
+    const c = await client(a.token)
+    const { tools } = await c.listTools()
+    const results: Record<string, unknown> = {
+      ledger_list_movements: (await c.callTool({ name: 'ledger_list_movements', arguments: {} }))
+        .structuredContent,
+      ledger_summarize: (await summarize(c, OCT)).structuredContent,
+      knowledge_list_principles: (
+        await c.callTool({ name: 'knowledge_list_principles', arguments: {} })
+      ).structuredContent,
+      knowledge_list_facts: (await c.callTool({ name: 'knowledge_list_facts', arguments: {} }))
+        .structuredContent,
+    }
+    expect(Object.keys(results)).toEqual(tools.map((x) => x.name))
+    for (const tool of tools) {
+      const declared = fromJsonSchema<unknown>(closedSchema(tool.outputSchema) as never)
+      const { issues } = declared['~standard'].validate(results[tool.name]) as {
+        issues?: unknown[]
+      }
+      expect(issues, tool.name).toBeUndefined()
+    }
+    // The check bites: an undeclared field deep inside a result fails.
+    const facts = structuredClone(results.knowledge_list_facts) as {
+      facts: Record<string, unknown>[]
+    }
+    ;(facts.facts[0] as Record<string, unknown>).undeclared = 1
+    const factsTool = tools.find((x) => x.name === 'knowledge_list_facts')
+    const closed = fromJsonSchema<unknown>(closedSchema(factsTool?.outputSchema) as never)
+    expect((closed['~standard'].validate(facts) as { issues?: unknown[] }).issues).toBeTruthy()
+  })
 
   it('lists all four tools with their annotations, titles and output schemas', async () => {
     const { tools } = await (await client(a.token)).listTools()

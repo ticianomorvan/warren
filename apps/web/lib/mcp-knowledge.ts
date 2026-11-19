@@ -13,19 +13,19 @@ import { z } from 'zod'
 
 const topic = z.enum(TOPICS).optional().describe('Only this topic; leave out for all.')
 
-const principleSchema = z.object({
+const principleSchema = z.looseObject({
   id: z.string(),
   title: z.string(),
   body: z.string(),
   applies_to: z.array(z.enum(TOPICS)),
 })
-const trapSchema = z.object({
+const trapSchema = z.looseObject({
   id: z.string(),
   title: z.string(),
   signs: z.array(z.string()),
   what_to_do: z.string(),
 })
-const factSchema = z.object({
+const factSchema = z.looseObject({
   id: z.string(),
   topic: z.enum(TOPICS),
   statement: z.string(),
@@ -37,7 +37,7 @@ const factSchema = z.object({
     .describe('`value` and `unit` as shown to the person, e.g. "$ 50.000.000,00 per person".'),
   parts: z
     .array(
-      z.object({
+      z.looseObject({
         label: z.string(),
         value: z.string().describe('Decimal string, in `unit`.'),
         unit: z.string(),
@@ -61,7 +61,7 @@ type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
 const _principle: Same<z.infer<typeof principleSchema>, Principle> = true
 const _trap: Same<z.infer<typeof trapSchema>, Trap> = true
 // Optional fields differ only in `| undefined`, so a fact is checked by its keys and one way.
-const _factKeys: Same<keyof z.infer<typeof factSchema>, keyof FactView> = true
+const _factKeys: Same<keyof typeof factSchema.shape, keyof FactView> = true
 const _fact: FactView extends z.infer<typeof factSchema> ? true : never = true
 void [_principle, _trap, _factKeys, _fact]
 
@@ -89,7 +89,7 @@ export function registerKnowledgeTools(server: McpServer, { now }: { now: () => 
         'returns, requests for money up front. The content is general and does not depend on ' +
         'the user.',
       inputSchema: z.object({ topic }),
-      outputSchema: z.object({
+      outputSchema: z.looseObject({
         principles: z.array(principleSchema),
         traps: z.array(trapSchema),
       }),
@@ -111,7 +111,7 @@ export function registerKnowledgeTools(server: McpServer, { now }: { now: () => 
         'date, America/Argentina/Buenos_Aires, is past `review_by`), whether it is a `slow` regulatory figure or a `moving` market value, ' +
         'and its source name and link.',
       inputSchema: z.object({ topic }),
-      outputSchema: z.object({
+      outputSchema: z.looseObject({
         facts: z.array(factSchema),
         checked_at: z.string().describe('ISO timestamp that `stale` was computed against.'),
       }),

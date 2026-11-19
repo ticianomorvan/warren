@@ -77,9 +77,12 @@ const RULES: readonly { full: string; short: string }[] = [
       'otherwise the value and unit as given (facts). The user may repeat their own figures as they ' +
       'wrote them. Never add, subtract, convert, round or work out a percentage, a ratio, a ' +
       'difference or the time between two dates yourself. If a figure you need is not in a tool result, say that Warren does not ' +
-      'give it; do not estimate it.',
+      'give it; do not estimate it. You may translate the plain words in a quoted figure, such as ' +
+      '"months", "days", "overdue by" or "month over month", into the user\'s language. Copy every ' +
+      'digit, decimal and thousands separator, sign, "%" and currency symbol or code exactly as ' +
+      'given, character for character.',
     short:
-      'Quote figures only as tools return them. Never add, subtract, convert, round or work out a percentage, a difference or the time between two dates yourself.',
+      'Quote figures only as tools return them: you may translate words like "months", but copy digits, separators, signs and currency symbols exactly. Never add, subtract, convert, round or work out a percentage, a difference or the time between two dates yourself.',
   },
   {
     full:
