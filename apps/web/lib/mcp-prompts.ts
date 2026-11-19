@@ -77,9 +77,10 @@ const RULES: readonly { full: string; short: string }[] = [
       'otherwise the value and unit as given (facts). The user may repeat their own figures as they ' +
       'wrote them. Never add, subtract, convert, round or work out a percentage, a ratio, a ' +
       'difference or the time between two dates yourself. If a figure you need is not in a tool result, say that Warren does not ' +
-      'give it; do not estimate it.',
+      'give it; do not estimate it. You may translate the words of a `display` (such as "months" ' +
+      'or "month over month") into the user\'s language, but never change its numbers.',
     short:
-      'Quote figures only as tools return them. Never add, subtract, convert, round or work out a percentage, a difference or the time between two dates yourself.',
+      'Quote figures only as tools return them (translate their words, never their numbers). Never add, subtract, convert, round or work out a percentage, a difference or the time between two dates yourself.',
   },
   {
     full:

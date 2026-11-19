@@ -220,7 +220,25 @@ describe('profile_get and its scope', () => {
     expect(await limits(0)).toMatchObject({ max_share_in_usd_display: 'nothing in savings in USD' })
   })
 
-  it('says so, with a strict output, when the stored profile no longer validates', async () => {
+  it('publishes output schemas that a new field cannot break', async () => {
+    // Clients cache a tool's output schema and validate results against it, so a closed object
+    // (additionalProperties: false) turns every added field into an error until they reconnect.
+    const u = await signedInUser()
+    const token = (await connect(u, { scope: BOTH })).access_token
+    const { tools } = await (await client(token)).listTools()
+    expect(tools.length).toBe(5)
+    const closed: string[] = []
+    const walk = (node: unknown, path: string) => {
+      if (!node || typeof node !== 'object') return
+      const o = node as Record<string, unknown>
+      if (o.additionalProperties === false) closed.push(path)
+      for (const [k, v] of Object.entries(o)) walk(v, `${path}/${k}`)
+    }
+    for (const tool of tools) walk(tool.outputSchema, tool.name)
+    expect(closed).toEqual([])
+  })
+
+  it('says so, with a typed output, when the stored profile no longer validates', async () => {
     const u = await signedInUser()
     const token = (await connect(u, { scope: BOTH })).access_token
     // Written as a row that fails today's rules (the aad is the one `appendProfile` uses).
@@ -240,7 +258,8 @@ describe('profile_get and its scope', () => {
     const bad = (v: unknown) => (declared['~standard'].validate(v) as { issues?: unknown[] }).issues
     expect(bad(res.structuredContent)).toBeUndefined()
     expect(bad({ profile: null, stored_profile_invalid: 'yes' })).toBeTruthy()
-    expect(bad({ profile: null, extra: 1 })).toBeTruthy()
+    // A field added later must not break a client holding this schema (it was cached before the field existed).
+    expect(bad({ profile: null, added_later: 1 })).toBeUndefined()
     // A save puts things right.
     await save(u.id, profile('9.00'))
     expect((await get(token)).structuredContent?.profile?.monthly_income).toBe('9.00')

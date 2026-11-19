@@ -206,7 +206,7 @@ describe('the server instructions', () => {
     for (const re of [
       /^Warren holds this user's ledger, profile and curated Argentine money facts and scam patterns/,
       /consult Warren's tools first, starting with `knowledge_list_principles` for traps/,
-      /Quote figures only as tools return them\. Never add, subtract.*the time between two dates yourself/,
+      /Quote figures only as tools return them \(translate their words, never their numbers\)\. Never add, subtract.*the time between two dates yourself/,
       /`as_of` date and source/,
       /`stale` or a `moving`/,
       /Refuse a trap that matches/,

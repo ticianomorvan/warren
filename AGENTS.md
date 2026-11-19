@@ -74,7 +74,7 @@ Each slice has a proof that can fail. Details are in `docs/architecture.md`.
 2. Card purchases: a template for "Compra aprobada"; reparse stored mail.
 3. PWA and push; the former WhatsApp notifier is deleted. Done.
 4. Agent spike: `/api/mcp` with OAuth and one read tool. Done.
-5. Advice kit, first cut: profile, general parameterised knowledge base with dated facts, two MCP prompts, fact tools, evals.
+5. Advice kit, first cut: profile, general parameterised knowledge base with dated facts, two MCP prompts, fact tools, evals. Done.
 6. Onboarding by forwarding: per-user address, Gmail confirmation, filter helper.
 7. Belo: sender policy and templates if its mail is signed.
 8. Rules and allowance.

@@ -12,7 +12,7 @@ import { z } from 'zod'
 
 const currency = z.enum(PROFILE_CURRENCIES)
 
-const profileSchema = z.object({
+const profileSchema = z.looseObject({
   version: z.number().int().describe('Which save this is; the highest is the latest.'),
   saved_at: z.string().describe('ISO timestamp (UTC) of when the person saved it.'),
   saved_at_local: z.string().describe('The same moment as "yyyy-mm-dd hh:mm" in Argentina.'),
@@ -26,7 +26,7 @@ const profileSchema = z.object({
     .describe('`monthly_income` as shown to the person, e.g. "US$ 15.000,00".'),
   currency: currency.describe('The currency of `monthly_income`.'),
   goals: z.array(
-    z.object({
+    z.looseObject({
       name: z.string(),
       target: z.string().describe('Decimal string, in the goal currency.'),
       display: z.string().describe('`target` as shown to the person.'),
@@ -47,7 +47,7 @@ const profileSchema = z.object({
   ),
   obligations: z
     .array(
-      z.object({
+      z.looseObject({
         name: z.string(),
         amount: z.string().describe('Decimal string, per month, in the obligation currency.'),
         display: z.string().describe('`amount` as shown to the person.'),
@@ -56,7 +56,7 @@ const profileSchema = z.object({
       }),
     )
     .describe('Fixed monthly commitments, such as rent or loan payments.'),
-  risk_limits: z.object({
+  risk_limits: z.looseObject({
     emergency_months: z
       .number()
       .int()
@@ -78,7 +78,7 @@ const profileSchema = z.object({
   }),
 })
 
-const outputSchema = z.object({
+const outputSchema = z.looseObject({
   profile: profileSchema
     .nullable()
     .describe('The latest saved profile, or null when none is saved or the saved one is invalid.'),

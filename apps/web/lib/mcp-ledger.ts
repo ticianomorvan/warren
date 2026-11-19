@@ -39,7 +39,7 @@ export function decodeCursor(cursor: string): string | null {
   return epochDay(`${y}-${m}-${d}`) === null ? null : keyset
 }
 
-const movementSchema = z.object({
+const movementSchema = z.looseObject({
   id: z.string().describe('Stable id of the movement.'),
   date: z.string().describe('yyyy-mm-dd, in Argentina.'),
   time: z.string().nullable().describe('hh:mm:ss when the bank said it, else null.'),
@@ -54,7 +54,7 @@ const movementSchema = z.object({
   card_last_four: z.string().nullable(),
 })
 
-const outputSchema = z.object({
+const outputSchema = z.looseObject({
   movements: z.array(movementSchema),
   next_cursor: z
     .string()
@@ -100,7 +100,7 @@ const money = (amount: string, currency: string) => ({
   display: formatMoney(amount, currency),
 })
 
-const moneySchema = z.object({
+const moneySchema = z.looseObject({
   amount: z.string().describe('Decimal string, exact; negative only for a net.'),
   display: z.string().describe('The amount as shown to the person, e.g. "$ 1.500,00".'),
 })
@@ -112,17 +112,17 @@ const totalsFields = {
   net: moneySchema.describe('Received minus spent; negative when more was spent.'),
 }
 
-const summaryOutputSchema = z.object({
+const summaryOutputSchema = z.looseObject({
   from: z.string(),
   to: z.string(),
   currencies: z
     .array(
-      z.object({
+      z.looseObject({
         currency: z.string(),
         ...totalsFields,
-        by_type: z.array(z.object({ type: z.enum(MOVEMENT_TYPES), ...totalsFields })),
+        by_type: z.array(z.looseObject({ type: z.enum(MOVEMENT_TYPES), ...totalsFields })),
         by_account: z.array(
-          z.object({
+          z.looseObject({
             account: z.string().nullable().describe('Name of the account, or null if unknown.'),
             ...totalsFields,
           }),
@@ -132,7 +132,7 @@ const summaryOutputSchema = z.object({
     .describe('One entry per currency that has movements in the range, not own transfers.'),
   own_transfers: z
     .array(
-      z.object({
+      z.looseObject({
         currency: z.string(),
         count: z.number().int(),
         in: moneySchema,
