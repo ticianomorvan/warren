@@ -83,7 +83,10 @@ describe('the meta test: the catalog says every table is covered', () => {
   })
 
   it('lists only the keys that are exempt on purpose', () => {
-    expect(Object.keys(EXEMPT_KEYS)).toEqual(['mailbox_address_unique'])
+    expect(Object.keys(EXEMPT_KEYS)).toEqual([
+      'mailbox_address_unique',
+      'inbound_address_token_unique',
+    ])
   })
 
   it('fails when a table has no policy', async () => {

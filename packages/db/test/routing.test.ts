@@ -54,7 +54,7 @@ describe('routing before a user exists', () => {
     ).rejects.toThrow()
   })
 
-  it('declares both functions security definer, with a fixed search_path, for warren_app only', async () => {
+  it('declares each lookup function security definer, with a fixed search_path, for warren_app only', async () => {
     const rows = await inSystemContext(t.owner, async (tx) =>
       rowsOf<{
         proname: string
@@ -72,7 +72,7 @@ describe('routing before a user exists', () => {
           from pg_proc where proname like 'user\\_for\\_%' order by proname`),
       ),
     )
-    expect(rows.map((r) => r.proname)).toEqual(['user_for_mailbox'])
+    expect(rows.map((r) => r.proname)).toEqual(['user_for_inbound_address', 'user_for_mailbox'])
     for (const r of rows) {
       expect(r).toMatchObject({ prosecdef: true, app: true, auth: false, eraser: false })
       expect(r.cfg.join()).toContain('search_path=pg_catalog, pg_temp')

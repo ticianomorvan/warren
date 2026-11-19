@@ -24,6 +24,7 @@
 import {
   defaultTxtResolver,
   type IntakeDeps,
+  inboundDomain,
   intakeForUser,
   SENDERS,
   sha256Hex,
@@ -83,6 +84,7 @@ const deps: IntakeDeps = {
   resolver,
   senders: SENDERS,
   maxDateSkewMinutes: 120,
+  inboundDomain: inboundDomain(process.env.WARREN_INBOUND_DOMAIN),
 }
 /** For each archived mail: its id in the new ledger (null when the raw file is gone), and what intake said. */
 const replayed = new Map<string, { mailId: string | null; note: string }>()

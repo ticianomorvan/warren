@@ -7,6 +7,7 @@ import {
   blobFile,
   erasure,
   event,
+  inboundAddress,
   inboundMail,
   jwks,
   mailbox,
@@ -111,6 +112,7 @@ export const ERASED_TABLES = [
   accountIdentifier,
   account,
   mailbox,
+  inboundAddress,
   pushSubscription,
   profile,
   userKey,
@@ -118,9 +120,10 @@ export const ERASED_TABLES = [
 
 /**
  * Tenant tables `warren_app` may update (a grant and an update policy): derived state that can
- * be rebuilt from the append-only tables. Every other tenant table is insert-only for it.
+ * be rebuilt from the append-only tables, and `inbound_address`, whose only update is revoking (a
+ * column grant on `revoked_at`, 0012). Every other tenant table is insert-only for it.
  */
-export const MUTABLE_TABLES = [movement] as const
+export const MUTABLE_TABLES = [movement, inboundAddress] as const
 
 /**
  * Tenant tables `warren_app` may delete from (a grant and a delete policy): settings, not

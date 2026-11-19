@@ -49,7 +49,11 @@ export function parseReceivedEvent(body: string): ReceivedEvent | null {
 
 export const MAX_RAW_MAIL_BYTES = 25 * 1024 * 1024
 
-export type ReceivedMail = { raw: Uint8Array; receivedAt: Date }
+/**
+ * `recipients` are the addresses the mail was delivered to, as the provider saw them (not the
+ * To header, which a forwarder leaves as the original addressee). Empty when unknown.
+ */
+export type ReceivedMail = { raw: Uint8Array; receivedAt: Date; recipients: string[] }
 
 /** The webhook carries metadata only, so the raw file is fetched from Resend's API. */
 export async function fetchReceivedMail(
@@ -62,7 +66,11 @@ export async function fetchReceivedMail(
     signal: AbortSignal.timeout(15_000),
   })
   if (!res.ok) throw new Error(`Resend API ${res.status} for received email`)
-  const mail = (await res.json()) as { created_at?: string; raw?: { download_url?: string } | null }
+  const mail = (await res.json()) as {
+    created_at?: string
+    to?: unknown
+    raw?: { download_url?: string } | null
+  }
   const url = mail.raw?.download_url
   if (!url?.startsWith('https://')) throw new Error('Resend API returned no raw download URL')
   const receivedAt = new Date(mail.created_at ?? '')
@@ -77,5 +85,8 @@ export async function fetchReceivedMail(
   if (raw.byteLength === 0 || raw.byteLength > MAX_RAW_MAIL_BYTES) {
     throw new Error(`Raw mail size out of range: ${raw.byteLength}`)
   }
-  return { raw, receivedAt }
+  const recipients = Array.isArray(mail.to)
+    ? mail.to.filter((a): a is string => typeof a === 'string')
+    : []
+  return { raw, receivedAt, recipients }
 }

@@ -1,6 +1,7 @@
 import { isNews, type Ledger, type RecordOptions, type RecordOutcome } from '../ledger'
 import { canonicalUserId, UserErasedError } from '../user'
 import { unsignedToAddresses } from './headers'
+import { inboundTokens } from './inbound-address'
 import { type ParseResult, parseBankMail, TEMPLATE_SET_VERSION, type VerifiedMail } from './parse'
 import {
   fetchReceivedMail,
@@ -76,6 +77,8 @@ export type UserContext = {
  * except the two calls that exist to find the user.
  */
 export interface Tenancy {
+  /** The user whose active inbound address has this token, if any. Revoked ones do not match. */
+  userForInboundAddress(token: string): Promise<string | null>
   /** The user who registered this mailbox address, if any. */
   userForMailbox(address: string): Promise<string | null>
   /** Notes a delivery nobody claimed. Holds no content, only that it arrived. */
@@ -93,11 +96,15 @@ export type IntakeDeps = {
   resolver: TxtResolver
   senders: readonly SenderPolicy[]
   maxDateSkewMinutes: number | null
+  /** The domain of users' own addresses (`WARREN_INBOUND_DOMAIN`). */
+  inboundDomain: string
 }
 
 export type IntakeResult = {
   /** Absent only when no user claims the mail's address. */
   userId?: string
+  /** How the mail found its user: the delivered-to token, or the legacy unsigned To header. */
+  routedBy?: 'token' | 'legacy'
   mailId?: string
   /** 'duplicate' when this exact mail was already fully processed, 'unrouted' when no user claims it. */
   outcome: MailVerdict['verdict'] | 'duplicate' | 'unrouted'
@@ -116,29 +123,42 @@ export const rawMailPathname = (userId: string, mailId: string) =>
 export const userFilesPrefix = (userId: string) => `u/${userId}/`
 
 /**
- * Finds the user from the mail's To header, which is not signed at this point, so it only
- * chooses whose ledger checks the mail. Rule 4 still decides inside that ledger: the signed
- * To must name one of the user's mailboxes. Mail nobody claims is noted without content and
- * answered with success, so the provider does not retry it.
+ * Finds the user. First by the delivered-to recipients the provider reports: an address on the
+ * inbound domain whose token is some user's active one. Only when none matches, by the To header
+ * (legacy: the operator-registered mailbox). Neither is signed at this point, so this only
+ * chooses whose ledger checks the mail. Rule 4 still decides inside that ledger: the signed To
+ * must name one of the user's mailboxes, whichever way the mail was routed. Mail nobody claims
+ * is noted without content and answered with success, so the provider does not retry it.
  */
-async function route(deps: IntakeDeps, raw: Uint8Array): Promise<string | null> {
+async function route(
+  deps: IntakeDeps,
+  raw: Uint8Array,
+  recipients: readonly string[],
+): Promise<{ userId: string; by: 'token' | 'legacy' } | null> {
+  for (const token of inboundTokens(recipients, deps.inboundDomain)) {
+    const userId = await deps.tenancy.userForInboundAddress(token)
+    if (userId) return { userId, by: 'token' }
+  }
   for (const address of unsignedToAddresses(raw)) {
     const userId = await deps.tenancy.userForMailbox(address)
-    if (userId) return userId
+    if (userId) return { userId, by: 'legacy' }
   }
   return null
 }
 
 export type MailInput = { raw: Uint8Array; provider: string; providerId: string; receivedAt: Date }
 
+/** Mail not yet routed: also where the provider says it was delivered (`[]` when unknown). */
+export type RoutableMail = MailInput & { recipients: readonly string[] }
+
 /** Routes the mail to its user and runs intake for them; mail nobody claims is noted, not read. */
 export async function intakeRawMail(
   deps: IntakeDeps,
-  input: MailInput,
+  input: RoutableMail,
   options: RecordOptions,
 ): Promise<IntakeResult> {
-  const userId = await route(deps, input.raw)
-  if (!userId) {
+  const routed = await route(deps, input.raw, input.recipients)
+  if (!routed) {
     await deps.tenancy.recordUnrouted({
       provider: input.provider,
       providerId: input.providerId,
@@ -146,7 +166,8 @@ export async function intakeRawMail(
     })
     return { outcome: 'unrouted' }
   }
-  return intakeForUser(deps, userId, input, options)
+  const result = await intakeForUser(deps, routed.userId, input, options)
+  return { ...result, routedBy: routed.by }
 }
 
 /** What `ensureStored` leaves behind: the mail is stored and recorded, with what is known of it. */
@@ -332,6 +353,7 @@ export async function replayUnrouted(
           provider: d.provider,
           providerId: d.providerId,
           receivedAt: d.receivedAt,
+          recipients: mail.recipients,
         },
         { notify: isNews(d.receivedAt, now()) },
       )
@@ -405,6 +427,7 @@ export async function handleResendWebhook(
       provider: 'resend',
       providerId: event.emailId,
       receivedAt: mail.receivedAt,
+      recipients: mail.recipients,
     },
     // A retry after a long outage can bring day-old mail: the outbox would send it as news.
     { notify: isNews(mail.receivedAt, deps.now?.() ?? new Date()) },

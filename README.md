@@ -24,7 +24,9 @@ cover the signed headers) and the no-vendor rule are in [`AGENTS.md`](AGENTS.md)
 
 **Mail intake.** A Gmail filter forwards bank alerts to a Resend inbound address. Resend calls
 `POST /api/inbound/resend`. The endpoint checks the webhook signature and downloads the raw
-mail. It reads the (unsigned) `To` header to find the user who registered that address; mail
+mail. It finds the user by the address the mail was delivered to: each user has their own
+`u-<token>@in.heywarren.app` (`pnpm inbound:address --user <id>` prints it), and only if no token
+matches does it fall back to the (unsigned) `To` header and the operator's mailboxes. Mail
 nobody claims is noted without content and answered with success. For the user it found, it
 seals the mail with their key and stores it in a private Blob store (`u/<user id>/mail/<mail
 id>.eml.sealed`), records it in Postgres, and verifies the bank's signature. The mail's identity
@@ -154,17 +156,19 @@ query.
    `DATABASE_URL_MIGRATIONS`, and the variables `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID`
    (both are in `.vercel/project.json` after linking). Every push to `main` that passes
    the checks then migrates the database and deploys.
-3. **Resend**: note the receiving address (`<anything>@<id>.resend.app`). Add a webhook for
+3. **Resend**: add `in.heywarren.app` (or your `WARREN_INBOUND_DOMAIN`) as a receiving domain with
+   its MX record. Add a webhook for
    `email.received` pointing to `https://<deployment>/api/inbound/resend` and copy its
    signing secret into Vercel.
 4. **A user and a mailbox.** Sign up at `/sign-up` with an allow-listed email (or, for a user
-   made by hand, `pnpm user:set-password --user <id>`), then register the address
-   their bank mail is addressed to: `pnpm mailbox:add --user <id> you@example.com`. Mail to an
-   address nobody registered is dropped, noted without content, until `pnpm
-   mail:replay-unrouted` runs it again once the mailbox exists.
-5. **Gmail**: add the Resend address under Settings → Forwarding (Resend shows the
-   confirmation mail under Receiving). Create a filter `from:(avisos@bbva.com.ar OR
-   avisos-bbva-ar@bbva.com)` → Forward to that address.
+   made by hand, `pnpm user:set-password --user <id>`), print their own address with `pnpm
+   inbound:address --user <id>`, and register the Gmail their bank mail comes from: `pnpm
+   mailbox:add --user <id> you@example.com` (the signed `To` must name it). Mail to an address
+   nobody claims is dropped, noted without content, until `pnpm mail:replay-unrouted` runs it
+   again.
+5. **Gmail**: add that `u-…@in.heywarren.app` address under Settings → Forwarding (the
+   confirmation mail arrives at Resend; slice 6 will show it in the app). Create a filter
+   `from:(avisos@bbva.com.ar OR avisos-bbva-ar@bbva.com)` → Forward to that address.
 6. Make a small transfer, then run `pnpm mail:status --user <id>`. `verified` means forwarding
    kept the bank's signature intact.
 

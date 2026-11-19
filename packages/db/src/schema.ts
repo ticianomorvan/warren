@@ -18,6 +18,7 @@ import {
   time,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core'
 
@@ -396,6 +397,33 @@ export const mailbox = pgTable(
     check('mailbox_address_lower', sql`${t.address} = lower(${t.address})`),
     ...tenant('mailbox'),
     ...erasable('mailbox'),
+  ],
+).enableRLS()
+
+/**
+ * A user's own address for forwarded bank mail: `<token>@<inbound domain>`. The token is
+ * unguessable (core `newInboundToken`) and unique across users, because mail arrives knowing
+ * only the address. Like `mailbox_address_unique`, that one key does not start with `user_id`
+ * (`EXEMPT_KEYS`). A user has at most one active address: the partial index below starts with
+ * `user_id` and is also what makes get-or-create race-safe. Revoking (setting `revoked_at`) is
+ * the only update, so the app role gets a column grant on it alone (0012), like a setting.
+ * Routing only picks whose ledger checks a mail; rule 4 still needs the signed To in `mailbox`.
+ */
+export const inboundAddress = pgTable(
+  'inbound_address',
+  {
+    userId: userId(),
+    token: text('token').notNull(),
+    createdAt: now('created_at'),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.token] }),
+    unique('inbound_address_token_unique').on(t.token),
+    check('inbound_address_token_format', sql`${t.token} ~ '^u-[a-z2-7]{22}$'`),
+    uniqueIndex('inbound_address_active_ix').on(t.userId).where(sql`${t.revokedAt} is null`),
+    ...tenantWithUpdate('inbound_address'),
+    ...erasable('inbound_address'),
   ],
 ).enableRLS()
 

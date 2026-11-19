@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { BankOperation } from '@warren/core'
 import { eq, getTableColumns, getTableName, sql } from 'drizzle-orm'
 import { asUser, type Database, inSystemContext, inUserContext, rowsOf } from './client'
+import { inboundAddressFor } from './inbound-address'
 import { createLedger, seedAccounts } from './ledger'
 import { createMailLog } from './mail-log'
 import { createOutbox } from './outbox'
@@ -38,10 +39,15 @@ export const EXEMPT_TABLES = tableNames(EXEMPT).slice() as readonly string[]
 export const MUTABLE = tableNames(MUTABLE_TABLES).slice() as readonly string[]
 /** The tenant tables `warren_app` may delete from: settings. The rest are insert-only for it. */
 export const DELETABLE = tableNames(DELETABLE_TABLES).slice() as readonly string[]
+/** A mutable table whose update grant is on one column: the one the isolation check updates. */
+const UPDATABLE_COLUMN: Record<string, string> = { inbound_address: 'revoked_at' }
 /** Keys that do not start with `user_id`, on purpose. Each needs a reason. */
 export const EXEMPT_KEYS: Record<string, string> = {
   // An address belongs to one person, and only the operator registers it.
   mailbox_address_unique: 'a mailbox address belongs to one person; operator-written',
+  // Mail arrives knowing only the address, so the token must be unique across users. It is 110
+  // random bits, so a clash is not a channel worth having: a conflict reveals nothing guessable.
+  inbound_address_token_unique: 'mail arrives knowing only the token; random, unguessable',
 }
 
 type Row = Record<string, unknown>
@@ -435,6 +441,7 @@ export async function seedFixtures(
     ]),
   )
   await system.addMailbox(owner, userId, `${tag}-${userId.slice(0, 8)}@example.invalid`)
+  await asUser(app, userId, (scope) => inboundAddressFor(scope))
   if (options.tombstone !== false) {
     await inSystemContext(owner, (tx) => tx.insert(erasure).values({ userId, chainHead: null }))
   }
@@ -598,9 +605,10 @@ export async function checkIsolation({ owner, app, a, b }: Isolation): Promise<C
   const touched = await inUserContext(app, b, async (tx) => {
     let n = 0
     for (const table of MUTABLE) {
+      const col = UPDATABLE_COLUMN[table] ?? 'user_id'
       n += rowsOf<Row>(
         await tx.execute(
-          sql`update ${sql.identifier(table)} set user_id = user_id where user_id = ${a}::uuid returning 1`,
+          sql`update ${sql.identifier(table)} set ${sql.identifier(col)} = ${sql.identifier(col)} where user_id = ${a}::uuid returning 1`,
         ),
       ).length
     }

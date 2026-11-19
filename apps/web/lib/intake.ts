@@ -14,6 +14,7 @@ export function resendWebhookDeps(): ResendWebhookDeps {
     senders: SENDERS,
     // Bank alerts are forwarded within seconds; anything older is a replay.
     maxDateSkewMinutes: 120,
+    inboundDomain: env.inboundDomain(),
     webhookSecret: env.resendWebhookSecret(),
     apiKey: env.resendApiKey(),
   }

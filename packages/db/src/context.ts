@@ -43,6 +43,7 @@ export async function userContext(scope: Scope, files: RawStore): Promise<UserCo
 /** Intake's door to the database: find the user, then act as them. */
 export function createTenancy(database: Database, files: RawStore): Tenancy {
   return {
+    userForInboundAddress: (token) => system.userForInboundAddress(database, token),
     userForMailbox: (address) => system.userForMailbox(database, address),
     recordUnrouted: (delivery) => system.recordUnrouted(database, delivery),
     withUser: (userId, fn) =>
