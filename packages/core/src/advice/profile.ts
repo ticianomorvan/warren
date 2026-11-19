@@ -9,7 +9,14 @@
 export const PROFILE_CURRENCIES = ['ARS', 'USD'] as const
 export type ProfileCurrency = (typeof PROFILE_CURRENCIES)[number]
 
-/** Bounds on every list and string, so a profile stays small enough to read in one tool result. */
+/**
+ * Bounds on every list and string, so a profile stays small enough to read in one tool result.
+ *
+ * Tightening one is safe for the data but not free: rows saved under the old bound are re-checked
+ * when read (`latestProfile`), and one that fails is reported as unreadable instead of thrown, so
+ * the page shows an empty form and `profile_get` says the stored profile is invalid. The person's
+ * next save becomes the latest version and replaces it. Nothing is ever migrated in place.
+ */
 export const PROFILE_LIMITS = {
   goals: 20,
   obligations: 50,
@@ -82,12 +89,12 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** True for a positive decimal string with at most two decimals, as `"1500"` or `"1500.50"`. */
-export function isAmount(value: unknown): value is string {
+function isAmount(value: unknown): value is string {
   return typeof value === 'string' && AMOUNT.test(value) && /[1-9]/.test(value)
 }
 
 /** True for a real calendar day written yyyy-mm-dd, from the year 2000. */
-export function isDay(value: unknown): value is string {
+function isDay(value: unknown): value is string {
   if (typeof value !== 'string') return false
   const m = DAY.exec(value)
   if (!m || Number(m[1]) < 2000) return false

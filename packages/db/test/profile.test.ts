@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { asUser } from '../src/client'
 import { appendProfile, latestProfile } from '../src/profile'
+import * as schema from '../src/schema'
 import { testDatabase } from './helpers'
 
 let t: Awaited<ReturnType<typeof testDatabase>>
@@ -54,10 +55,38 @@ describe('profile', () => {
     expect(Buffer.from(rows[0]?.data ?? []).toString('utf8')).not.toContain('Alquiler')
   })
 
-  it('gives concurrent saves consecutive versions, none lost', async () => {
+  it('gives saves made together consecutive versions', async () => {
+    // PGlite has one connection, so these run one after another and would pass without the lock:
+    // this proves the versions, not the lock. The next test proves the lock is taken.
     const before = (await latest(a))?.version ?? 0
     await Promise.all([1, 2, 3, 4, 5].map((n) => save(a, profile(`${n}00.00`))))
     expect((await latest(a))?.version).toBe(before + 5)
+  })
+
+  it('holds a per-user advisory lock until the save ends', async () => {
+    const held = await asUser(t.app, a, async (s) => {
+      await appendProfile(s, profile('1.00'))
+      const r = await s.tx.execute(
+        sql`select count(*)::int n from pg_locks where locktype = 'advisory' and mode = 'ExclusiveLock' and granted`,
+      )
+      return (r as { rows: { n: number }[] }).rows[0]?.n
+    })
+    expect(held).toBe(1)
+  })
+
+  it('reports a stored row that no longer validates instead of throwing', async () => {
+    const c = await t.newUser('c')
+    await asUser(t.app, c, (s) =>
+      s.tx.insert(schema.profile).values({
+        version: 1,
+        data: s.json.seal({ currency: 'EUR', goals: [] }, 'profile:1:data'),
+      }),
+    )
+    const got = await latest(c)
+    expect(got).toMatchObject({ version: 1, profile: null })
+    // The next save replaces it as the latest.
+    expect(await save(c, profile('5.00'))).toBe(2)
+    expect((await latest(c))?.profile?.monthly_income).toBe('5.00')
   })
 
   it('cannot be updated or deleted by the app, even for its own rows', async () => {
@@ -87,8 +116,8 @@ describe('profile', () => {
   it("never shows one user's profile to another", async () => {
     expect(await latest(b)).toBeNull()
     await save(b, profile('7.00', 'Mía'))
-    expect((await latest(b))?.profile.goals[0]?.name).toBe('Mía')
-    expect((await latest(a))?.profile.goals[0]?.name).not.toBe('Mía')
+    expect((await latest(b))?.profile?.goals[0]?.name).toBe('Mía')
+    expect((await latest(a))?.profile?.goals[0]?.name).not.toBe('Mía')
     const seen = await asUser(t.app, b, (s) =>
       s.tx.execute(sql`select count(*)::int n from profile`),
     )

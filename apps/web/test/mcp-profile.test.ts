@@ -1,6 +1,6 @@
 import { Client, fromJsonSchema, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import type { Profile } from '@warren/core'
-import { appendProfile, asUser } from '@warren/db'
+import { appendProfile, asUser, schema } from '@warren/db'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { LEDGER_READ_SCOPE, PROFILE_READ_SCOPE } from '../lib/auth-config'
 import { t as strings } from '../lib/strings'
@@ -79,7 +79,7 @@ describe('profile_get and its scope', () => {
     expect(await raw.text()).toMatch(/not found|unknown|-32602/i)
   })
 
-  it('is read-only, described without instructions, and has an output schema', async () => {
+  it('is read-only, says what it returns, and has an output schema', async () => {
     const tool = (await (await client(a.withProfile)).listTools()).tools.find(
       (x) => x.name === 'profile_get',
     )
@@ -123,6 +123,32 @@ describe('profile_get and its scope', () => {
       (declared['~standard'].validate(v) as { issues?: unknown[] }).issues
     expect(issues(res.structuredContent)).toBeUndefined()
     expect(issues({ profile: { nope: 1 } })).toBeTruthy()
+  })
+
+  it('says so, with a strict output, when the stored profile no longer validates', async () => {
+    const u = await signedInUser()
+    const token = (await connect(u, { scope: BOTH })).access_token
+    // Written as a row that fails today's rules (the aad is the one `appendProfile` uses).
+    await asUser(t.app, u.id, (s) =>
+      s.tx.insert(schema.profile).values({
+        version: 1,
+        data: s.json.seal({ currency: 'EUR', goals: [] }, 'profile:1:data'),
+      }),
+    )
+    const res = await get(token)
+    expect(res.isError).toBeFalsy()
+    expect(res.structuredContent).toEqual({ profile: null, stored_profile_invalid: true })
+    const { tools } = await (await client(token)).listTools()
+    const declared = fromJsonSchema<unknown>(
+      tools.find((x) => x.name === 'profile_get')?.outputSchema as never,
+    )
+    const bad = (v: unknown) => (declared['~standard'].validate(v) as { issues?: unknown[] }).issues
+    expect(bad(res.structuredContent)).toBeUndefined()
+    expect(bad({ profile: null, stored_profile_invalid: 'yes' })).toBeTruthy()
+    expect(bad({ profile: null, extra: 1 })).toBeTruthy()
+    // A save puts things right.
+    await save(u.id, profile('9.00'))
+    expect((await get(token)).structuredContent?.profile?.monthly_income).toBe('9.00')
   })
 
   it("never shows one user's profile to another's token", async () => {

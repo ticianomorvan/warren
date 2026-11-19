@@ -20,7 +20,7 @@ export const t = {
     lead: 'Lo que cargues acá lo puede leer tu agente (si le diste permiso) para aconsejarte. Cada vez que guardás se crea una versión nueva; la última es la que vale.',
     incomeTitle: 'Ingresos',
     income: 'Ingreso mensual',
-    incomeHint: 'Opcional. Por ejemplo 1500000 o 1500000,50.',
+    incomeHint: 'Opcional. Sin puntos de miles y con coma para los centavos: 1500000,50.',
     currency: 'Moneda',
     goals: 'Metas',
     goalsHint: 'Algo para lo que querés juntar plata, con su monto y fecha.',
@@ -53,13 +53,16 @@ export const t = {
     signedOut: 'Tu sesión terminó. Entrá de nuevo.',
     failed: 'No pudimos guardar el perfil. Probá de nuevo en un momento.',
     loadError: 'No pudimos cargar el perfil.',
+    unreadable:
+      'No pudimos leer el perfil que guardaste antes, porque ya no cumple las reglas. Cargalo de nuevo: al guardar, reemplaza al anterior.',
     retry: 'Reintentar',
     loading: 'Cargando perfil…',
     issues: {
       required: 'Completá este campo.',
       too_long: (max: number) => `Máximo ${max} caracteres.`,
       too_many: 'Llegaste al máximo de filas.',
-      amount: 'Escribí un monto mayor a cero, con hasta 2 decimales.',
+      amount:
+        'Escribí un monto mayor a cero, sin puntos de miles y con coma para los centavos (hasta 2), por ejemplo 1500000,50.',
       currency: 'Elegí una moneda.',
       date: 'Escribí una fecha válida.',
       day: 'Escribí un día del 1 al 31.',

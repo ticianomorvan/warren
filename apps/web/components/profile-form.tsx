@@ -17,7 +17,18 @@ type Obligation = { key: number; name: string; amount: string; currency: string;
 
 /** Argentines write 1500,50: the program wants 1500.50. Nothing else is touched. */
 const decimal = (text: string) => text.trim().replace(',', '.')
-const whole = (text: string): number | undefined => (text.trim() === '' ? undefined : Number(text))
+/** Digits only become a number; anything else (1e1, 0x10, -3) goes as typed, and the server says why. */
+const whole = (text: string): number | string =>
+  /^\d+$/.test(text.trim()) ? Number(text.trim()) : text
+/** Stored amounts have a dot; the person writes a comma, so that is what they see. */
+const shown = (amount: string | undefined) => (amount ?? '').replace('.', ',')
+const argentinaDate = (iso: string) =>
+  new Intl.DateTimeFormat('es-AR', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date(iso))
 
 const copy = t.profile
 const message = (issue: ProfileIssue): string => {
@@ -95,16 +106,16 @@ export function ProfileForm({
 }) {
   const next = useRef(0)
   const key = () => next.current++
-  const [income, setIncome] = useState(initial?.monthly_income ?? '')
+  const [income, setIncome] = useState(shown(initial?.monthly_income))
   const [currency, setCurrency] = useState<string>(initial?.currency ?? 'ARS')
   const [goals, setGoals] = useState<Goal[]>(() =>
-    (initial?.goals ?? []).map((g) => ({ ...g, key: key() })),
+    (initial?.goals ?? []).map((g) => ({ ...g, target: shown(g.target), key: key() })),
   )
   const [obligations, setObligations] = useState<Obligation[]>(() =>
     (initial?.obligations ?? []).map((o) => ({
       key: key(),
       name: o.name,
-      amount: o.amount,
+      amount: shown(o.amount),
       currency: o.currency,
       dueDay: o.due_day === undefined ? '' : String(o.due_day),
     })),
@@ -115,7 +126,7 @@ export function ProfileForm({
   const [status, setStatus] = useState<{ text: string; bad: boolean } | null>(
     version && savedAt
       ? {
-          text: copy.savedBefore(version, savedAt.slice(0, 10).split('-').reverse().join('/')),
+          text: copy.savedBefore(version, argentinaDate(savedAt)),
           bad: false,
         }
       : null,
@@ -178,7 +189,13 @@ export function ProfileForm({
   const err = (path: string) => errors.get(path)
 
   return (
-    <form onSubmit={submit} aria-busy={pending} noValidate data-testid="profile-form">
+    <form
+      className="profile-form"
+      onSubmit={submit}
+      aria-busy={pending}
+      noValidate
+      data-testid="profile-form"
+    >
       <section aria-labelledby="income-h" className="fields">
         <h2 id="income-h">{copy.incomeTitle}</h2>
         <div className="row-fields">
@@ -255,7 +272,10 @@ export function ProfileForm({
                 <button
                   type="button"
                   className="quiet small"
-                  onClick={() => setGoals((r) => r.filter((x) => x.key !== g.key))}
+                  onClick={() => {
+                    setErrors(new Map())
+                    setGoals((r) => r.filter((x) => x.key !== g.key))
+                  }}
                 >
                   {copy.remove(copy.goalN(i + 1))}
                 </button>
@@ -339,7 +359,10 @@ export function ProfileForm({
                 <button
                   type="button"
                   className="quiet small"
-                  onClick={() => setObligations((r) => r.filter((x) => x.key !== o.key))}
+                  onClick={() => {
+                    setErrors(new Map())
+                    setObligations((r) => r.filter((x) => x.key !== o.key))
+                  }}
                 >
                   {copy.remove(copy.obligationN(i + 1))}
                 </button>

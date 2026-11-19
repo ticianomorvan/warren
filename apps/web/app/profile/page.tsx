@@ -24,6 +24,11 @@ export default async function ProfilePage() {
         </Link>
         <h1>{t.profile.title}</h1>
         <p className="note lead">{t.profile.lead}</p>
+        {stored && !stored.profile && (
+          <p className="error" role="alert" data-testid="profile-unreadable">
+            {t.profile.unreadable}
+          </p>
+        )}
         <ProfileForm
           initial={stored?.profile ?? null}
           version={stored?.version ?? null}

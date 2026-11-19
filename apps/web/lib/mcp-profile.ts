@@ -48,7 +48,14 @@ const profileSchema = z.object({
 const outputSchema = z.object({
   profile: profileSchema
     .nullable()
-    .describe('The latest saved profile, or null when the person has not filled one in.'),
+    .describe('The latest saved profile, or null when none is saved or the saved one is invalid.'),
+  stored_profile_invalid: z
+    .boolean()
+    .optional()
+    .describe(
+      'Present and true when the person saved a profile that no longer passes validation, so ' +
+        '`profile` is null for that reason. They fix it by saving again on their profile page.',
+    ),
 })
 
 /**
@@ -69,7 +76,8 @@ export function registerProfileTools(
         'monthly obligations (name, amount, currency, due day) and risk limits (months of ' +
         'emergency fund, maximum share held in dollars). Amounts are exact decimal strings; quote ' +
         'them as given and never add, convert or round them. Returns `{ "profile": null }` when ' +
-        'the user has not saved one.',
+        'the user has not saved one, and also `"stored_profile_invalid": true` when the saved ' +
+        'one no longer passes validation.',
       inputSchema: z.object({}),
       outputSchema,
       annotations: { readOnlyHint: true, openWorldHint: false, idempotentHint: true },
@@ -78,13 +86,17 @@ export function registerProfileTools(
       try {
         const stored = await asUser(database, userId, latestProfile)
         // `latestProfile` returns only what `parseProfile` keeps, so no stray field can pass.
-        const output = {
-          profile: stored && {
-            version: stored.version,
-            saved_at: stored.created_at,
-            ...stored.profile,
-          },
-        }
+        const output = stored?.profile
+          ? {
+              profile: {
+                version: stored.version,
+                saved_at: stored.created_at,
+                ...stored.profile,
+              },
+            }
+          : stored
+            ? { profile: null, stored_profile_invalid: true }
+            : { profile: null }
         return {
           structuredContent: output,
           content: [{ type: 'text' as const, text: JSON.stringify(output) }],

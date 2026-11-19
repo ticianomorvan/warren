@@ -481,3 +481,9 @@ button.quiet.small {
   height: 2.75rem;
   margin: 12px 0;
 }
+
+/* The sticky date headings are for /movements; the form's section headings stay in place. */
+.card form.profile-form section h2 {
+  position: static;
+  padding: 0;
+}
