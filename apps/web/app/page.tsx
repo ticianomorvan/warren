@@ -57,6 +57,13 @@ export default async function Home() {
             <Link href="/profile">{t.home.profileLink}</Link>
           </p>
         </section>
+        <section aria-labelledby="onboarding">
+          <h2 id="onboarding">{t.home.onboarding}</h2>
+          <p className="note">{t.home.onboardingHint}</p>
+          <p className="note">
+            <Link href="/onboarding">{t.home.onboardingLink}</Link>
+          </p>
+        </section>
         <NotificationsCard publicKey={vapid.key} broken={vapid.broken} />
         <SignOutButton />
       </div>

@@ -13,6 +13,47 @@ export const t = {
     profile: 'Tu perfil financiero',
     profileHint: 'Tus metas y compromisos, para que tu agente te aconseje con tu situación real.',
     profileLink: 'Editar perfil',
+    onboarding: 'Conectar tu correo',
+    onboardingHint: 'Reenviá los avisos de tu banco a tu dirección de Warren.',
+    onboardingLink: 'Conectar Gmail',
+  },
+  onboarding: {
+    title: 'Conectar tu correo',
+    back: 'Inicio',
+    loading: 'Cargando…',
+    loadError: 'No pudimos cargar esta página.',
+    retry: 'Reintentar',
+    lead: 'Warren lee los avisos de tu banco que le reenvíes. Primero agregá tu dirección de Warren como dirección de reenvío en Gmail.',
+    addressTitle: 'Tu dirección de Warren',
+    addressHint:
+      'En Gmail: Configuración, Reenvío y correo POP/IMAP, Añadir una dirección de reenvío. Pegá esta dirección.',
+    copy: 'Copiar',
+    copied: 'Copiada',
+    copyFailed: 'No pudimos copiarla. Seleccionala y copiala a mano.',
+    pendingTitle: 'Gmails que pidieron reenviar a Warren',
+    pendingWarning:
+      'Tocá "Sí, ... es mi Gmail" solo en el Gmail que es tuyo. Si no lo es, no lo toques: sus avisos entrarían en tus cuentas.',
+    pendingHint: 'Confirmá en Google y volvé acá.',
+    noPending:
+      'Todavía no llegó el pedido de Google. Cuando agregues la dirección en Gmail, aparece acá.',
+    confirmInGoogle: 'Confirmar en Google',
+    itsMine: (address: string) => `Sí, ${address} es mi Gmail`,
+    claiming: 'Confirmando…',
+    claim: {
+      claimed: 'Listo: ya recibimos los avisos de ese Gmail.',
+      'already-yours': 'Ese Gmail ya estaba conectado.',
+      taken: 'Ese Gmail ya está conectado a otra cuenta de Warren.',
+      'no-confirmation':
+        'No encontramos el pedido de Google para ese Gmail, o ya pasaron 7 días. Agregá la dirección en Gmail de nuevo.',
+    },
+    rescued: (n: number) =>
+      n === 1
+        ? 'Recuperamos 1 aviso que había llegado antes.'
+        : `Recuperamos ${n} avisos que habían llegado antes.`,
+    signedOut: 'Tu sesión terminó. Entrá de nuevo.',
+    failed: 'No pudimos confirmar el Gmail. Probá de nuevo en un momento.',
+    mailboxesTitle: 'Gmails conectados',
+    noMailboxes: 'Todavía no conectaste ningún Gmail.',
   },
   profile: {
     title: 'Perfil financiero',

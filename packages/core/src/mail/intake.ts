@@ -1,7 +1,13 @@
 import { isNews, type Ledger, type RecordOptions, type RecordOutcome } from '../ledger'
 import { canonicalUserId, UserErasedError } from '../user'
-import { unsignedToAddresses } from './headers'
-import { inboundTokens } from './inbound-address'
+import {
+  CONFIRMATION_WINDOW_DAYS,
+  type ForwardingConfirmation,
+  looksLikeGoogleForwarding,
+  recognizeForwardingConfirmation,
+} from './forwarding'
+import { unsignedFromAddresses, unsignedToAddresses } from './headers'
+import { inboundAddressOf, inboundTokens } from './inbound-address'
 import { type ParseResult, parseBankMail, TEMPLATE_SET_VERSION, type VerifiedMail } from './parse'
 import {
   fetchReceivedMail,
@@ -12,7 +18,7 @@ import {
 } from './resend'
 import type { TxtResolver } from './resolver'
 import { SENDER_POLICY_VERSION, type SenderPolicy } from './senders'
-import { type MailVerdict, verifyBankMail } from './verify'
+import { type MailVerdict, verifySignedMail } from './verify'
 
 /**
  * Where raw files live (Vercel Blob in production). Every store used for mail is per user: it
@@ -54,6 +60,19 @@ export interface MailLog {
   recordParse(mailId: string, templateSetVersion: number, result: ParseResult): Promise<void>
   /** Verified mails with no parse under this template set. */
   pendingParses(templateSetVersion: number): Promise<PendingParse[]>
+  /**
+   * Mails received since `since` whose latest verdict is a rejection as `not-addressed-to-user`:
+   * what a newly claimed mailbox may rescue.
+   */
+  rejectedNotAddressed(
+    since: Date,
+  ): Promise<{ mailId: string; pathname: string; receivedAt: Date }[]>
+}
+
+/** Google's forwarding confirmations, as the user's page will show them. Sealed at rest. */
+export interface ForwardingConfirmations {
+  /** Appends one. Holds the address and link: never log what is passed. */
+  record(confirmation: ForwardingConfirmation, receivedAt: Date): Promise<void>
 }
 
 /** Everything intake may touch for one user, inside that user's database transaction. */
@@ -65,6 +84,7 @@ export type UserContext = {
    */
   store: RawStore
   log: MailLog
+  confirmations: ForwardingConfirmations
   ledger: Ledger
   /** The user's mailbox addresses: the signed To must name one of them. */
   mailboxes: readonly string[]
@@ -107,7 +127,7 @@ export type IntakeResult = {
   routedBy?: 'token' | 'legacy'
   mailId?: string
   /** 'duplicate' when this exact mail was already fully processed, 'unrouted' when no user claims it. */
-  outcome: MailVerdict['verdict'] | 'duplicate' | 'unrouted'
+  outcome: MailVerdict['verdict'] | 'duplicate' | 'unrouted' | 'forwarding-confirmation'
   reason?: string
   /** For verified mail: whether a template turned it into an operation. */
   parse?: ParseResult['status']
@@ -134,10 +154,12 @@ async function route(
   deps: IntakeDeps,
   raw: Uint8Array,
   recipients: readonly string[],
-): Promise<{ userId: string; by: 'token' | 'legacy' } | null> {
+): Promise<
+  { userId: string; by: 'token'; token: string } | { userId: string; by: 'legacy' } | null
+> {
   for (const token of inboundTokens(recipients, deps.inboundDomain)) {
     const userId = await deps.tenancy.userForInboundAddress(token)
-    if (userId) return { userId, by: 'token' }
+    if (userId) return { userId, by: 'token', token }
   }
   for (const address of unsignedToAddresses(raw)) {
     const userId = await deps.tenancy.userForMailbox(address)
@@ -166,8 +188,38 @@ export async function intakeRawMail(
     })
     return { outcome: 'unrouted' }
   }
+  if (routed.by === 'token' && looksLikeGoogleForwarding(unsignedFromAddresses(input.raw))) {
+    const captured = await captureConfirmation(deps, routed.userId, routed.token, input)
+    if (captured) return { ...captured, routedBy: 'token' }
+  }
   const result = await intakeForUser(deps, routed.userId, input, options)
   return { ...result, routedBy: routed.by }
+}
+
+/**
+ * A token-routed mail that is Google's signed forwarding confirmation to this user's Warren
+ * address is kept as a confirmation (address and link, sealed) and goes no further: the raw mail
+ * is not stored and never reaches the ledger path. Null for anything else, which takes the
+ * ordinary path. Nothing here logs or returns the address or the link (rule 3).
+ */
+async function captureConfirmation(
+  deps: IntakeDeps,
+  userId: string,
+  token: string,
+  input: MailInput,
+): Promise<IntakeResult | null> {
+  const found = await recognizeForwardingConfirmation(input.raw, {
+    warrenAddress: inboundAddressOf(token, deps.inboundDomain),
+    resolver: deps.resolver,
+    receivedAt: input.receivedAt,
+    maxDateSkewMinutes: deps.maxDateSkewMinutes,
+  })
+  if (found.status === 'retry') return { userId, outcome: 'retry', reason: 'dns-temperror' }
+  if (found.status !== 'confirmation') return null
+  await deps.tenancy.withUser(userId, (ctx) =>
+    ctx.confirmations.record(found.confirmation, input.receivedAt),
+  )
+  return { userId, outcome: 'forwarding-confirmation' }
 }
 
 /** What `ensureStored` leaves behind: the mail is stored and recorded, with what is known of it. */
@@ -237,7 +289,7 @@ async function settleVerdict(
   stored: Stored,
 ): Promise<MailVerdict | FinalVerdict> {
   if (stored.settled) return stored.settled
-  const verdict = await verifyBankMail(input.raw, {
+  const verdict = await verifySignedMail(input.raw, {
     senders: deps.senders,
     mailboxes: stored.mailboxes,
     resolver: deps.resolver,
@@ -303,6 +355,49 @@ export async function intakeForUser(
     }
   }
   return parseAndRecord(deps, userId, input, stored.mailId, verdict, options)
+}
+
+/**
+ * After a mailbox is claimed (or found already claimed), checks again the user's mail rejected as
+ * `not-addressed-to-user` in the last `CONFIRMATION_WINDOW_DAYS`: it arrived between adding the forward and claiming. Each is
+ * read from its sealed file, verified with the mailboxes now held, and a new verdict is
+ * appended (the log is append-only; the latest verdict wins). A mail that now verifies is parsed
+ * and recorded like live mail, with a notice only if it is still news. DNS is fetched outside
+ * any transaction. Returns how many mails now verify.
+ */
+export async function reverifyRejected(
+  deps: IntakeDeps,
+  userId: string,
+  now: Date = new Date(),
+): Promise<number> {
+  const since = new Date(now.getTime() - CONFIRMATION_WINDOW_DAYS * 86_400_000)
+  const { candidates, mailboxes, store, mailId } = await deps.tenancy.withUser(
+    userId,
+    async (ctx) => ({
+      candidates: await ctx.log.rejectedNotAddressed(since),
+      mailboxes: ctx.mailboxes,
+      store: ctx.store,
+      mailId: ctx.mailId,
+    }),
+  )
+  let rescued = 0
+  for (const mail of candidates) {
+    const raw = await store.get(mail.pathname)
+    if (!raw || mailId(raw) !== mail.mailId) continue
+    const input = { raw, provider: '', providerId: '', receivedAt: mail.receivedAt }
+    const verdict = await settleVerdict(deps, userId, input, {
+      mailId: mail.mailId,
+      mailboxes,
+      settled: null,
+      done: false,
+    })
+    if (verdict.verdict !== 'verified') continue
+    rescued++
+    await parseAndRecord(deps, userId, input, mail.mailId, verdict, {
+      notify: isNews(mail.receivedAt, now),
+    })
+  }
+  return rescued
 }
 
 export type ReplayResult = {

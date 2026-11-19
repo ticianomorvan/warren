@@ -9,7 +9,11 @@ export function makeSigner(domain: string, selector = 'test1', bits = 2048) {
   return {
     dnsName: `${selector}._domainkey.${domain}`,
     record,
-    async sign(message: string, headerList = 'From:To:Subject:Date'): Promise<string> {
+    async sign(
+      message: string,
+      headerList = 'From:To:Subject:Date',
+      maxBodyLength?: number,
+    ): Promise<string> {
       const res = await dkimSign(message, {
         canonicalization: 'relaxed/relaxed',
         signTime: new Date('2026-11-14T13:00:00Z'),
@@ -20,6 +24,7 @@ export function makeSigner(domain: string, selector = 'test1', bits = 2048) {
             privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }) as string,
             algorithm: 'rsa-sha256',
             headerList,
+            ...(maxBodyLength === undefined ? {} : { maxBodyLength }),
           },
         ],
       })

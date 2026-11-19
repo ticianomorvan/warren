@@ -6,7 +6,7 @@ import type {
   ParseResult,
   PendingParse,
 } from '@warren/core'
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
+import { and, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm'
 import type { Scope } from './client'
 import { blobFile, inboundMail, mailDelivery, mailParse, mailVerdict } from './schema'
 
@@ -106,6 +106,36 @@ export function createMailLog(scope: Scope): MailLog {
           fromAddress: matched ? verdict.fromAddress : null,
         })
       }
+    },
+
+    async rejectedNotAddressed(since) {
+      const latest = tx
+        .selectDistinctOn([mailVerdict.mailId], {
+          mailId: mailVerdict.mailId,
+          verdict: mailVerdict.verdict,
+          reason: mailVerdict.reason,
+        })
+        .from(mailVerdict)
+        .where(inArray(mailVerdict.verdict, ['verified', 'rejected']))
+        .orderBy(mailVerdict.mailId, desc(mailVerdict.id))
+        .as('latest')
+      return tx
+        .select({
+          mailId: latest.mailId,
+          pathname: blobFile.pathname,
+          receivedAt: inboundMail.receivedAt,
+        })
+        .from(latest)
+        .innerJoin(blobFile, eq(blobFile.mailId, latest.mailId))
+        .innerJoin(inboundMail, eq(inboundMail.mailId, latest.mailId))
+        .where(
+          and(
+            eq(latest.verdict, 'rejected'),
+            eq(latest.reason, 'not-addressed-to-user'),
+            gte(inboundMail.receivedAt, since),
+          ),
+        )
+        .orderBy(inboundMail.receivedAt)
     },
 
     async hasParse(mailId, templateSetVersion) {

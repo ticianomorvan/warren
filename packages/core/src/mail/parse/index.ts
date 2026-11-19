@@ -36,7 +36,7 @@ export type VerifiedMail = {
 
 /**
  * Turns a verified mail into a typed operation. Only call this for mail that passed
- * verifyBankMail: the template is chosen from signed headers, and the body is trusted
+ * verifySignedMail: the template is chosen from signed headers, and the body is trusted
  * because the signature covers it.
  */
 export async function parseBankMail(raw: Uint8Array, mail: VerifiedMail): Promise<ParseResult> {

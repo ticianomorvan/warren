@@ -20,6 +20,13 @@ export {
 } from './client'
 export { createTenancy, sealedStore, userContext } from './context'
 export { type ErasureDatabases, type ErasureReport, eraseUser } from './erase'
+export {
+  type ClaimStatus,
+  claimMailbox,
+  createForwardingConfirmations,
+  mailboxesOf,
+  pendingConfirmations,
+} from './forwarding'
 export { inboundAddressFor, revokeInboundAddress } from './inbound-address'
 export {
   type ChainReport,
