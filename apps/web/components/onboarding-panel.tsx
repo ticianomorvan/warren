@@ -9,9 +9,13 @@ import { t } from '@/lib/strings'
 
 const CONNECTOR_URL = 'https://heywarren.app/api/mcp'
 const CLAUDE_CODE_COMMAND = `claude mcp add --transport http warren ${CONNECTOR_URL}`
-// "/u/0/" is the first signed-in account; with several, the connected Gmail's own address names the right one.
+// With several Google accounts signed in, `authuser` names the connected Gmail; "/u/0/" is the first account.
 const gmailFilters = (account: string | undefined) =>
-  `https://mail.google.com/mail/u/${account ? encodeURIComponent(account) : '0'}/#settings/filters`
+  // Gmail picks the account from `authuser`; an address in the /u/<n>/ path must not be
+  // percent-encoded, and Gmail answers %40 with a 404 (seen 2026-11-19).
+  account
+    ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#settings/filters`
+    : 'https://mail.google.com/mail/u/0/#settings/filters'
 const POLL_MS = 5000
 
 type Message = { text: string; failed: boolean } | null

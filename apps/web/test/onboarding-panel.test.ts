@@ -33,6 +33,7 @@ describe('OnboardingPanel', () => {
     // Its "Sí" button waits for the link to be opened.
     expect(html).not.toContain('Sí, otro@gmail.com es mi Gmail')
     // The Gmail filters link names the connected account.
-    expect(html).toContain('/mail/u/ana%40gmail.com/#settings/filters')
+    expect(html).toContain('/mail/?authuser=ana%40gmail.com#settings/filters')
+    expect(html).not.toContain('/mail/u/ana')
   })
 })
