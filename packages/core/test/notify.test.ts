@@ -8,6 +8,7 @@ import {
   formatSignedMoney,
   memoryPushSender,
   type NoticeMovement,
+  noticePushPayload,
   noticeText,
   type OpenNotice,
   type Outbox,
@@ -310,5 +311,38 @@ describe('sendTestPush', () => {
     })
     expect(outbox.subs.map((s) => s.id)).toEqual(['s2', 's3'])
     expect(outbox.attempts).toHaveLength(0)
+  })
+})
+
+describe('allowance line', () => {
+  const counted: NoticeMovement = { ...sent, type: 'card_purchase', cardLastFour: '1234' }
+  const lastLine = (m: NoticeMovement) => noticeText(m).split('\n').at(-1)
+
+  it('says what is left, in the Spanish month, as the last line', () => {
+    const m = { ...counted, allowance: { month: '2026-11', left: '182400.00000000' } }
+    expect(lastLine(m)).toBe('Te quedan $ 182.400,00 de tu asignación de noviembre')
+    expect(noticeText(m).split('\n')).toHaveLength(noticeText(counted).split('\n').length + 1)
+  })
+
+  it('says by how much the person went over, as a positive amount', () => {
+    const m = { ...counted, allowance: { month: '2026-01', left: '-500.25000000' } }
+    expect(lastLine(m)).toBe('Te pasaste por $ 500,25 en enero')
+  })
+
+  it('has no line without a figure, and zero left is still left', () => {
+    expect(noticeText({ ...counted, allowance: null })).toBe(noticeText(counted))
+    expect(noticeText(counted)).not.toMatch(/asignación|pasaste/)
+    expect(lastLine({ ...counted, allowance: { month: '2026-11', left: '0.00000000' } })).toBe(
+      'Te quedan $ 0,00 de tu asignación de noviembre',
+    )
+  })
+
+  it('puts the line in the push body, never the title', () => {
+    const p = noticePushPayload(1, {
+      ...counted,
+      allowance: { month: '2026-11', left: '10.00000000' },
+    })
+    expect(p.title).toBe('Compra con tarjeta …1234')
+    expect(p.body.split('\n').at(-1)).toBe('Te quedan $ 10,00 de tu asignación de noviembre')
   })
 })

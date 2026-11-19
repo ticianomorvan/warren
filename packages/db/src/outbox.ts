@@ -7,6 +7,7 @@ import {
 } from '@warren/core'
 import { asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
+import { type AllowanceFigure, figureAad } from './allowance'
 import type { Scope } from './client'
 import { createPushStore } from './push'
 import { account, movement, notice, noticeAttempt } from './schema'
@@ -22,7 +23,13 @@ export function createOutbox(scope: Scope): Outbox {
       const own = alias(account, 'own')
       const counter = alias(account, 'counter')
       const open = await tx
-        .select({ noticeId: notice.id, movement, own: own.name, counter: counter.name })
+        .select({
+          noticeId: notice.id,
+          figure: notice.figure,
+          movement,
+          own: own.name,
+          counter: counter.name,
+        })
         .from(notice)
         .innerJoin(movement, eq(movement.id, notice.movementId))
         .leftJoin(own, eq(own.id, movement.accountId))
@@ -69,6 +76,9 @@ export function createOutbox(scope: Scope): Outbox {
             counterAccountName: n.counter,
             counterpartyName: m.counterpartyName,
             cardLastFour: m.cardLastFour,
+            allowance: n.figure
+              ? scope.json.open<AllowanceFigure>(n.figure, figureAad(m.id))
+              : null,
           },
           history: history.get(n.noticeId) ?? [],
         }
