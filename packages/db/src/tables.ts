@@ -24,6 +24,7 @@ import {
   oauthConsent,
   oauthRefreshToken,
   oauthResource,
+  profile,
   pushSubscription,
   rateLimit,
   session,
@@ -111,6 +112,7 @@ export const ERASED_TABLES = [
   account,
   mailbox,
   pushSubscription,
+  profile,
   userKey,
 ] as const
 

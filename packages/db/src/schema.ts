@@ -802,6 +802,28 @@ export const pushSubscription = pgTable(
 ).enableRLS()
 
 /**
+ * A user's financial profile, one row per save: a correction is a new version and the highest
+ * wins. `data` is sealed JSON (income, goals, obligations, risk limits). Append-only, except
+ * that erasing the user deletes it: old goals have no ledger value worth keeping.
+ */
+export const profile = pgTable(
+  'profile',
+  {
+    userId: userId(),
+    version: integer('version').notNull(),
+    data: bytea('data').notNull(),
+    createdAt: now('created_at'),
+  },
+  (t) => [
+    // Two saves at the same moment pick the same next version; the second one fails here.
+    primaryKey({ columns: [t.userId, t.version] }),
+    check('profile_version', sql`${t.version} >= 1`),
+    ...tenant('profile'),
+    ...erasable('profile'),
+  ],
+).enableRLS()
+
+/**
  * One row per attempt at sending a notice. Append-only. `body` and `detail` are sealed.
  * `notice_id` has no foreign key: erasing a user deletes their notices but must leave
  * this row, which is append-only, standing as ciphertext.

@@ -368,3 +368,122 @@ a {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* The profile form. */
+select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+select[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+select:focus-visible {
+  outline-offset: 0;
+  border-color: var(--focus);
+}
+
+.field label {
+  font-size: 0.875rem;
+  font-weight: 550;
+}
+
+.field-error {
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+
+.lead {
+  margin-top: -8px;
+}
+
+.note.tight {
+  margin-top: 0;
+}
+
+.card form section + section {
+  margin-top: 8px;
+}
+
+.rows {
+  list-style: none;
+  margin: 12px 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.rows fieldset {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 12px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.rows legend {
+  padding: 0 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.fields {
+  display: grid;
+  gap: 16px;
+}
+
+.row-fields {
+  align-items: start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6.5rem;
+  gap: 12px;
+}
+
+button.small {
+  min-height: 40px;
+  margin-top: 0;
+  padding: 6px 12px;
+  font-size: 0.9375rem;
+}
+
+button.quiet.small {
+  margin-top: 0;
+}
+
+.save-bar {
+  position: sticky;
+  bottom: 0;
+  display: grid;
+  gap: 4px;
+  margin-top: 16px;
+  padding: 12px 0 4px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.save-bar .status,
+.save-bar .error {
+  margin: 0;
+}
+
+.skeleton .bar.block {
+  width: 100%;
+  height: 2.75rem;
+  margin: 12px 0;
+}
+
+/* The sticky date headings are for /movements; the form's section headings stay in place. */
+.card form.profile-form section h2 {
+  position: static;
+  padding: 0;
+}

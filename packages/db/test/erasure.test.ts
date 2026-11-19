@@ -40,6 +40,7 @@ const DERIVED = [
   'mailbox',
   'user_key',
   'push_subscription',
+  'profile',
   'account',
   'account_identifier',
 ]

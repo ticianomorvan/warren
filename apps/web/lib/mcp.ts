@@ -4,15 +4,16 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { canonicalUserId, errorTag } from '@warren/core'
 import { type Database, userIdentity } from '@warren/db'
 import { APIError } from 'better-auth'
-import { LEDGER_READ_SCOPE } from './auth-config'
+import { LEDGER_READ_SCOPE, PROFILE_READ_SCOPE } from './auth-config'
 import { registerKnowledgeTools } from './mcp-knowledge'
 import { registerLedgerTools } from './mcp-ledger'
+import { registerProfileTools } from './mcp-profile'
 
 type McpAuth = Parameters<typeof requireMcpAuth>[0]
 
 /**
- * `/api/mcp`: an MCP server with the ledger tools (`ledger_list_movements`, `ledger_summarize`) and the
- * knowledge tools (`knowledge_list_*`), stateless,
+ * `/api/mcp`: an MCP server with the ledger tools (`ledger_list_movements`, `ledger_summarize`), the
+ * knowledge tools (`knowledge_list_*`) and, for a token with `profile:read`, `profile_get`, stateless,
  * behind `requireMcpAuth`. That checks the JWT's signature, issuer, audience, expiry and the
  * `ledger:read` scope, and answers 401 or 403 with the `WWW-Authenticate` challenge itself.
  *
@@ -45,6 +46,10 @@ export function createMcpRoute({
       if (typeof userId !== 'string') throw new Error('mcp: no user on the request')
       registerLedgerTools(server, { database, userId, now })
       registerKnowledgeTools(server, { now })
+      // Only for a token that was granted it: the tool is absent from the list otherwise.
+      if (ctx.authInfo?.scopes?.includes(PROFILE_READ_SCOPE)) {
+        registerProfileTools(server, { database, userId })
+      }
       return server
     },
     { onerror: (error) => console.error('mcp:', errorTag(error)) },

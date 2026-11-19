@@ -47,6 +47,7 @@ export {
   verifiedMailOf,
 } from './mail-log'
 export { createOutbox, type NoticeRow, recentNotices } from './outbox'
+export { appendProfile, latestProfile, type StoredProfile } from './profile'
 export { createPushStore, MAX_SUBSCRIPTIONS } from './push'
 export * as schema from './schema'
 export * as system from './system'

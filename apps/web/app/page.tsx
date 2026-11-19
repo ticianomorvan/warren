@@ -50,6 +50,13 @@ export default async function Home() {
             </p>
           )}
         </section>
+        <section aria-labelledby="profile">
+          <h2 id="profile">{t.home.profile}</h2>
+          <p className="note">{t.home.profileHint}</p>
+          <p className="note">
+            <Link href="/profile">{t.home.profileLink}</Link>
+          </p>
+        </section>
         <NotificationsCard publicKey={vapid.key} broken={vapid.broken} />
         <SignOutButton />
       </div>
