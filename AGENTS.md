@@ -76,7 +76,7 @@ Each slice has a proof that can fail. Details are in `docs/architecture.md`.
 4. Agent spike: `/api/mcp` with OAuth and one read tool. Done.
 5. Advice kit, first cut: profile, general parameterised knowledge base with dated facts, two MCP prompts, fact tools, evals. Done.
 6. Onboarding by forwarding: per-user address, Gmail confirmation, filter helper. Done.
-7. Belo: sender policy and templates if its mail is signed.
+7. Belo: sender policy and templates if its mail is signed. Done.
 8. Rules and allowance.
 9. Import of the maintainer's own history and a ledger check against it.
 10. Questions and fixed-time summaries.

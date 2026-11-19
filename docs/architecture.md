@@ -188,6 +188,23 @@ Each slice names its research file and a proof that can fail. Read the file befo
        assessment, with a free test project before slice 13.
 7. **Belo.** Forward real Belo mails; sender policy and templates if they are signed.
    Proof: `pnpm mail:verify belo.eml` passes, then a Belo operation appears as a movement.
+   Done 2026-11-19:
+   - **Built:**
+     - `belo` in `SENDERS` (`d=belo.app`, From/To/Date/Subject signed), and `pnpm mail:reverify`, which
+       checks again mail rejected as `unknown-sender` under an older policy.
+     - Four Belo templates (ARS deposit and withdrawal, USD withdrawal, USD deposit credited as USDT),
+       BBVA's `bbva.debin-credited`, and an `ASSETS` table (ARS, USD, USDT).
+     - A bank-agnostic leg match that makes the two banks' mails of one own transfer one movement. It
+       works through mirrored seeded accounts or, for a template that says "a una cuenta propia", the
+       unique opposite leg. A USDT deposit is classed as an own transfer only when it pairs uniquely.
+   - **Proved:** live, a BBVA→Belo ARS transfer and a Belo→BBVA USD withdrawal (Belo mail plus BBVA DEBIN
+     credit) each became one `own_transfer`. The maintainer's own Belo `.eml` files parse to their
+     templates, checked locally with template ids printed only.
+   - **Open:**
+     - Belo conversions, card purchases and piggy banks stay `no-template`.
+     - A live BBVA→Belo USD deposit has not been seen yet.
+     - Belo's USD CBU is shared by every Belo user. It counts as an own account only because Belo
+       accepts transfers to it from the sender's own accounts alone.
 8. **Rules and allowance.** Per-user rules and budgets; notices end with the amount left.
    Proof: golden allowance cases pass in `pnpm test`.
 9. **Maintainer's cut-over.** Import the maintainer's own history for user 1; a ledger check
@@ -219,8 +236,8 @@ Each slice names its research file and a proof that can fail. Read the file befo
   over MCP; no chat.
 - Licence: MIT. The name and domain are covered by `TRADEMARK.md`.
 - Belo sends operation mail from `transaction@belo.app`; only that address goes in the sender
-  policy. Whether it is DKIM-signed with a To that names the user is unproven and is slice 7's
-  first check.
+  policy. Checked 2026-11-19: it is signed `d=belo.app` over From, To, Subject and Date with no
+  `l=`, and the signed To names the user.
 - Name: Warren. Domain: `heywarren.app`. The app is served at the root; inbound mail uses a
   subdomain (`in.heywarren.app`) so the mail provider's MX record does not take over the root's
   mail.
