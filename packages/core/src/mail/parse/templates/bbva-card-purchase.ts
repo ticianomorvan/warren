@@ -74,6 +74,7 @@ function cardLastFour(doc: Doc): string {
  */
 export const bbvaCardPurchase: Template = {
   id: 'bbva.card-purchase',
+  kind: 'card',
   version: 1,
   senderId: 'bbva-cards',
   subject: /^Compra aprobada$/,

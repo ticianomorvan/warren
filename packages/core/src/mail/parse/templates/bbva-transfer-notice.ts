@@ -34,6 +34,7 @@ function notice(kind: TransferOperation['kind'], side: 'destino' | 'origen'): Te
 
 export const bbvaTransferDebited: Template = {
   id: 'bbva.transfer-debited',
+  kind: 'transfer',
   version: 1,
   senderId: 'bbva-transfers',
   subject: /AVISO TRANSFERENCIA INMEDIATA DEBITADA$/,
@@ -43,6 +44,7 @@ export const bbvaTransferDebited: Template = {
 /** Written by analogy with the debit notice; not yet confirmed against a real mail. */
 export const bbvaTransferCredited: Template = {
   id: 'bbva.transfer-credited',
+  kind: 'transfer',
   version: 1,
   senderId: 'bbva-transfers',
   subject: /AVISO TRANSFERENCIA INMEDIATA ACREDITADA$/,

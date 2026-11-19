@@ -45,8 +45,13 @@ export type CardPurchaseOperation = {
 /** What one bank mail says happened. Narrow on `kind`. */
 export type BankOperation = TransferOperation | CardPurchaseOperation
 
+/** What a template's mail is about, in words a page can translate. */
+export type TemplateKind = 'card' | 'transfer'
+
 export type Template = {
   id: string
+  /** The sort of notice this template reads. */
+  kind: TemplateKind
   version: number
   senderId: string
   /** Tested against the decoded, signed Subject. Never against the body. */

@@ -8,7 +8,7 @@ import type {
 } from '@warren/core'
 import { and, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm'
 import type { Scope } from './client'
-import { blobFile, inboundMail, mailDelivery, mailParse, mailVerdict } from './schema'
+import { blobFile, inboundMail, mailbox, mailDelivery, mailParse, mailVerdict } from './schema'
 
 // What is sealed here: a verdict's subject and detail, and a parse's operation. The associated
 // data names the user (added by the scope), the table, the mail and the column.
@@ -344,4 +344,60 @@ export async function verifiedMailOf(scope: Scope, senderId: string): Promise<Pe
         ]
       : [],
   )
+}
+
+/** Where a person's first mail stands since they connected a Gmail. Nothing in it is mail content. */
+export type MailProgress =
+  | { state: 'waiting' }
+  | { state: 'rejected'; reason: string | null }
+  | { state: 'verified'; templateId: string | null; signedDate: Date }
+
+/**
+ * For the onboarding page: of the mails whose latest verdict came after the user's first mailbox
+ * was connected (so a mail the claim re-checked counts, and history from before does not), the
+ * earliest verified one wins, else the newest rejected one, else waiting. Two queries of one row
+ * each, so a flood of rejections cannot push a verified mail out. Reads the clear verdict columns
+ * and the template id only; no mail is opened.
+ */
+export async function firstMailProgress(scope: Scope): Promise<MailProgress> {
+  const { tx } = scope
+  const claimed = await tx
+    .select({ at: sql<Date | null>`min(${mailbox.createdAt})` })
+    .from(mailbox)
+    .where(eq(mailbox.userId, scope.userId))
+  const since = claimed[0]?.at
+  if (!since) return { state: 'waiting' }
+  const latest = tx
+    .selectDistinctOn([mailVerdict.mailId])
+    .from(mailVerdict)
+    .orderBy(mailVerdict.mailId, desc(mailVerdict.id))
+    .as('latest')
+  const parse = tx
+    .selectDistinctOn([mailParse.mailId])
+    .from(mailParse)
+    .orderBy(mailParse.mailId, desc(mailParse.templateSetVersion))
+    .as('parse')
+  const columns = {
+    reason: latest.reason,
+    signedDate: latest.signedDate,
+    templateId: parse.templateId,
+  }
+  const after = gte(latest.checkedAt, new Date(since))
+  const first = await tx
+    .select(columns)
+    .from(latest)
+    .leftJoin(parse, eq(parse.mailId, latest.mailId))
+    .where(and(after, eq(latest.verdict, 'verified')))
+    .orderBy(latest.id)
+    .limit(1)
+  const ok = first[0]
+  if (ok?.signedDate)
+    return { state: 'verified', templateId: ok.templateId, signedDate: ok.signedDate }
+  const bad = await tx
+    .select({ reason: latest.reason })
+    .from(latest)
+    .where(and(after, eq(latest.verdict, 'rejected')))
+    .orderBy(desc(latest.id))
+    .limit(1)
+  return bad[0] ? { state: 'rejected', reason: bad[0].reason } : { state: 'waiting' }
 }

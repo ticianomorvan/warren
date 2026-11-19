@@ -9,6 +9,7 @@ import type { Template } from '../types'
  */
 export const bbvaTransferSent: Template = {
   id: 'bbva.transfer-sent',
+  kind: 'transfer',
   version: 1,
   senderId: 'bbva-transfers',
   subject: /^Realizaste una transferencia$/,

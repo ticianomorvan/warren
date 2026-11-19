@@ -1,11 +1,9 @@
-import { inboundAddressOf } from '@warren/core'
-import { asUser, inboundAddressFor, mailboxesOf, pendingConfirmations } from '@warren/db'
+import { gmailFromQuery } from '@warren/core'
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { OnboardingPanel } from '@/components/onboarding-panel'
-import { database } from '@/lib/db'
-import { env } from '@/lib/env'
+import { loadOnboarding } from '@/lib/onboarding'
 import { getSession } from '@/lib/session'
 import { t } from '@/lib/strings'
 
@@ -16,19 +14,9 @@ export default async function OnboardingPage() {
   // The proxy already sent people without a session away; this is the check that counts.
   const session = await getSession()
   if (!session) redirect('/sign-in')
-  const { token, confirmations, mailboxes } = await asUser(
-    database(),
+  const { address, pending, mailboxes, hasConfirmation, firstMail } = await loadOnboarding(
     session.user.id,
-    async (scope) => ({
-      token: await inboundAddressFor(scope),
-      confirmations: await pendingConfirmations(scope),
-      mailboxes: await mailboxesOf(scope),
-    }),
   )
-  // A confirmation whose address is already connected has nothing left to ask.
-  const pending = confirmations
-    .filter((c) => !mailboxes.includes(c.address))
-    .map((c) => ({ address: c.address, url: c.url }))
 
   return (
     <main className="screen">
@@ -39,9 +27,12 @@ export default async function OnboardingPage() {
         <h1>{t.onboarding.title}</h1>
         <p className="note lead">{t.onboarding.lead}</p>
         <OnboardingPanel
-          address={inboundAddressOf(token, env.inboundDomain())}
+          address={address}
           pending={pending}
           mailboxes={mailboxes}
+          hasConfirmation={hasConfirmation}
+          firstMail={firstMail}
+          search={gmailFromQuery()}
         />
       </div>
     </main>

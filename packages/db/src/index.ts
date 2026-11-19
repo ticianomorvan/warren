@@ -25,6 +25,8 @@ export {
   claimMailbox,
   createForwardingConfirmations,
   mailboxesOf,
+  type OnboardingProgress,
+  onboardingProgress,
   pendingConfirmations,
 } from './forwarding'
 export { inboundAddressFor, revokeInboundAddress } from './inbound-address'
@@ -48,7 +50,9 @@ export {
 } from './ledger'
 export {
   createMailLog,
+  firstMailProgress,
   type MailCounts,
+  type MailProgress,
   type MailStatusRow,
   mailCounts,
   recentMail,

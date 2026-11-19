@@ -6,6 +6,7 @@ import {
 } from '@warren/core'
 import { desc, eq, gt, sql } from 'drizzle-orm'
 import { rowsOf, type Scope } from './client'
+import { firstMailProgress, type MailProgress } from './mail-log'
 import { forwardingConfirmation, mailbox } from './schema'
 
 // Sealed: the address and the link. The scope adds the user; this names the table, row and column.
@@ -91,4 +92,46 @@ export async function mailboxesOf(scope: Scope): Promise<string[]> {
     .where(eq(mailbox.userId, scope.userId))
     .orderBy(mailbox.address)
   return rows.map((r) => r.address)
+}
+
+/** Where onboarding stands, in counts and words: no address, no link, nothing sealed is opened. */
+export type OnboardingProgress = {
+  /** Gmails that asked in the window and are not yet connected. */
+  pending: number
+  /** Whether Google asked at all in the window, connected or not. */
+  hasConfirmation: boolean
+  hasMailbox: boolean
+  mail: MailProgress
+}
+
+/**
+ * The light read behind the page's poll and the home page: one transaction, no address made, no
+ * lock, nothing unsealed. A Gmail counts as connected when the sha256 of a mailbox address equals
+ * the confirmation's `address_hash`, the same hash the claim compares.
+ */
+export async function onboardingProgress(
+  scope: Scope,
+  now: Date = new Date(),
+): Promise<OnboardingProgress> {
+  const since = new Date(now.getTime() - CONFIRMATION_WINDOW_DAYS * 86_400_000)
+  const rows = rowsOf<{ asked: number; pending: number; boxes: number }>(
+    await scope.tx.execute(sql`
+      select
+        count(distinct c.address_hash)::int as asked,
+        (count(distinct c.address_hash) filter (where not exists (
+          select 1 from mailbox m
+          where m.user_id = c.user_id
+            and encode(sha256(convert_to(m.address, 'UTF8')), 'hex') = c.address_hash
+        )))::int as pending,
+        (select count(*)::int from mailbox where user_id = ${scope.userId}) as boxes
+      from forwarding_confirmation c
+      where c.user_id = ${scope.userId} and c.received_at > ${since.toISOString()}::timestamptz`),
+  )
+  const row = rows[0]
+  return {
+    pending: row?.pending ?? 0,
+    hasConfirmation: (row?.asked ?? 0) > 0,
+    hasMailbox: (row?.boxes ?? 0) > 0,
+    mail: await firstMailProgress(scope),
+  }
 }

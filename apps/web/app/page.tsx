@@ -1,5 +1,5 @@
 import { errorTag } from '@warren/core'
-import { asUser, movementCount } from '@warren/db'
+import { asUser, movementCount, onboardingProgress } from '@warren/db'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { NotificationsCard } from '@/components/notifications-card'
@@ -29,7 +29,14 @@ export default async function Home() {
   // Through asUser, so row-level security shows only this user's movements. An erased user has
   // no session (erasure deletes them, and none can be made), so this never meets one.
   const vapid = vapidPublicKey()
-  const count = await asUser(database(), session.user.id, movementCount)
+  const { count, connected } = await asUser(database(), session.user.id, async (scope) => {
+    const progress = await onboardingProgress(scope)
+    return {
+      count: await movementCount(scope),
+      // Connected: a Gmail claimed and a verified bank mail since. Until then, onboarding is the next step.
+      connected: progress.hasMailbox && progress.mail.state === 'verified',
+    }
+  })
 
   return (
     <main className="screen">
@@ -57,13 +64,19 @@ export default async function Home() {
             <Link href="/profile">{t.home.profileLink}</Link>
           </p>
         </section>
-        <section aria-labelledby="onboarding">
-          <h2 id="onboarding">{t.home.onboarding}</h2>
-          <p className="note">{t.home.onboardingHint}</p>
+        {connected ? (
           <p className="note">
-            <Link href="/onboarding">{t.home.onboardingLink}</Link>
+            <Link href="/onboarding">{t.home.mailboxQuiet}</Link>
           </p>
-        </section>
+        ) : (
+          <section aria-labelledby="onboarding">
+            <h2 id="onboarding">{t.home.onboarding}</h2>
+            <p className="note">{t.home.onboardingHint}</p>
+            <p className="note">
+              <Link href="/onboarding">{t.home.onboardingLink}</Link>
+            </p>
+          </section>
+        )}
         <NotificationsCard publicKey={vapid.key} broken={vapid.broken} />
         <SignOutButton />
       </div>
