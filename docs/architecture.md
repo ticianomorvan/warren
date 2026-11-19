@@ -78,8 +78,9 @@ the former WhatsApp notifier (which reached one number and served one user) is d
    bank's signature covers a To that the user confirmed as theirs.
 2. **Sign-in and agent authorization: Better Auth.** Passkey and email code for people. Its MCP
    plugin makes the same app the OAuth 2.1 authorization server for agents, with client ID
-   metadata documents and dynamic registration both on. Sign-up starts invite-only.
-3. **Tool layer.** `/api/mcp` with `mcp-handler`, tokens checked for audience, 401 carrying
+   metadata documents only: dynamic registration is off, as the MCP spec deprecates it. Clients are
+   allow-listed by exact client id (Claude's two today). Sign-up starts invite-only.
+3. **Tool layer.** `/api/mcp` on the MCP SDK directly, tokens checked for audience, 401 carrying
    `resource_metadata`. Read tools: movements, allowance, summaries, open questions. Write tools
    append one event each: classify, answer, add rule. No tool returns raw mail or a transfer
    memo.
@@ -154,7 +155,7 @@ Each slice names its research file and a proof that can fail. Read the file befo
    former WhatsApp code is deleted (done). Old attempt rows stay as history.
    Proof: a real purchase raises a push on an Android phone and appears in the app;
    the vendor name of the former notifier appears nowhere in the repository.
-4. **Agent spike.** `/api/mcp` with OAuth and one read tool.
+4. **Agent spike.** `/api/mcp` with OAuth and one read tool (done: `ledger_list_movements`).
    Proof: "my last five movements" answered in a Claude app and in Claude Code; `curl` without a
    token gets 401 with `resource_metadata`; user B's token returns none of user A's rows. Tools
    follow `research/code.md` section 2: prefixed snake_case names, `readOnlyHint`,
