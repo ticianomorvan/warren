@@ -34,6 +34,16 @@ export function formatMoney(amount: string, currency: string): string {
   return `${SYMBOLS[currency] ?? currency} ${formatAmount(amount)}`
 }
 
+/**
+ * `formatMoney` for a net, which can be negative: "-1500.5" becomes "-$ 1.500,50". Zero has no
+ * sign, so "-0" and "-0.00000000" are "$ 0,00". The notifier's `formatMoney` stays strict.
+ */
+export function formatSignedMoney(amount: string, currency: string): string {
+  if (!amount.startsWith('-')) return formatMoney(amount, currency)
+  const money = formatMoney(amount.slice(1), currency)
+  return /^-?0*(\.0*)?$/.test(amount) ? money : `-${money}`
+}
+
 function formatWhen(date: string, time: string | null): string {
   const [, month, day] = date.split('-')
   return `${day}/${month}${time ? ` ${time.slice(0, 5)}` : ''}`

@@ -5,12 +5,14 @@ import { canonicalUserId, errorTag } from '@warren/core'
 import { type Database, userIdentity } from '@warren/db'
 import { APIError } from 'better-auth'
 import { LEDGER_READ_SCOPE } from './auth-config'
+import { registerKnowledgeTools } from './mcp-knowledge'
 import { registerLedgerTools } from './mcp-ledger'
 
 type McpAuth = Parameters<typeof requireMcpAuth>[0]
 
 /**
- * `/api/mcp`: an MCP server with one tool, `ledger_list_movements`, stateless,
+ * `/api/mcp`: an MCP server with the ledger tools (`ledger_list_movements`, `ledger_summarize`) and the
+ * knowledge tools (`knowledge_list_*`), stateless,
  * behind `requireMcpAuth`. That checks the JWT's signature, issuer, audience, expiry and the
  * `ledger:read` scope, and answers 401 or 403 with the `WWW-Authenticate` challenge itself.
  *
@@ -42,6 +44,7 @@ export function createMcpRoute({
       // The route sets it for every request it serves; a missing one is a bug, not a guest.
       if (typeof userId !== 'string') throw new Error('mcp: no user on the request')
       registerLedgerTools(server, { database, userId, now })
+      registerKnowledgeTools(server, { now })
       return server
     },
     { onerror: (error) => console.error('mcp:', errorTag(error)) },

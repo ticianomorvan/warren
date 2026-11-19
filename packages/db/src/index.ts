@@ -22,16 +22,20 @@ export { createTenancy, sealedStore, userContext } from './context'
 export { type ErasureDatabases, type ErasureReport, eraseUser } from './erase'
 export {
   type ChainReport,
+  type CurrencySummary,
   createLedger,
   listMovements,
   MOVEMENT_TYPES,
   type MovementListItem,
   type MovementPage,
   type MovementRow,
+  type MovementSummary,
+  type MovementTotals,
   movementCount,
   recentMovements,
   reprojectMovements,
   seedAccounts,
+  summarizeMovements,
   verifyChain,
 } from './ledger'
 export {
