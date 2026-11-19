@@ -50,3 +50,35 @@ export const bbvaTransferCredited: Template = {
   subject: /AVISO TRANSFERENCIA INMEDIATA ACREDITADA$/,
   parse: notice('transfer_in', 'origen'),
 }
+
+/**
+ * "AVISO DEBIN ACREDITADO": a credit that arrived through a DEBIN. The row "CBU comprador" holds
+ * the DEBIN's own id (digits and letters), not a CBU, and "CUIT comprador" is empty, so the mail
+ * names no counterparty. It prints a date without a time and no reference number.
+ */
+export const bbvaDebinCredited: Template = {
+  id: 'bbva.debin-credited',
+  kind: 'transfer',
+  version: 1,
+  senderId: 'bbva-transfers',
+  subject: /AVISO DEBIN ACREDITADO$/,
+  parse(doc) {
+    const f = takeFields(labelValueRows(doc), {
+      date: ['Fecha'],
+      ownAccount: ['Número cuenta'],
+      debinId: ['CBU comprador'],
+      taxId: ['CUIT comprador'],
+      amount: ['Importe'],
+    })
+    return {
+      kind: 'transfer_in',
+      ...parseMoney(f.amount ?? ''),
+      date: parseDate(f.date ?? ''),
+      time: null,
+      ownAccount: parseText(f.ownAccount ?? '', 'ownAccount', 40),
+      counterparty: { name: null, account: null, taxId: null },
+      reference: null,
+      reason: null,
+    }
+  },
+}

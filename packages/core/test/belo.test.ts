@@ -251,3 +251,69 @@ describe('matchMovement across banks', () => {
     ).toBeNull()
   })
 })
+
+describe('matchMovement between own accounts', () => {
+  const base = {
+    amount: '5.25',
+    currency: 'USD' as const,
+    date: '2026-11-14',
+    reference: null,
+    reason: null,
+  }
+  const none = { name: null, account: null, taxId: null }
+  // As stored by the ledger before templates said "own account": no flag in the operation.
+  const withdrawal = (own: string): BankOperation => ({
+    ...base,
+    kind: 'transfer_out',
+    time: '12:30',
+    ownAccount: own,
+    counterparty: none,
+  })
+  const credit = (own: string): BankOperation => ({
+    ...base,
+    kind: 'transfer_in',
+    time: null,
+    ownAccount: own,
+    counterparty: none,
+  })
+  const W = 'belo.usd-withdrawal'
+  const C = 'bbva.debin-credited'
+  const cand = (id: string, templateId: string, operation: BankOperation, own: string) => ({
+    movementId: id,
+    sources: [{ mailId: id, templateId, operation }],
+    accounts: { own, counter: null },
+  })
+  const incomingW = {
+    templateId: W,
+    operation: withdrawal('belo'),
+    accounts: { own: 'A', counter: null },
+  }
+  const incomingC = {
+    templateId: C,
+    operation: credit('bbva'),
+    accounts: { own: 'B', counter: null },
+  }
+
+  it('joins a credit to a withdrawal stored with no flag at all', () => {
+    expect(matchMovement(incomingC, [cand('w', W, withdrawal('belo'), 'A')])).toBe('w')
+    expect(matchMovement(incomingW, [cand('c', C, credit('bbva'), 'B')])).toBe('c')
+  })
+
+  it('joins nothing when neither template says "own account"', () => {
+    expect(
+      matchMovement({ ...incomingC, templateId: 'other.credit' }, [
+        cand('w', 'other.withdrawal', withdrawal('belo'), 'A'),
+      ]),
+    ).toBeNull()
+  })
+
+  it('joins none when a lone withdrawal on the same account already waits for the credit', () => {
+    const candidates = [cand('w1', W, withdrawal('belo'), 'A'), cand('c', C, credit('bbva'), 'B')]
+    expect(matchMovement(incomingW, candidates)).toBeNull()
+  })
+
+  it('joins none when a lone credit already waits for the withdrawal', () => {
+    const candidates = [cand('w', W, withdrawal('belo'), 'A'), cand('c1', C, credit('bbva'), 'B')]
+    expect(matchMovement(incomingC, candidates)).toBeNull()
+  })
+})

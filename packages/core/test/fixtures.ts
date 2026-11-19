@@ -110,6 +110,25 @@ Se efectu&oacute; ${verb} de una transferencia inmediata con el siguiente detall
 </td></tr></tbody></table></body></html>`
 }
 
+/** "AVISO DEBIN ACREDITADO": the DEBIN id is letters and digits, and the buyer's CUIT is empty. */
+export function debinCreditHtml(
+  v: Partial<{ date: string; account: string; amount: string }> = {},
+) {
+  const x = { date: '14/11/2026', account: 'CA-USD ***123/4', amount: 'USD 9,99', ...v }
+  return `<html><body><table class="stylingblock-content-wrapper"><tbody><tr><td class="camarker-inner">
+<table class="width300"><tbody><tr><td class="width20"><img></td><td><div class="LH18">Hola PERSONA DE PRUEBA,<br><br>
+PERSONA DE PRUEBA recibi&oacute; el cr&eacute;dito de un DEBIN con el siguiente detalle:<br><br></div></td><td class="width20"><img></td></tr></tbody></table>
+<table class="width300"><tbody><tr><td><table class="width300"><td class="width30"><img></td><td>
+<table class="FS14"><tbody>
+<tr><td> Fecha <br><br></td><td> ${x.date} <br><br></td></tr>
+<tr><td> N&uacute;mero cuenta <br><br></td><td> ${x.account} <br><br></td></tr>
+<tr><td> CBU comprador <br><br></td><td> A1B2C3D4E5F6G7H8 <br><br></td></tr>
+<tr><td> CUIT comprador <br><br></td><td> <br><br></td></tr>
+<tr><td> Importe <br><br></td><td> ${x.amount} <br><br></td></tr>
+</tbody></table></td><td class="width30"><img></td></table></td></tr></tbody></table>
+</td></tr></tbody></table></body></html>`
+}
+
 /** A complete unsigned message with the given Subject and HTML body. */
 export function htmlMessage(
   subject: string,
