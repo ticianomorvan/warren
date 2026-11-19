@@ -4,7 +4,7 @@ import { appendProfile, asUser, schema } from '@warren/db'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { LEDGER_READ_SCOPE, PROFILE_READ_SCOPE } from '../lib/auth-config'
 import { t as strings } from '../lib/strings'
-import { callMcp, connect, mcp, RESOURCE, setup, signedInUser, t } from './harness'
+import { callMcp, closedSchema, connect, mcp, RESOURCE, setup, signedInUser, t } from './harness'
 
 const BOTH = `${LEDGER_READ_SCOPE} ${PROFILE_READ_SCOPE} offline_access`
 
@@ -236,6 +236,24 @@ describe('profile_get and its scope', () => {
     }
     for (const tool of tools) walk(tool.outputSchema, tool.name)
     expect(closed).toEqual([])
+  })
+
+  it('returns no field beyond what it declares, at any depth', async () => {
+    const u = await signedInUser()
+    const token = (await connect(u, { scope: BOTH })).access_token
+    await save(u.id, profile('1500000.50'))
+    const res = await get(token)
+    const { tools } = await (await client(token)).listTools()
+    const declared = fromJsonSchema<unknown>(
+      closedSchema(tools.find((x) => x.name === 'profile_get')?.outputSchema) as never,
+    )
+    const check = (v: unknown) =>
+      (declared['~standard'].validate(v) as { issues?: unknown[] }).issues
+    expect(res.structuredContent?.profile).toBeTruthy()
+    expect(check(res.structuredContent)).toBeUndefined()
+    const extra = structuredClone(res.structuredContent) as { profile: { goals: object[] } }
+    ;(extra.profile.goals[0] as Record<string, unknown>).undeclared = 1
+    expect(check(extra)).toBeTruthy()
   })
 
   it('says so, with a typed output, when the stored profile no longer validates', async () => {
