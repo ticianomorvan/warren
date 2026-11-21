@@ -35,11 +35,11 @@ const cut = (text: string, max: number) => {
 }
 
 /**
- * The reply to send: what was heard (voice only), the record lines code rendered, then the model's own words, one
- * per line, held under `max` characters. When they do not fit, in this order: what was heard is shortened with
- * "…" (to 80 characters at least), the model's words go (they add nothing the record lacks), and long bulleted
- * lists in the record are collapsed to their first items and "• … y N más". A record is never dropped without
- * saying so: lines that still do not fit end as "… y N más", and a single line is cut with "…" as a last resort.
+ * The reply to send: what was heard (voice only, and only when `heard` is given), the record lines code rendered,
+ * then the model's own words, one per line, held under `max` characters. When they do not fit, in this order: the
+ * model's words go (they add nothing the record lacks), and long bulleted lists in the record are collapsed to
+ * their first items and "• … y N más". A record is never dropped without saying so: lines that still do not fit
+ * end as "… y N más", and a single line is cut with "…" as a last resort.
  */
 export function fitReply(
   parts: { heard?: string; lines: string[]; notes: string[] },
@@ -47,17 +47,11 @@ export function fitReply(
 ): string {
   const join = (heard: string | undefined, lines: string[], notes: string[]) =>
     [...(heard === undefined ? [] : [renderHeard(heard)]), ...lines, ...notes].join('\n')
-  let heard = parts.heard
+  const { heard } = parts
   let { notes } = parts
   const whole = () => join(heard, parts.lines, notes)
   if (whole().length <= max) return whole()
 
-  if (heard !== undefined) {
-    const rest = join(undefined, parts.lines, notes).length + 1
-    const room = max - rest - renderHeard('').length
-    heard = cut(heard, Math.max(80, room))
-    if (whole().length <= max) return whole()
-  }
   notes = []
   if (whole().length <= max) return whole()
 
@@ -91,8 +85,15 @@ export function fitReply(
   return cut(join(heard, all, notes), max)
 }
 
-/** The first line of the reply to a voice note: what was heard, so a mishearing is visible before anything is acted on. */
-export const renderHeard = (transcript: string) => `🎙️ "${transcript}"`
+/** The most of what was heard that the 🎙️ line shows. */
+export const MAX_HEARD_CHARS = 80
+
+/**
+ * The first line of the reply to a voice note that changed nothing: what was heard, so that a mishearing shows
+ * before the person answers it. When something was logged, corrected or deleted, the record shows what was
+ * understood and this line is left out (`execute`).
+ */
+export const renderHeard = (transcript: string) => `🎙️ "${cut(transcript, MAX_HEARD_CHARS)}"`
 /** What the person is told when a photo cannot be read, by why. */
 export const REPLY_IMAGE: Record<MediaProblem, string> = {
   too_large:

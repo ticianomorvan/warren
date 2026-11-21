@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { Movement } from './agent'
-import { fitReply, formatMoney, MAX_REPLY_CHARS, renderHelp, renderLog } from './render'
+import {
+  fitReply,
+  formatMoney,
+  MAX_HEARD_CHARS,
+  MAX_REPLY_CHARS,
+  renderHeard,
+  renderHelp,
+  renderLog,
+} from './render'
 
 const TODAY = '2026-11-21'
 
@@ -99,17 +107,19 @@ describe('fitReply', () => {
     expect(fitReply({ lines: ['✓ Café $3.500'], notes: [] })).toBe('✓ Café $3.500')
   })
 
-  it('shortens what was heard first, with "…", and keeps the record and the texts', () => {
+  it('shows at most 80 characters of what was heard, ending in "…", and keeps the record and the texts', () => {
     const heard = 'palabra '.repeat(400).trim() // 3,199 characters
     const reply = fitReply({ heard, lines: [log(40)], notes: ['Un texto.'] })
+    const first = reply.split('\n')[0] ?? ''
+    expect(first).toMatch(/^🎙️ "palabra .*…"$/)
+    expect(first.length).toBe('🎙️ ""'.length + MAX_HEARD_CHARS)
+    expect(renderHeard('café 3500')).toBe('🎙️ "café 3500"') // short enough: whole
     expect(reply.length).toBeLessThanOrEqual(MAX_REPLY_CHARS)
-    expect(reply.split('\n')[0]).toMatch(/^🎙️ "palabra .*…"$/)
     expect(reply).toContain('✓ Anoté 40:')
-    expect(reply).toContain(renderLog(many(40), TODAY).split('\n')[40] ?? '') // the last item is still there
     expect(reply.endsWith('Un texto.')).toBe(true)
   })
 
-  it('drops the model texts, not the record, when shortening what was heard is not enough', () => {
+  it('drops the model texts, not the record, when they do not fit', () => {
     const reply = fitReply({ heard: 'x'.repeat(3000), lines: [log(110)], notes: ['Un texto.'] })
     expect(reply.length).toBeLessThanOrEqual(MAX_REPLY_CHARS)
     expect(reply).not.toContain('Un texto.')

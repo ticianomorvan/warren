@@ -636,6 +636,56 @@ describe('ask, then answer', () => {
     app.close()
   })
 
+  describe('a question narrowed to one movement (live #76 to #80)', () => {
+    /** Two options, then the pick of option 2: code asks about café 2900 alone. */
+    async function narrowed(model: ReturnType<typeof script>) {
+      await day()
+      const app = await setup({ model })
+      expect(await say(app, { text: 'cambiemos el valor de uno de los cafés' })).toContain('¿Cuál?')
+      expect(await say(app, { text: '2' })).toBe('¿Qué querés cambiar? Café $2.900 · 11:54')
+      return app
+    }
+
+    it('"ese" or "sí" asks about the same movement again: no model call, no other options', async () => {
+      const app = await narrowed(script(ask([5, 4], { after: 'none' })))
+      expect(app.model.n).toBe(1)
+      expect(await say(app, { text: 'ese' })).toBe('¿Qué querés cambiar? Café $2.900 · 11:54')
+      expect(await say(app, { text: 'sí, ese mismo' })).toBe(
+        '¿Qué querés cambiar? Café $2.900 · 11:54',
+      )
+      expect(app.model.n).toBe(1)
+      app.close()
+    })
+
+    it('a change given about it is the correction, even when the model sends it as a question (#78)', async () => {
+      const app = await narrowed(
+        script(
+          ask([5, 4], { after: 'none' }),
+          // what the model did live: a question over the one option, with the change attached
+          ask([4], { question: 'Cuál', after: 'correct', changes: { amount: '3500' } }),
+        ),
+      )
+      expect(await say(app, { text: 'a ese ponele 3500' })).toBe(
+        '✓ Corregido: Café $3.500 (antes $2.900) · 11:54',
+      )
+      expect(app.model.n).toBe(2) // the question and one turn for the change, no second try
+      expect(await live()).toContain('café 3500')
+      app.close()
+    })
+
+    it('tells the model that the question has one option and what a change or no change means', async () => {
+      const app = await narrowed(
+        script(ask([5, 4], { after: 'none' }), correct(4, { amount: '3500' })),
+      )
+      await say(app, { text: 'ponele 3500' })
+      const context = String(app.requests[1]?.messages[0]?.content)
+      expect(context).toContain('Pregunta pendiente: 1 = id 4')
+      expect(context).toContain('UNA sola opción (id 4)')
+      expect(context).toContain('correct_movement con ese id')
+      app.close()
+    })
+  })
+
   it('an answer with more than a number goes to the model, which sees the pending options', async () => {
     await day()
     const app = await setup({

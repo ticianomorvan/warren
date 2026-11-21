@@ -165,10 +165,20 @@ wrong changes. Its test split is held out like the other: never print or tune on
   ("No te entendí el audio, ¿me lo escribís?") and no model call. Every other failure (download, service, budget)
   is a code notice too ("No pude procesar el audio, ¿me lo escribís?"), with the cause in the log and the audit; only
   the 30 s deadline is the failure path. What was heard becomes the message for everything after it (the model's
-  context says it is a transcript, the numbers check counts it as the person's words), the reply starts with
-  `🎙️ "<transcript>"` rendered by code, and the next message's window shows `[audio] <transcript>`. A bare answer to
+  context says it is a transcript, the numbers check counts it as the person's words), a reply with no
+  record of a change (an answer, a summary, a question, the model's own words, or a change that did not apply)
+  starts with `🎙️ "<transcript>"`, cut at 80 characters and rendered by code; when something was logged, corrected or
+  deleted the record already shows what was understood and the line is left out. The next message's window shows
+  `[audio] <transcript>`. A bare answer to
   our question ("el segundo") by voice goes to the model, never to `answerAction`: code does not delete or correct
-  on what a speech model thought it heard.
+  on what a speech model thought it heard. A reply is held under 4,000 characters (`fitReply`: WhatsApp refuses 4,096
+  after the commit).
+- **A question narrowed to one movement.** After "¿Qué querés cambiar? YPF $3.000 · 11:42" (one option, nothing
+  pending), a typed "ese", "sí" or "ese mismo" is answered by code with the same question, never other options. A message
+  with a change ("a ese ponele 3500") goes to the model, whose context says the question has one option and what to
+  do; and an `ask_user` over that one id with `changes` is run by the guard as `correct_movement` (the person saw that
+  movement: asking again would loop). An `ask_user` with `after_answer: correct` and no `changes` is taken as `none`
+  when the message holds no amount (digits or number words), and refused, with the reason saying what to send, when it does.
 - **Shutdown.** On SIGTERM `processor.stop()` aborts agent runs that have not reached the commit point and settles
   those rows to `pending`, so the next process's startup sweep answers them inside their deadline. The deadline
   is one `AbortSignal` checked right before the commit; a deadline that fires mid-commit loses (committed

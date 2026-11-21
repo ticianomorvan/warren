@@ -358,6 +358,11 @@ export function renderContext(i: ContextInput): string {
     `Últimos movimientos de la persona, el más reciente primero:\n${list}`,
     ...(conversation.length > 0 ? [`Conversación reciente:\n${conversation.join('\n')}`] : []),
     ...pending,
+    ...(i.pending?.asked.length === 1
+      ? [
+          `La pregunta pendiente tiene UNA sola opción (id ${i.pending.asked[0]?.id}): "ese", "sí" o "a ese ponele 3500" se refieren a ella. Si este mensaje trae un cambio (un monto, una fecha, un pago): correct_movement con ese id y ese cambio, sin volver a preguntar. Si no trae ningún cambio: ask_user con ese mismo id, after_answer "none", question "Qué querés cambiar"; no ofrezcas otros movimientos.`,
+        ]
+      : []),
     ...(i.photo ? ['La persona envió una foto: es la imagen que va antes de este texto.'] : []),
     ...(i.voice
       ? [

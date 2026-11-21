@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { ask, live, logOf, movement, replyCall, say, script, seed, WA } from './command-fixtures'
-import { REPLY_AUDIO, REPLY_FAILED, REPLY_INTERIM, REPLY_SAY_FALLBACK, REPLY_VOICE } from './render'
+import {
+  ask,
+  correct,
+  live,
+  logOf,
+  movement,
+  remove,
+  replyCall,
+  say,
+  script,
+  seed,
+  WA,
+} from './command-fixtures'
+import {
+  REPLY_AUDIO,
+  REPLY_FAILED,
+  REPLY_GONE,
+  REPLY_INTERIM,
+  REPLY_SAY_FALLBACK,
+  REPLY_VOICE,
+} from './render'
 import {
   bodies,
   fakeGraph,
@@ -53,12 +72,12 @@ async function noAudioStored() {
 }
 
 describe('a voice note', () => {
-  it('is transcribed, and what was heard goes first in the reply, then the usual one', async () => {
+  it('is transcribed, and the reply is the usual one: the record shows what was understood, no 🎙️ line', async () => {
     const fake = fakeGraph({ media: { a1: NOTE } })
     const stt = fakeTranscriber(heard('Anotá 4200 de farmacia'))
     const app = await setup({ fake, transcriber: stt.transcriber, model: script(logOf(farmacia)) })
     const reply = await voice(app, 'wamid.A1')
-    expect(reply).toBe('🎙️ "Anotá 4200 de farmacia"\n✓ Farmacia $4.200')
+    expect(reply).toBe('✓ Farmacia $4.200')
     expect(await live()).toEqual(['farmacia 4200'])
     expect(fake.calls.downloads).toEqual(['a1'])
     expect(stt.calls).toHaveLength(1)
@@ -77,6 +96,117 @@ describe('a voice note', () => {
     expect(context).toContain('<mensaje>\nAnotá 4200 de farmacia\n</mensaje>')
     expect(context).toContain('nota de voz')
     expect(context).toContain('transcripción automática')
+    app.close()
+  })
+
+  it.each([
+    [
+      'a summary',
+      () =>
+        script({
+          name: 'summarize',
+          input: {
+            period: 'this_month',
+            direction: 'out',
+            category: null,
+            payment: null,
+            description: null,
+            text: null,
+          },
+        }),
+      /^🎙️ "¿cuánto voy\?"\nEste mes gastaste/,
+    ],
+    ['a question', () => script(ask([1, 2], { after: 'none' })), /^🎙️ "¿cuánto voy\?"\n¿Cuál\?/],
+    [
+      "the model's own words",
+      () => script(replyCall('Gastaste lo de siempre.')),
+      /^🎙️ "¿cuánto voy\?"\nGastaste lo de siempre\.$/,
+    ],
+  ])(
+    'starts the reply with what was heard when the answer is %s (no record of a change)',
+    async (_what, model, expected) => {
+      await seed([
+        { on: '2025-10-09', amount: '3500', description: 'café', at: '10:10' },
+        { on: '2025-10-09', amount: '2900', description: 'café', at: '11:54' },
+      ])
+      const app = await setup({
+        fake: fakeGraph({ media: { a1: NOTE } }),
+        transcriber: fakeTranscriber(heard('¿cuánto voy?')).transcriber,
+        model: model(),
+      })
+      expect(await voice(app, 'wamid.H1')).toMatch(expected)
+      app.close()
+    },
+  )
+
+  it.each([
+    [
+      'a correction',
+      (id: number) => correct(id, { amount: '3800' }),
+      '✓ Corregido: Café $3.800 (antes $3.500)',
+    ],
+    ['a deletion', (id: number) => remove(id), '✓ Borré: Café $3.500'],
+  ])(
+    'leaves the line out when the voice note made %s: the record shows what was understood',
+    async (_what, call, line) => {
+      const [id] = await seed([
+        { on: '2025-10-09', amount: '3500', description: 'café', at: '10:10' },
+      ])
+      const app = await setup({
+        fake: fakeGraph({ media: { a1: NOTE } }),
+        transcriber: fakeTranscriber(heard('no, el café')).transcriber,
+        model: script(call(id ?? 0)),
+      })
+      const reply = await voice(app, 'wamid.H2')
+      expect(reply).toContain(line)
+      expect(reply).not.toContain('🎙️')
+      app.close()
+    },
+  )
+
+  it('shows the line when the change did not apply (it was already gone): no record shows what was understood', async () => {
+    const [id] = await seed([
+      { on: '2025-10-09', amount: '3500', description: 'café', at: '10:10' },
+    ])
+    const slow = gate()
+    let conversation = 0
+    const app = await setup({
+      fake: fakeGraph({ media: { a1: NOTE } }),
+      transcriber: fakeTranscriber(async () => {
+        await slow.promise
+        return heard('borrá el café')
+      }).transcriber,
+      model: script(remove(id ?? 0)),
+      processorStore: (store) => ({
+        ...store,
+        conversation: (c) => {
+          conversation++
+          return store.conversation(c)
+        },
+      }),
+    })
+    await post(app.base, voiceBody('wamid.H4', 'a1', WA))
+    await until(() => conversation === 1) // the list was read: the café is in it
+    await sql`UPDATE movement SET deleted_at = now(), deleted_by = (SELECT id FROM inbound_message WHERE wamid = 'wamid.H4') WHERE id = ${id ?? 0}` // another message deleted it meanwhile
+    slow.open()
+    await until(() => app.calls.sent.length === 1)
+    expect(bodies(app.calls)[0]).toBe(`🎙️ "borrá el café"\n${REPLY_GONE}`)
+    app.close()
+  })
+
+  it('cuts what was heard at 80 characters with "…"', async () => {
+    const long = `¿cuánto voy ${'gastado '.repeat(30)}?`.trim()
+    const app = await setup({
+      fake: fakeGraph({ media: { a1: NOTE } }),
+      transcriber: fakeTranscriber(heard(long)).transcriber,
+      model: script(replyCall('Gastaste lo de siempre.')),
+    })
+    const first = (await voice(app, 'wamid.H5')).split('\n')[0] ?? ''
+    expect(first.startsWith('🎙️ "¿cuánto voy gastado')).toBe(true)
+    expect(first.endsWith('…"')).toBe(true)
+    expect(first.length).toBeLessThanOrEqual('🎙️ ""'.length + 80)
+    // the whole transcript is still the message, and stored
+    expect((await row('wamid.H5'))?.body).toBe(long)
     app.close()
   })
 
@@ -169,7 +299,7 @@ describe('a voice note', () => {
     await say(app, { text: 'gracias' })
     const context = String(app.requests.at(-1)?.messages[0]?.content)
     expect(context).toContain('(persona, hace 0 min) [audio] Anotá 4200 de farmacia')
-    expect(context).toContain('(Warren) 🎙️ "Anotá 4200 de farmacia" ✓ Farmacia $4.200')
+    expect(context).toContain('(Warren) ✓ Farmacia $4.200')
     app.close()
   })
 
@@ -383,7 +513,7 @@ describe('a voice note that cannot be used', () => {
     expect(bodies(app.calls)).toEqual([REPLY_INTERIM])
     slow.open()
     await until(() => app.calls.sent.length === 2)
-    expect(bodies(app.calls)[1]).toBe('🎙️ "Anotá 4200 de farmacia"\n✓ Farmacia $4.200')
+    expect(bodies(app.calls)[1]).toBe('✓ Farmacia $4.200')
     app.close()
   })
 })

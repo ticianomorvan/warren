@@ -27,9 +27,17 @@ export interface Guard {
   seen: ReadonlySet<number>
   /** Movements already asked to be logged by earlier calls of this turn. */
   logged: number
+  /** The id of the pending question's only option, when it has exactly one: a change in this message is about it. */
+  sole?: number
+  /** The person's message: it tells whether they gave a new value at all. */
+  message?: string
 }
 
 const MAX_QUESTION_WORDS = 6
+
+/** Whether a message holds an amount at all, in digits or in words ("tres mil"): without one there is no new value to send. */
+const hasValue = (message: string | undefined) =>
+  message === undefined || /\d/.test(message) || hasNumberWord(message)
 
 /**
  * A question is a short phrase from the model ("Cuál", "Qué querés cambiar"), and code adds the
@@ -120,13 +128,36 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       const unseen = checkIds(a.movement_ids, guard)
       if (unseen) return rejected(unseen)
       if (a.movement_ids.length > 10) return rejected('at most 10 movement_ids')
-      if (a.after_answer === 'correct') {
-        if (!a.changes || !hasChanges(a.changes))
-          return rejected('after_answer "correct" needs changes')
-        const issues = checkChanges(a.changes, guard.today)
+      const given = a.changes && hasChanges(a.changes) ? a.changes : null
+      // "Correct" with no change, when the message has no number at all ("cambiemos el valor de uno de los YPFs"),
+      // is the question what to change: take it as `none`. With a number in the message the model left the change
+      // out (s061), so it is refused and sent again.
+      const noValue = a.after_answer === 'correct' && !given && !hasValue(guard.message)
+      if (a.after_answer === 'correct' && !given && !noValue) {
+        return rejected(
+          'after_answer "correct" needs changes: send the new value the person gave in changes (or after_answer "none" if they gave none)',
+        )
+      }
+      if (given) {
+        const issues = checkChanges(given, guard.today)
         if (issues.length > 0) return rejected(issueText(issues))
       }
       const ids = [...new Set(a.movement_ids)]
+      // The person answers a question about one movement with a change ("a ese ponele 3500"): that is the
+      // correction, on the movement they were shown. Asking again would loop.
+      const [only] = ids
+      if (
+        given &&
+        a.after_answer === 'correct' &&
+        only !== undefined &&
+        ids.length === 1 &&
+        only === guard.sole
+      ) {
+        return {
+          kind: 'action',
+          action: { tool: 'correct_movement', input: { id: only, changes: given, text: null } },
+        }
+      }
       return {
         kind: 'action',
         action: {
@@ -134,8 +165,8 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
           input: {
             question: cleanQuestion(a.question, ids.length > 1 ? 'Cuál' : 'Qué querés cambiar'),
             movement_ids: ids,
-            after_answer: ids.length > 0 ? a.after_answer : 'none',
-            changes: a.after_answer === 'correct' && ids.length > 0 ? a.changes : undefined,
+            after_answer: ids.length === 0 || noValue ? 'none' : a.after_answer,
+            changes: given && a.after_answer === 'correct' && ids.length > 0 ? given : undefined,
           },
         },
       }

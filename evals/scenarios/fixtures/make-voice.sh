@@ -19,6 +19,8 @@ speak voice-consulta Paulina "¿Cuánto voy gastado este mes?"
 speak voice-cafe Mónica "Café tres mil quinientos."
 speak voice-correccion-dos Mónica "No, el café fue cuatro mil."
 speak voice-ayer Mónica "Ayer veinte mil de nafta."
+speak voice-ponele Paulina "A ese ponele tres mil quinientos."
+speak voice-ese Mónica "Sí, ese mismo."
 
 # Noise, not speech: three seconds of brown noise, then one of near silence.
 ffmpeg -loglevel error -y -f lavfi -i "anoisesrc=color=brown:duration=3:amplitude=0.3:seed=7" \

@@ -436,7 +436,7 @@ ones a typed message gets.
 - **Request:** `language=es`, `temperature=0`, `response_format=verbose_json` (the gate reads `segments`), and a
   vocabulary prompt (`VOCABULARY_PROMPT`; Groq reads at most 224 tokens). Extending the prompt with six more words
   (farmacia, alquiler, expensas, Netflix, sueldo, transferencia) made the beatbox note come out as "¡Hola!" at
-  avg_logprob -0.53, a hair from refusal, so it is the brief's prompt unchanged.
+  avg_logprob -0.53, a hair from refusal, so the first version kept the brief's prompt unchanged; "ponele, cambiale" were added in the live test round 2.
 - **Formats.** Checked against the service on a clip of Ticiano's note: Ogg/Opus (what WhatsApp sends for a voice
   note), MP3 and MP4/M4A are read. Raw AAC (ADTS) and AMR are refused by Groq ("file must be one of: flac mp3 mp4 mpeg
   mpga m4a ogg opus wav webm", checked 2026-11-21), so they are answered as unsupported. The type is read from the
@@ -460,8 +460,8 @@ ones a typed message gets.
 3. Usable: the transcript replaces the text. The context tells the model it is an automatic transcript that can be
    misheard; `contextFacts` and `checkSay` take it as the person's message, so the model may repeat a number the person
    said and no other.
-4. The reply is `🎙️ "<transcript>"` (code) and then the usual reply. The next message's window shows `[audio] <transcript>`
-   (the reply line there also carries the 🎙️ line).
+4. The reply is the usual one; when it has no record of a change it starts with `🎙️ "<transcript>"` (code, cut at 80
+   characters; see the live test round 2). The next message's window shows `[audio] <transcript>`.
 5. A voice note is never the bare answer to a question: "el segundo" by voice goes to the model, which sees the options.
    Code does not delete or correct on what a speech model thought it heard (decision beyond the brief, one more model call).
 
@@ -586,3 +586,51 @@ by a computer voice, was heard as "Si no, fueron cuatro mil." at -0.46 and refus
   conversation queries in `store.ts`.
 - Strip the 🎙️ line from the conversation window (the transcript is there twice: `[audio] …` and in the reply).
 - Warm the OpenRouter connection at startup, as for Anthropic: the first note of a process takes about 1.6 s, later ones 0.7 s.
+
+### Live test round 2 (inbound_message #73 to #80) and its fixes
+
+What worked: multiple logs, a correction and a question by voice. What did not:
+
+- **The 🎙️ line was noise.** A reply that logged, corrected or deleted already shows what Warren understood, amounts
+  included. Now `execute` hands `composeReply` the transcript only when no step was an `applied` log, correction or
+  deletion (answers, summaries, questions, the model's own words, and a change that did not apply keep it), and the
+  line is cut at 80 characters with "…" (`MAX_HEARD_CHARS`; the whole transcript is still the message and is stored in
+  `body`). This also removes the duplicate in the conversation window for the common case. The scenario grader reads a
+  reply's question-ness after the 🎙️ line.
+- **A narrowed question looped (#76, #78, #79).** The question had one option (`asked` of length 1, nothing pending).
+  "a ese ponele 3500" got an `ask_user` over that same movement with the change attached (after a rejected first try), and
+  "ese" reopened three options. Fixed in three places, so that no single one has to hold:
+  1. `resolve.ts`: "ese", "ese mismo", "sí, ese" and "sí" after a one-option question with nothing pending are answered by
+     code with "¿Qué querés cambiar? <that movement>" and no model call (a bare "1" still goes to the model; with a pending
+     action they are a yes to it). Typed messages only: voice goes to the model.
+  2. The context line for a pending question with one option says so (volatile context, not the frozen prompt): a change in
+     this message is `correct_movement` on that id, no change is `ask_user` on that same id with `none`, never other options.
+  3. `calls.ts`: an `ask_user` over exactly that one id, `after_answer: correct` and `changes` becomes the
+     `correct_movement` (no second turn). At no risk: the person saw that one movement and gave the change.
+- **The rejected `ask_user` (#76, #78, #79).** `after_answer: correct` without `changes` is accepted as `none` when the
+  person's message has no amount, in digits or in words ("cambiemos el valor de uno de los YPFs"): there is no new value, so
+  the question is the right answer. With an amount in the message the model left the change out (s061) and the call is still
+  refused, with a reason that says what to send ("send the new value the person gave in changes, or after_answer none if they
+  gave none"). Last round's blanket acceptance broke s061; this one keys on the message. Written risk: a change with no
+  amount (a payment, a date) left out by the model is now a question instead of a retry.
+- **Measured** on the dev scenarios (the 4 voice and 2 narrowed-question ones added this round included), turns that needed a
+  second model turn: before 13 of 120 model turns (10.8%), and 7 of the 15 questions; after 8 of 122 (6.6%), and 4 of 16
+  questions. Plain questions (s124, s125 to s128's first turns) are one turn.
+- **#77, a data point for the gate (not audio, which stays with Ticiano).** A 2-second note answering the narrowed question
+  came back "S por L, 3500." (avg_logprob -0.58, compression_ratio 0.65, no_speech_prob 0.0) in 4 of 4 re-runs and was
+  refused as low confidence. The meaning was lost, so refusing was right, and it shows -0.4 is not too strict (a fourth real
+  data point beside r51 to r53). A computer voice saying "A ese ponele tres mil quinientos." went the same way ("AS con
+  L3500.", -0.54): "ponele" is what Whisper misses. The vocabulary prompt now ends "ponele, cambiale", which made that clip
+  "A ese ponele 3500." (pass) and left the real notes r51 to r53 unchanged and the beatbox note r54 refused on 25 of 25 draws.
+  Not verified on #77's own audio.
+- Scenarios: s125 (#76 to #78, typed), s126 ("ese" alone, then the change), s127 (the change by voice), s128 ("sí, ese mismo"
+  by voice), s129 (the same on two cafés, test split). The voice scenarios s118 to s123 now expect no 🎙️ line where something
+  was logged or corrected, and the line where there was a summary.
+- Results: scenario eval `--split all` (129 scenarios): 129/129 fully right, dev 101/101, test 28/28, 0 silent wrong changes, 0
+  invented numbers, 0 unnecessary questions; voice 8/8. (The dev run before this round's last edits had 99/101: s060, which passed 8 of 8 re-runs with and
+  without the change, and s117, both known model variance.) Latency per turn p50
+  1,611 ms, p95 3,184 ms; by tag the p50 moved within the run-to-run band except older-item (3 or 4 turns, n of 5) at 3,184 ms
+  against 2,718 in B2. 477 tests (round 1: 463). 19 mutations of this round's code (the line's condition and which tools count,
+  the 80-character cut, the one-option guard and its wiring, "ese", the bare-number guard, the context line, the amount check in
+  digits and in words, keeping `correct` on an accepted question): all killed after two tests were added for what survived (a
+  deletion without the line, and a change that did not apply keeping it).

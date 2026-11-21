@@ -312,6 +312,10 @@ export function createProcessor(o: ProcessorOptions) {
         today,
         env: { find: (filter) => store.find(accountId, filter) },
         seen,
+        sole:
+          conversation.question?.asked.length === 1
+            ? conversation.question.asked[0]?.id
+            : undefined,
         signal,
       })
       return {

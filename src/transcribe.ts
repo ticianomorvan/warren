@@ -23,7 +23,7 @@ export const PROVIDER_PIN = { order: ['groq'], allow_fallbacks: false }
  * Groq reads at most 224 tokens of it.
  */
 export const VOCABULARY_PROMPT =
-  'Gastos e ingresos en pesos argentinos: café, súper, nafta, YPF, Shell, lucas, mangos, visa, débito, Mercado Pago, Rappi, Uber.'
+  'Gastos e ingresos en pesos argentinos: café, súper, nafta, YPF, Shell, lucas, mangos, visa, débito, Mercado Pago, Rappi, Uber, ponele, cambiale.'
 
 /** The ways a transcription can fail, as the person never sees them: the cause goes in the log. */
 export type TranscriptionFailure = 'timeout' | 'service' | 'bad_response'

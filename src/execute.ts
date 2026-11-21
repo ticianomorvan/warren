@@ -47,9 +47,12 @@ export interface ExecuteInput {
   /** What Warren answered earlier in the conversation: the one proof a `reply` may lean on. */
   window: string[]
   render?: RenderOptions
-  /** What was heard in a voice note: the reply starts with it, rendered by code. */
+  /** What was heard in a voice note: a reply with no record of a change starts with it, rendered by code. */
   heard?: string
 }
+
+/** The tools whose line is the record of a change. */
+const CHANGES = new Set(['log_movements', 'correct_movement', 'delete_movement'])
 
 /** The label `inbound_message.action` and the latency report use: one tool, or `multi`. */
 export function actionLabel(actions: Action[]): string {
@@ -200,7 +203,9 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
     facts: i.facts,
     window: i.window,
     fallback: REPLY_SAY_FALLBACK,
-    heard: i.heard,
+    // The record of a change already shows what was understood, amounts included: say what was heard only for
+    // answers, summaries, questions and the model's own words, where nothing else shows it.
+    heard: steps.some((s) => s.outcome === 'applied' && CHANGES.has(s.tool)) ? undefined : i.heard,
   })
   const audit = i.audit.map((e) =>
     e.action === undefined

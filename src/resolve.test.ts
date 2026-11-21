@@ -69,10 +69,33 @@ describe('answerAction', () => {
     // not a pick of an option: the model reads it
     expect(answerAction('el 2 fue 4500', { asked, pending: null })).toBeNull()
     expect(answerAction('sí', { asked, pending: null })).toBeNull()
-    // one option: asking about it again would loop
+    // one option: a bare "1" goes to the model (narrowing it again would loop on the number)
     const one = [asked[0] as (typeof asked)[number]]
     expect(answerAction('1', { asked: one, pending: null })).toBeNull()
-    expect(answerAction('sí', { asked: one, pending: null })).toBeNull()
+  })
+
+  it('answers "ese" or "sí" after a one-option question by asking about that same movement, never others (live #79)', () => {
+    const one = [asked[0] as (typeof asked)[number]]
+    for (const text of ['ese', 'Ese.', 'sí', 'dale', 'sí, ese', 'ese mismo', 'esa', 'el mismo']) {
+      expect(answerAction(text, { asked: one, pending: null }), text).toEqual({
+        tool: 'ask_user',
+        input: { question: 'Qué querés cambiar', movement_ids: [41], after_answer: 'none' },
+      })
+    }
+    // with a change it is the model's: "a ese ponele 3500", "ese fue 3500"
+    for (const text of ['a ese ponele 3500', 'ese fue 3500', 'ponele 3500']) {
+      expect(answerAction(text, { asked: one, pending: null }), text).toBeNull()
+    }
+    // "ese" among several options picks nothing: the model reads it
+    expect(answerAction('ese', { asked, pending: null })).toBeNull()
+  })
+
+  it('takes "ese" as a yes to a pending action with one option', () => {
+    const one = [asked[0] as (typeof asked)[number]]
+    expect(answerAction('ese', { asked: one, pending: { action: 'delete' } })).toEqual({
+      tool: 'delete_movement',
+      input: { id: 41, text: null },
+    })
   })
 
   it('is nothing without a pending action, or when the message is more than an answer', () => {

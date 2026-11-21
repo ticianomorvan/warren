@@ -120,6 +120,9 @@ export function moneyTokens(reply: string): string[] {
 const asWritten = (token: string) =>
   formatMoney(canonical(token.replace(/[^\d.,]/g, '')), token.startsWith('US') ? 'USD' : 'ARS')
 
+/** The reply without the 🎙️ line a voice note's answer may start with: a question is judged by what follows it. */
+export const withoutHeard = (reply: string) => reply.replace(/^🎙️ "[^\n]*"\n/, '')
+
 export function gradeTurn(input: TurnInput): TurnGrade {
   const { turn, today, before, after, refs, reply } = input
   const problems: string[] = []
@@ -254,7 +257,7 @@ export function gradeTurn(input: TurnInput): TurnGrade {
   }
 
   // The reply.
-  const text = reply.trim()
+  const text = withoutHeard(reply).trim()
   const claimsSuccess = text.startsWith('✓')
   const asked = text.startsWith('¿')
   const flat = norm(reply)

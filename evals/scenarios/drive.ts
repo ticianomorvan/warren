@@ -6,7 +6,7 @@ import { estimateCostUsd, type ModelKey, type Usage } from '../../src/agent'
 import type { Sql } from '../../src/db'
 import { fakeGraph, messageBody, photoBody, post, setup, voiceBody } from '../../src/test-harness'
 import type { Transcriber } from '../../src/transcribe'
-import { gradeTurn, type Row, type TurnGrade } from './grade'
+import { gradeTurn, type Row, type TurnGrade, withoutHeard } from './grade'
 import type { Scenario } from './schema'
 
 /** Thrown inside the pipeline when the next model call could take the run over its budget. */
@@ -163,7 +163,7 @@ async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<stri
 }
 
 const actionOf = (action: string | null, reply: string): Action => {
-  if (reply.trim().startsWith('¿')) return 'ask'
+  if (withoutHeard(reply).trim().startsWith('¿')) return 'ask'
   switch (action) {
     case 'log':
     case 'correct':

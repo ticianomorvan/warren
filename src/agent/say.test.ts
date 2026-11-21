@@ -494,6 +494,7 @@ describe('composeReply', () => {
     })
     expect(heard.reply.length).toBeLessThanOrEqual(4096)
     expect(heard.reply.startsWith('🎙️ "palabra')).toBe(true)
+    expect(heard.reply.split('\n')[0]?.length).toBeLessThanOrEqual(80 + '🎙️ ""'.length)
     expect(heard.reply).toContain('✓ Anoté 60:')
     expect(heard.reply).toContain('• Café 0 $1000')
   })
