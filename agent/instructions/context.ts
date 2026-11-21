@@ -3,7 +3,7 @@ import { movementLine } from '../../src/agent/prompt'
 import { recentMovements } from '../../src/ledger'
 import { addDays, weekdayName } from '../../src/time'
 import { accountOf, ledger, nowOf } from '../lib/core'
-import { markShown, turnClock, turnFacts } from '../lib/state'
+import { lastShown, markShown, turnClock, turnFacts } from '../lib/state'
 
 /** Minutes since the epoch of an Argentine `yyyy-mm-ddTHH:MM` (UTC-3, no daylight saving). */
 const minutesOf = (iso: string) => Date.parse(`${iso}:00-03:00`) / 60_000
@@ -19,6 +19,7 @@ export default defineDynamic(async (ctx) => {
   if (!waId) return null
   const turnId = ctx.turn?.id ?? null
   const clock = turnClock.get()
+  const lastText = lastShown.get().text
   const previousNow = clock.turnId === String(turnId) ? clock.prev : clock.now
   const rendered = await ctx.memo(['context', turnId], async () => {
     const sql = ledger()
@@ -41,6 +42,11 @@ export default defineDynamic(async (ctx) => {
       minutes === null
         ? 'Es el primer mensaje de la conversación.'
         : `Hace ${minutes} min que la persona escribió su mensaje anterior.`,
+      ...(lastText
+        ? [
+            `Lo último que viste vos de Warren (tu mensaje anterior, tal cual lo recibió la persona):\n${lastText.slice(0, 700)}`,
+          ]
+        : []),
       `Calendario, del más reciente al más antiguo:\n${calendar.join('\n')}`,
       `Últimos movimientos de la persona, el más reciente primero:\n${list}`,
     ].join('\n\n')

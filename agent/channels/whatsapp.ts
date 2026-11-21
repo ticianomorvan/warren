@@ -4,7 +4,7 @@ import { chatSdkChannel, messageContentOf } from 'eve/channels/chat-sdk'
 import { calls, deliveries, reply as replyOf } from 'eve/events'
 import { ensureSpikeTables, ledger } from '../lib/core'
 import { FALLBACK_TEXT, finalize } from '../lib/finalize'
-import { turnFacts } from '../lib/state'
+import { lastShown, turnFacts } from '../lib/state'
 
 /**
  * WhatsApp through the Chat SDK adapter. The spike only ever points it at a fake Graph:
@@ -63,7 +63,9 @@ export const { bot, channel, send } = chatSdkChannel({
       const out = finalize({ modelText, lines, facts })
       if (out.replaced) await logGuard(ctx.session.auth.current?.principalId ?? '', turnId, out)
       // Never silent: an empty answer still gets a line.
-      await thread.post({ markdown: out.text || FALLBACK_TEXT })
+      const shown = out.text || FALLBACK_TEXT
+      lastShown.update(() => ({ text: shown }))
+      await thread.post({ markdown: shown })
     },
   },
 })

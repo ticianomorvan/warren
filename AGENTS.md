@@ -53,6 +53,10 @@ src/latency.ts  `pnpm latency` report, by action
 evals/        cases.jsonl (dev/test split, one command per message), command.ts (that command shape), agent.ts
               (runs the agent on a case and maps it to a command), grade.ts, run.ts, results/ (gitignored but summary.md)
 evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl, schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts, run.ts, results/baseline.md
+agent/        Spike (docs/eve-spike.md): an eve project over the core, not deployed. agent.ts, instructions.md, tools/ (five
+              thin tools over src/), instructions/context.ts (per-turn context), channels/ (WhatsApp via Chat SDK, HTTP, MCP),
+              hooks/audit.ts, lib/ (core binding, state, guards, finalize.ts). The loop above stays the shipped agent.
+evals/eve/    The spike's driver: scenarios through eve against a fake Graph, graded by evals/scenarios/grade.ts (README there)
 docs/spec.md  Source of truth for what is built and in which order; docs/agent-spec.md the agent design
 ```
 

@@ -18,3 +18,6 @@ export const turnClock = defineState('warren.turn-clock', () => ({
   now: '',
   prev: '' as string,
 }))
+
+/** The last message the person was shown (the checked reply), so the model reads what they actually saw. */
+export const lastShown = defineState('warren.last-shown', () => ({ text: '' }))
