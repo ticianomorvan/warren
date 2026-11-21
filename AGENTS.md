@@ -46,6 +46,7 @@ src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts 
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
 src/latency.ts  `pnpm latency` report
 evals/        cases.jsonl (dev/test split), grade.ts, run.ts, results/ (gitignored but summary.md)
+evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl, schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts, run.ts, results/baseline.md
 docs/spec.md  Source of truth for what is built and in which order
 ```
 
@@ -62,10 +63,16 @@ PG_TEST_URL=postgres://postgres:test@localhost:55432/postgres pnpm test src/conc
 pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the WhatsApp variables (see src/config.ts)
 pnpm latency [--last N]   # p50/p95 per stage, model time, log-only reply time, from DATABASE_URL (Railway: the Postgres public URL)
 pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # calls the API, needs .env
+pnpm eval:scenarios [--split dev|test|all] [--budget 0.30] [--only s001,s002]   # multi-turn scenarios, real pipeline and model, needs .env
 ```
 
 `pnpm eval` spends money: tune the prompt on `--split dev` only and run `--split test` once per
 model at the end. CI never calls the Anthropic API.
+
+`pnpm eval:scenarios` does the same for conversations (PGlite, a fake Graph, the real model; stops before its
+`--budget`, default US$0.30). It grades the database after each turn and gates on 95% fully right and 0 silent
+wrong changes. Its test split is held out like the other: never print or tune on it. Baseline:
+`evals/scenarios/results/baseline.md`.
 
 ## Conventions
 
