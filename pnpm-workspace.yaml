@@ -1,0 +1,10 @@
+# Supply chain. A release must be 3 days old before an install may pick it (minutes).
+minimumReleaseAge: 4320
+# Fail when a package's publish trust dropped against its earlier releases.
+trustPolicy: no-downgrade
+# Only the root may depend on git or tarball URLs.
+blockExoticSubdeps: true
+# Install scripts run only for the packages listed here; any other one fails the install.
+strictDepBuilds: true
+allowBuilds:
+  esbuild: true

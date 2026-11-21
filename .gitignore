@@ -1,15 +1,14 @@
 node_modules
-.next
 .turbo
+.next
+next-env.d.ts
 .vercel
 .env
 .env.*
 !.env.example
-!apps/web/.env.example
 *.tsbuildinfo
 coverage
-# real mail never goes in this repo
-*.eml
-!packages/*/test/fixtures/synthetic/*.eml
 .data
-next-env.d.ts
+# eval runs: only the committed summary stays in the repository
+evals/results/*
+!evals/results/summary.md

@@ -3,8 +3,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Manual run, e.g. to redeploy after changing environment variables on Vercel.
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,45 +20,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      # No network and no Anthropic key: the eval (`pnpm eval`) is run by hand.
       - run: pnpm test
-      - run: pnpm build
-      - name: Check the deploy CLI's hash against Vercel's
-        run: tools/vercel/verify.sh
-
-  # Production deploy through the Vercel CLI, because the Vercel account is not linked to
-  # this GitHub account. Stays off until the repository variable VERCEL_PROJECT_ID is set.
-  deploy:
-    needs: check
-    if: github.event_name != 'pull_request' && vars.VERCEL_PROJECT_ID != ''
-    runs-on: ubuntu-latest
-    concurrency: production-deploy
-    env:
-      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # Schema first: new code may need new tables, old code tolerates added ones.
-      - name: Apply database migrations
-        env:
-          DATABASE_URL_MIGRATIONS: ${{ secrets.DATABASE_URL_MIGRATIONS }}
-        run: pnpm db:migrate
-      # The CLI comes from its own npm lockfile, outside the pnpm workspace: its releases have no
-      # provenance, so the workspace trust policy rejects them. See tools/vercel/README.md.
-      - name: Install the Vercel CLI
-        working-directory: tools/vercel
-        run: |
-          ./verify.sh
-          npm ci
-          mkdir -p "$RUNNER_TEMP/bin"
-          ln -s "$PWD/node_modules/.bin/vercel" "$RUNNER_TEMP/bin/vercel"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - run: vercel pull --yes --environment=production --token=$VERCEL_TOKEN
-      - run: vercel build --prod --token=$VERCEL_TOKEN
-      - run: vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
