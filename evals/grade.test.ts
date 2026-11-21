@@ -77,6 +77,79 @@ describe('grade', () => {
   })
 })
 
+describe('hard fields of the other commands', () => {
+  const rec = (target: string): EvalCase => ({
+    ...base,
+    expected: { type: 'delete', target, confidence: 'high' },
+  })
+  const query = (over: object): Command => ({
+    type: 'query',
+    period: 'this_month',
+    direction: 'out',
+    category: 'supermercado',
+    payment: null,
+    ...over,
+  })
+  const queryCase: EvalCase = { ...base, expected: query({}) }
+
+  it('a delete with the wrong target is not fully correct; a fuzzy match is', () => {
+    expect(grade(rec('súper'), { type: 'delete', target: 'nafta', confidence: 'high' }).full).toBe(
+      false,
+    )
+    expect(grade(rec('súper'), { type: 'delete', target: 'last', confidence: 'high' }).full).toBe(
+      false,
+    )
+    expect(
+      grade(rec('súper'), { type: 'delete', target: 'el super', confidence: 'high' }).full,
+    ).toBe(true)
+    expect(grade(rec('last'), { type: 'delete', target: 'last', confidence: 'high' }).full).toBe(
+      true,
+    )
+  })
+
+  it('a correction with the wrong target is not fully correct', () => {
+    const changes = {
+      direction: null,
+      amount: '3800',
+      currency: null,
+      date: null,
+      description: null,
+      category: null,
+      payment: null,
+    }
+    const testCase: EvalCase = {
+      ...base,
+      expected: { type: 'correct', target: 'café', changes, confidence: 'high' },
+    }
+    expect(
+      grade(testCase, { type: 'correct', target: 'nafta', changes, confidence: 'high' }).full,
+    ).toBe(false)
+  })
+
+  it('a query with the wrong direction, category or payment is not fully correct', () => {
+    expect(grade(queryCase, query({})).full).toBe(true)
+    expect(grade(queryCase, query({ direction: 'in' })).full).toBe(false)
+    expect(grade(queryCase, query({ category: 'salud' })).full).toBe(false)
+    expect(grade(queryCase, query({ payment: 'efectivo' })).full).toBe(false)
+    expect(grade(queryCase, query({ period: 'last_month' })).full).toBe(false)
+  })
+})
+
+describe('movement count mismatch', () => {
+  it('flags a sum of two purchases returned as one high-confidence movement', () => {
+    const two: EvalCase = {
+      ...base,
+      expected: { type: 'log', movements: [want, { ...want, amount: '2000' }] },
+    }
+    const g = grade(two, log({ ...want, amount: '5500' }))
+    expect(g.full).toBe(false)
+    expect(g.silentWrongAmount).toBe(true)
+    expect(grade(two, log({ ...want, amount: '5500', confidence: 'low' })).silentWrongAmount).toBe(
+      false,
+    )
+  })
+})
+
 describe('similarText', () => {
   it('ignores case and accents and matches shared stems', () => {
     expect(similarText('Café', 'cafe')).toBe(true)

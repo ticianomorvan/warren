@@ -1,6 +1,7 @@
 # Security policy
 
-Warren stores bank-mail data and a financial ledger, so security reports matter.
+Warren reads expense messages people send on WhatsApp, sends them to the Anthropic API to be
+parsed, and stores the resulting movements. Security reports matter.
 
 ## Reporting a vulnerability
 
@@ -9,8 +10,8 @@ Do not open a public issue. Report it privately through GitHub's advisory form:
 you can see the report. If the form is unavailable, open an issue that says only that you have
 a security report, with no details, and the maintainer will arrange a private channel.
 
-Please include: the version or commit, whether you used the hosted instance or your own,
-the steps to reproduce, and what you could read or change.
+Please include: the version or commit, the steps to reproduce, and what you could read or
+change.
 
 ## What to expect
 
@@ -20,20 +21,23 @@ the steps to reproduce, and what you could read or change.
 
 ## Scope
 
-In scope: this repository's code and the hosted instance. Test only your own accounts and
+In scope: this repository's code and the hosted service. Test only your own account and
 data, do not run denial-of-service or social-engineering attacks, and stop when you reach
 another person's data.
 
-Out of scope: a self-hosted deployment's own configuration (the operator is responsible for
-it), issues in mail, hosting or database providers themselves, and findings that need a
-compromised device or account.
+Out of scope: issues in WhatsApp/Meta, Anthropic, hosting or database providers themselves, a
+self-hosted deployment's own configuration, and findings that need a compromised device or
+account.
 
 ## Supported versions
 
-The latest release and the hosted instance.
+The latest commit on `main` and the hosted service.
 
 ## Threat model in short
 
-Assets are the ledger, mail signatures and raw mail, agent tokens and push subscriptions.
-A user's agent can read only that user's data. Raw mail and transfer memos never reach a
-model. Records are append-only, so tampering is detectable through the hash chain.
+Assets are people's messages and movements, the WhatsApp access token, the app secret and the
+Anthropic API key. Secrets live only in the gitignored `.env` (and the host's environment), never
+in code, logs or eval output. The model only parses a message into a typed command; code
+validates it, does all arithmetic and writes the reply, so a message cannot make the model act.
+Corrections never overwrite a movement, so history is kept. Webhooks are accepted only with a
+valid signature.

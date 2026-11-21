@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Command, Movement } from './schema'
-import { dateProblem, isValidAmount, validateCommand } from './validate'
+import { validateCommand } from './validate'
 
 const today = '2026-11-20'
 const movement: Movement = {
@@ -14,29 +14,32 @@ const movement: Movement = {
   confidence: 'high',
 }
 
-describe('isValidAmount', () => {
+const check = (overrides: Partial<Movement>) =>
+  validateCommand({ type: 'log', movements: [{ ...movement, ...overrides }] }, today).issues
+
+describe('amount check', () => {
   it.each(['3500', '1500000.50', '0.99', '12.5'])('accepts %s', (amount) => {
-    expect(isValidAmount(amount)).toBe(true)
+    expect(check({ amount })).toEqual([])
   })
 
   it.each(['', '0', '0.00', '-5', '3.500', '3,5', '1e3', '12.345', ' 5', '$100', 'tres mil'])(
     'rejects "%s"',
     (amount) => {
-      expect(isValidAmount(amount)).toBe(false)
+      expect(check({ amount }).map((issue) => issue.path)).toEqual(['movements[0].amount'])
     },
   )
 })
 
-describe('dateProblem', () => {
+describe('date check', () => {
   it('accepts today and earlier days', () => {
-    expect(dateProblem('2026-11-20', today)).toBeNull()
-    expect(dateProblem('2025-12-31', today)).toBeNull()
+    expect(check({ date: '2026-11-20' })).toEqual([])
+    expect(check({ date: '2025-12-31' })).toEqual([])
   })
 
   it('rejects a day after today, a bad shape and a day that does not exist', () => {
-    expect(dateProblem('2026-11-21', today)).toBe('date is after today')
-    expect(dateProblem('20/11/2026', today)).toBe('date is not yyyy-mm-dd')
-    expect(dateProblem('2026-02-30', today)).toBe('date does not exist')
+    expect(check({ date: '2026-11-21' })[0]?.message).toBe('date is after today')
+    expect(check({ date: '20/11/2026' })[0]?.message).toBe('date is not yyyy-mm-dd')
+    expect(check({ date: '2026-02-30' })[0]?.message).toBe('date does not exist')
   })
 })
 

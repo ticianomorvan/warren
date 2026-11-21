@@ -37,8 +37,21 @@ const modelKey = values.model as ModelKey
 if (!(modelKey in MODELS)) throw new Error('--model must be haiku or sonnet')
 const split = values.split as 'dev' | 'test' | 'all'
 if (!['dev', 'test', 'all'].includes(split)) throw new Error('--split must be dev, test or all')
-const concurrency = Math.max(1, Number(values.concurrency))
+const concurrency = Number(values.concurrency)
 const budget = Number(values.budget)
+for (const [flag, value] of [
+  ['--concurrency', concurrency],
+  ['--budget', budget],
+] as const) {
+  if (!Number.isFinite(value) || value <= 0) {
+    console.error(`${flag} must be a number greater than 0`)
+    process.exit(1)
+  }
+}
+if (values.limit && !(Number(values.limit) > 0)) {
+  console.error('--limit must be a number greater than 0')
+  process.exit(1)
+}
 
 // The key lives only in .env; it is read into the environment and never printed.
 try {
@@ -133,6 +146,7 @@ async function runAll(): Promise<CaseResult[]> {
 const startedAt = new Date()
 const results = await runAll()
 
+const fullyCorrect = results.filter((r) => r.grade.full).length
 const ok = results.filter((r) => r.error === null)
 const latencies = ok.flatMap((r) => (r.latencyMs === null ? [] : [r.latencyMs]))
 const usages = ok.flatMap((r) => (r.usage ? [r.usage] : []))
@@ -151,8 +165,8 @@ const summary = {
   split,
   cases: results.length,
   errors: results.length - ok.length,
-  fullyCorrect: results.filter((r) => r.grade.full).length,
-  accuracy: results.length === 0 ? 0 : results.filter((r) => r.grade.full).length / results.length,
+  fullyCorrect,
+  accuracy: results.length === 0 ? 0 : fullyCorrect / results.length,
   typeAccuracy:
     results.length === 0 ? 0 : results.filter((r) => r.grade.typeOk).length / results.length,
   silentWrongAmounts: results.filter((r) => r.grade.silentWrongAmount).length,
@@ -179,7 +193,12 @@ const stamp = startedAt.toISOString().replace(/[:.]/g, '-')
 mkdirSync(join(root, 'evals/results'), { recursive: true })
 writeFileSync(
   join(root, `evals/results/${stamp}-${modelKey}-${split}.json`),
-  JSON.stringify({ startedAt, summary, results }, null, 2),
+  // Held-out cases leave no inputs, expected or actual commands behind: aggregates only.
+  JSON.stringify(
+    { startedAt, summary, results: results.filter((r) => r.split === 'dev') },
+    null,
+    2,
+  ),
 )
 appendFileSync(
   join(root, 'evals/results/spend.jsonl'),
@@ -207,9 +226,9 @@ console.table(
     Object.entries(summary.soft).map(([name, c]) => [name, `${c.ok}/${c.total} (${pct(c.rate)})`]),
   ),
 )
-console.log(
-  `Gate (>=97% fully correct, 0 silent wrong amounts): ${summary.gate.accuracyAtLeast97 && summary.gate.noSilentWrongAmounts ? 'PASS' : 'FAIL'}`,
-)
+const gatePassed = summary.gate.accuracyAtLeast97 && summary.gate.noSilentWrongAmounts
+console.log(`Gate (>=97% fully correct, 0 silent wrong amounts): ${gatePassed ? 'PASS' : 'FAIL'}`)
+if (!gatePassed) process.exitCode = 1
 
 // Held-out cases are never listed while tuning; their details stay in the results file only.
 const failures = results.filter((r) => !r.grade.full && r.split === 'dev')

@@ -159,14 +159,14 @@ Message: contame un chiste
 
 The <today>, <yesterday> and similar markers above stand for dates you read from the calendar; always output real ISO dates.`
 
-const MOVEMENT_LABEL = { in: 'in', out: 'out' } as const
-
 export function renderVolatile(input: {
   text: string
   today: string
   recentMovements: RecentMovement[]
 }): string {
-  const { text, today, recentMovements } = input
+  const { today, recentMovements } = input
+  // The message sits between delimiters, so it must not be able to close them.
+  const text = input.text.replace(/<\/?mensaje>/gi, '')
   const calendar = Array.from({ length: 14 }, (_, i) => {
     const day = addDays(today, -i)
     const label = i === 0 ? 'hoy' : i === 1 ? 'ayer' : `hace ${i} días`
@@ -178,7 +178,7 @@ export function renderVolatile(input: {
       : recentMovements
           .map(
             (m, i) =>
-              `${i + 1}. ${MOVEMENT_LABEL[m.direction]} ${m.amount} ${m.currency} ${m.date} ${m.description} [${m.category}] (${m.payment ?? 'sin medio'})`,
+              `${i + 1}. ${m.direction} ${m.amount} ${m.currency} ${m.date} ${m.description} [${m.category}] (${m.payment ?? 'sin medio'})`,
           )
           .join('\n')
   return [

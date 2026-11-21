@@ -7,12 +7,12 @@ export const MAX_MOVEMENTS = 10
 const AMOUNT_RE = /^\d+(\.\d{1,2})?$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
-export function isValidAmount(amount: string): boolean {
+function isValidAmount(amount: string): boolean {
   return AMOUNT_RE.test(amount) && Number(amount) > 0
 }
 
 /** A real calendar date in ISO form, not after `today` (both are Argentine calendar days). */
-export function dateProblem(date: string, today: string): string | null {
+function dateProblem(date: string, today: string): string | null {
   if (!DATE_RE.test(date)) return 'date is not yyyy-mm-dd'
   const parsed = new Date(`${date}T00:00:00Z`)
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {

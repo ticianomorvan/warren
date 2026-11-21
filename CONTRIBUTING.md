@@ -3,7 +3,7 @@
 Thank you for helping. Warren is maintained by one person, so please read this first.
 
 - Review is not guaranteed and may be slow. Small pull requests get reviewed first.
-- Bugs and bank templates: open a pull request. Features: open an issue first and wait for a
+- Bugs: open a pull request. Features: open an issue first and wait for a
   reply, so you do not build something that will not merge.
 - If an AI tool helped write the change, say so in the pull request.
 

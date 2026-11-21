@@ -1,6 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
-import { z } from 'zod'
 import { MODELS, type ModelKey, type Usage } from './models'
 import { renderVolatile, SYSTEM_PROMPT } from './prompt'
 import { type Command, CommandSchema, type RecentMovement } from './schema'
@@ -20,22 +19,7 @@ export type ParseResult = {
   latencyMs: number
 }
 
-/**
- * The SDK's zodOutputFormat emits `$defs` for a repeated sub-schema and the API rejects `$defs`
- * under a union, so the schema is inlined here and the SDK's own parser still validates the reply.
- */
-function commandFormat() {
-  const format = zodOutputFormat(CommandSchema)
-  const {
-    $schema: _,
-    oneOf,
-    ...rest
-  } = z.toJSONSchema(CommandSchema, {
-    reused: 'inline',
-    target: 'draft-2020-12',
-  }) as Record<string, unknown>
-  return { ...format, schema: { ...rest, anyOf: oneOf } }
-}
+const COMMAND_FORMAT = zodOutputFormat(CommandSchema)
 
 let shared: Anthropic | undefined
 
@@ -60,7 +44,7 @@ export async function parseMessage(input: {
     model: config.id,
     max_tokens: 2048,
     thinking: config.thinking,
-    output_config: { effort: config.effort, format: commandFormat() },
+    output_config: { effort: config.effort, format: COMMAND_FORMAT },
     // Frozen prefix under one cache breakpoint; everything per-request comes after it.
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
     messages: [

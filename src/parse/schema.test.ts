@@ -1,3 +1,4 @@
+import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 import { describe, expect, it } from 'vitest'
 import { CATEGORIES, CommandSchema } from './schema'
 
@@ -49,5 +50,11 @@ describe('CommandSchema', () => {
   it('keeps income categories in the fixed list', () => {
     expect(CATEGORIES).toContain('sueldo')
     expect(CATEGORIES).toContain('otros_ingresos')
+  })
+
+  it('generates a JSON schema without $defs, which the API rejects under a union', () => {
+    const json = JSON.stringify(zodOutputFormat(CommandSchema).schema)
+    expect(json).not.toContain('$defs')
+    expect(json).not.toContain('$ref')
   })
 })

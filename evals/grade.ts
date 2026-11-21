@@ -1,16 +1,11 @@
-import type { Command, Movement } from '../src/parse/schema'
+import type { Command, RecentMovement } from '../src/parse/schema'
 
 export type EvalCase = {
   id: string
   split: 'dev' | 'test'
   today: string
   text: string
-  recent: Array<
-    Pick<
-      Movement,
-      'direction' | 'amount' | 'currency' | 'date' | 'description' | 'category' | 'payment'
-    >
-  >
+  recent: RecentMovement[]
   /** An ambiguous message passes by coming back low-confidence, or by being exactly right. */
   ambiguous: boolean
   expected: Command
@@ -75,6 +70,9 @@ export function grade(testCase: EvalCase, actual: Command): Grade {
   if (expected.type === 'log' && actual.type === 'log') {
     if (actual.movements.length !== expected.movements.length) {
       reasons.push(`${actual.movements.length} movements, expected ${expected.movements.length}`)
+      // A merged or invented movement cannot be matched to an expected amount, so any
+      // high-confidence one is a silent error (for example two purchases summed into one).
+      if (actual.movements.some((m) => m.confidence === 'high')) silentWrongAmount = true
     } else {
       expected.movements.forEach((want, i) => {
         const got = actual.movements[i]
@@ -111,20 +109,31 @@ export function grade(testCase: EvalCase, actual: Command): Grade {
     ) {
       silentWrongAmount = true
     }
-    addSoft(soft, 'target', targetOk(actual.target, expected.target))
+    hardTarget(actual.target, expected.target, reasons)
     addSoft(soft, 'category', actual.changes.category === expected.changes.category)
     addSoft(soft, 'payment', norm(actual.changes.payment) === norm(expected.changes.payment))
   } else if (expected.type === 'delete' && actual.type === 'delete') {
-    addSoft(soft, 'target', targetOk(actual.target, expected.target))
+    hardTarget(actual.target, expected.target, reasons)
   } else if (expected.type === 'query' && actual.type === 'query') {
     if (actual.period !== expected.period)
       reasons.push(`period ${actual.period}, expected ${expected.period}`)
-    addSoft(soft, 'query.direction', actual.direction === expected.direction)
-    addSoft(soft, 'query.category', actual.category === expected.category)
-    addSoft(soft, 'query.payment', norm(actual.payment) === norm(expected.payment))
+    if (actual.direction !== expected.direction) {
+      reasons.push(`direction ${actual.direction}, expected ${expected.direction}`)
+    }
+    if (actual.category !== expected.category) {
+      reasons.push(`category ${actual.category}, expected ${expected.category}`)
+    }
+    if (norm(actual.payment) !== norm(expected.payment)) {
+      reasons.push(`payment ${actual.payment}, expected ${expected.payment}`)
+    }
   }
 
   return { full: reasons.length === 0, typeOk, silentWrongAmount, soft, reasons }
+}
+
+/** Which movement a correction or delete points at is a hard field: a wrong one hits the wrong row. */
+function hardTarget(got: string, want: string, reasons: string[]) {
+  if (!targetOk(got, want)) reasons.push(`target "${got}", expected "${want}"`)
 }
 
 function targetOk(got: string, want: string): boolean {

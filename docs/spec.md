@@ -9,10 +9,10 @@ A person in Argentina sends a WhatsApp message such as "café 3500 y súper 12.0
 This is the input loop the rest of the product builds on: receipts, statements and the month view all reuse its pipeline, data model and latency budget.
 
 How we know it worked:
-- **Latency, server side.** Measured from webhook received to Meta's send API accepting the reply. Target p50 ≤ 1.0 s and p95 ≤ 2.0 s on logging messages, over the last 100 real messages, reported by `npm run latency`.
+- **Latency, server side.** Measured from webhook received to Meta's send API accepting the reply. Target p50 ≤ 1.0 s and p95 ≤ 2.0 s on logging messages, over the last 100 real messages, reported by `pnpm latency`.
 - **Typing indicator.** It goes out within 300 ms of the webhook arriving.
 - **Latency, end to end (coarse).** Inbound message `timestamp` to the `delivered` status timestamp. Both are whole seconds, so this is a rough check only; target p50 ≤ 3 s.
-- **Accuracy.** On the eval set (≥ 80 Argentine Spanish messages), at least 97% of messages come out fully correct (every amount, currency, date, count of movements and direction), and no amount is ever wrong silently. Run with `npm run eval`.
+- **Accuracy.** On the eval set (≥ 80 Argentine Spanish messages), at least 97% of messages come out fully correct (every amount, currency, date, count of movements and direction), and no amount is ever wrong silently. Run with `pnpm eval`.
 - **Reliability.** No message is lost or logged twice when Meta retries or the process restarts. An integration test proves it.
 
 ## Not doing (this spec)
@@ -129,18 +129,18 @@ Each slice ships on its own and comes with its proof.
      - real phrasings, multi-movement messages and tricky numbers ("3.500", "1,5M", "20 lucas");
      - relative dates, USD, income ("cobré el sueldo"), corrections and off-topic messages.
    - The eval runner prints accuracy per field and p50/p95 latency per candidate.
-   - Proof: `npm run eval` output for both candidates; the chosen model is recorded in the README with the numbers.
+   - Proof: `pnpm eval` output for both candidates; the chosen model is recorded in the README with the numbers.
 2. **Webhook and an echo with timing, on Railway.**
    - Signature check, `wamid` dedupe, inbound persisted before the 200, typing indicator, reply "recibido", stage timings.
    - This measures the latency floor of Meta plus hosting with no model in the path.
    - Proof:
      - `npm test` covers bad signature → 401, duplicate `wamid` → one row, and a crash after the 200 → the sweep replies once;
-     - a message from your phone, then `npm run latency` showing the floor.
+     - a message from your phone, then `pnpm latency` showing the floor.
 3. **Logging live.**
    - Parser command `log`, movements stored, reply rendered from the template; multiple movements per message.
    - Proof:
      - integration test: a recorded webhook payload against a local server and Postgres produces the expected rows and reply text;
-     - live, 20 real messages from your phone, then `npm run latency` meets the latency targets in Goal.
+     - live, 20 real messages from your phone, then `pnpm latency` meets the latency targets in Goal.
 4. **Corrections, delete and queries.**
    - `correct`, `delete` and `query`, with totals computed in SQL.
    - Proof: eval cases for each command pass, and an integration test checks that a correction keeps history through `superseded_by` and that the query total equals the SQL sum.
@@ -163,7 +163,8 @@ Each slice ships on its own and comes with its proof.
 | Haiku 5.5  | dev (106) | 106/106       | 0                    | 984 / 1,162 ms   | 7,770 tokens      | US$0.00016       |
 | Sonnet 5.5 | dev (106) | 106/106       | 0                    | 2,072 / 2,498 ms | 7,770 tokens      | US$0.0024        |
 
-- Eval set: 131 messages in `evals/cases.jsonl` (106 dev, 25 test), 8 of them ambiguous on purpose. The prompt needed no tuning on the dev split: the first dev run of the final prompt was already 100%.
+- Eval set: 131 messages in `evals/cases.jsonl` (106 dev, 25 test), 9 of them ambiguous on purpose. The prompt needed no tuning on the dev split: the first dev run of the final prompt was already 100%.
+- Stricter grader (a wrong correct/delete target or query field also fails a message; a merged high-confidence movement counts as silent): Haiku, all 131 messages, 131/131 fully correct, 0 silent, p50 / p95 1,034 / 1,263 ms, US$0.0212. The Sonnet rows above predate the stricter grader and were not rerun.
 - Prompt: about 8,170 tokens in total, of which 7,770 are the frozen cached prefix. `cache_read_input_tokens` was 7,770 on every request after the first, on both models. Both models' minimum cacheable prefix is 512 tokens.
 - Latency was measured from a Mac in Argentina, so it is indicative only. Real latency is measured on Railway in slice 2. Haiku's p95 of about 1.2 s is inside the 2.0 s budget for the whole request path, with room for the other steps. Sonnet's 2.5 s p95 is not.
 - Caveats: the eval messages were written by the same agent that wrote the prompt, so they are likely easier than real traffic, and 25 test messages is a small sample. Slice 3 should add real messages to the set and re-run it.
