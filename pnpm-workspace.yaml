@@ -8,3 +8,14 @@ blockExoticSubdeps: true
 strictDepBuilds: true
 allowBuilds:
   esbuild: true
+  # Spike: cbor-x's optional native accelerator (via @workflow/world-postgres). It falls back to JS; not run.
+  cbor-extract: false
+# Spike (docs/eve-spike.md): eve 1.3.0 is the version its docs describe and is under 3 days old.
+# Exact-pinned in package.json; remove this line when the spike is dropped or the release matures.
+minimumReleaseAgeExclude:
+  - eve
+# Spike: graphile-worker (via @workflow/world-postgres) pulls @types/node@22, whose undici-types@6.21.0 trips
+# trustPolicy. It is a types-only package; point it at the version the repo already uses instead of
+# widening trustPolicy.
+overrides:
+  undici-types: 7.24.6

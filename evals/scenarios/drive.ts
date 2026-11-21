@@ -118,11 +118,11 @@ export interface Env {
   model: ModelKey
 }
 
-const epoch = (now: string) => Date.parse(`${now}:00-03:00`)
+export const epoch = (now: string) => Date.parse(`${now}:00-03:00`)
 /** One fake sender per scenario, so scenarios can run side by side in one database. */
 export const waIdOf = (id: string) => `54911${id.slice(1).padStart(8, '0')}`
 
-async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
+export async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
   return sql<Row[]>`
     SELECT m.id::int AS id, m.amount::text AS amount, to_char(m.occurred_on, 'YYYY-MM-DD') AS date,
       m.description, m.category, m.payment, m.direction, m.currency,
@@ -132,7 +132,11 @@ async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
 }
 
 /** Puts the starting ledger in as if earlier messages had logged it, at the times the scenario gives. */
-async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<string, number>> {
+export async function seedLedger(
+  sql: Sql,
+  s: Scenario,
+  waId: string,
+): Promise<Map<string, number>> {
   const refs = new Map<string, number>()
   if (s.seed.length === 0) return refs
   const [account] = await sql<{ id: number }[]>`

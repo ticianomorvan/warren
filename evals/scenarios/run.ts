@@ -7,7 +7,7 @@ import { MODELS, type ModelKey } from '../../src/agent'
 import { keepAliveFetch } from '../../src/http'
 import { createTestDatabase } from '../../src/test-harness'
 import { Meter, runScenario, type ScenarioResult } from './drive'
-import { failureLines, renderSummary, summarize } from './report'
+import { failureLines, latencyByTag, renderSummary, summarize } from './report'
 import { loadScenarios } from './schema'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -119,6 +119,8 @@ writeFileSync(
       startedAt,
       model: MODELS[model].id,
       summary: all,
+      // Computed before the held-out turns are stripped: latency only, no texts.
+      latencyByTag: latencyByTag(results),
       results: results.map((r) => (r.split === 'dev' ? r : { ...r, turns: [] })),
     },
     null,

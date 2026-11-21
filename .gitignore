@@ -14,3 +14,9 @@ evals/results/*
 !evals/results/summary.md
 evals/scenarios/results/*
 !evals/scenarios/results/baseline.md
+
+# eve (spike): build output and local state
+.eve
+.output
+
+evals/eve/results/*

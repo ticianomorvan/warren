@@ -103,6 +103,8 @@ export type ReplyExpect = z.infer<typeof ReplySchema>
 export const TurnSchema = z.strictObject({
   now: Now,
   text: z.string().min(1),
+  /** A file in `evals/scenarios/fixtures` sent as a photo, with `text` as its caption. Only the eve driver sends it; the loop's driver sends the text alone. */
+  image: z.string().optional(),
   ops: z.array(OpSchema).default([]),
   /** True: the reply must be a question (starts with ¿). With `ops` on the turn it must not be one. */
   ask: z.boolean().default(false),
