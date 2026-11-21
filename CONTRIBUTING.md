@@ -9,14 +9,14 @@ Thank you for helping. Warren is maintained by one person, so please read this f
 
 ## The rules
 
-A change must keep the four rules and the no-vendor rule in [`AGENTS.md`](AGENTS.md). Vendor
-SDKs are imported only inside adapters; `pnpm lint` enforces it.
+A change must keep the four rules in [`AGENTS.md`](AGENTS.md): code does the arithmetic, the
+model only parses, corrections keep history, secrets stay in `.env`.
 
-## Mail samples
+## Eval
 
-Never commit real mail. A fixture must be redacted or synthetic: replace names, account
-numbers (CBU/CVU), tax IDs, amounts and addresses. `.gitignore` blocks `*.eml` outside the
-synthetic fixtures folder.
+`pnpm eval` calls the Anthropic API and costs money, so CI does not run it. If you change the
+prompt, say what you ran and paste the dev-split numbers in the pull request. The test split is
+held out: do not tune against its failures.
 
 ## Sign-off (DCO)
 
