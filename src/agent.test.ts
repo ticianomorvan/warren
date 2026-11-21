@@ -397,6 +397,40 @@ describe('guards at the commit point', () => {
     expect(await live()).toEqual(['ajeno 77']) // only the other sender's row is left alive
   })
 
+  it("ask_user offers only the sender's live movements, whatever ids it was given", async () => {
+    const [mine, gone] = await seed([
+      { on: TODAY, amount: '1000', description: 'mío' },
+      { on: TODAY, amount: '2000', description: 'borrado' },
+    ])
+    const [account] = await sql`SELECT id FROM account`
+    const [inbound] = await sql`SELECT id FROM inbound_message`
+    const [other] = await sql`INSERT INTO account (wa_id) VALUES ('5491100000099') RETURNING id`
+    const [theirs] =
+      await sql`INSERT INTO movement (account_id, inbound_message_id, position, direction, amount, currency, occurred_on, description, category, confidence)
+      VALUES (${other?.id}, ${inbound?.id}, 5, 'out', 77, 'ARS', ${TODAY}, 'ajeno', 'otros', 'high') RETURNING id::int AS id`
+    await sql`UPDATE movement SET deleted_at = now(), deleted_by = ${inbound?.id} WHERE id = ${gone ?? 0}`
+    const done = await sql.begin((tx) =>
+      execute(tx as unknown as Sql, {
+        accountId: Number(account?.id),
+        inboundId: Number(inbound?.id),
+        actions: [
+          {
+            tool: 'ask_user',
+            input: {
+              question: 'Cuál',
+              movement_ids: [theirs?.id ?? 0, gone ?? 0, mine ?? 0],
+              after_answer: 'delete',
+            },
+          },
+        ],
+        audit: [],
+        today: TODAY,
+      }),
+    )
+    expect(done.reply).toBe('¿Cuál? Mío $1.000')
+    expect(done.asked).toEqual([{ number: 1, id: mine }])
+  })
+
   it('a correction with a value the table cannot hold never reaches the commit: three refusals end in the failure notice', async () => {
     await day()
     const app = await setup({ model: fakeModel(() => [correct(2, { amount: '3.800' })]) })
