@@ -1,0 +1,147 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { z } from 'zod'
+import { CATEGORIES } from '../../src/parse/schema'
+
+/**
+ * A scenario is a conversation: a seeded ledger, then user turns, each with the Argentine "now" it
+ * is sent at and what must be true afterwards. Expectations describe the INTENDED behaviour
+ * (docs/agent-spec.md, Goal), not what the current pipeline does.
+ *
+ * Ledger expectations are a delta over a closed world: a turn lists the changes it must make
+ * (`ops`), and every other live movement must be untouched. No `ops` means "no change at all".
+ */
+
+export const TAGS = [
+  'logging',
+  'correction',
+  'deletion',
+  'answer',
+  'query',
+  'multi-action',
+  'older-item',
+  'typo',
+  'time-reference',
+  'other',
+] as const
+export type Tag = (typeof TAGS)[number]
+
+const Category = z.enum(CATEGORIES)
+const Direction = z.enum(['in', 'out'])
+const Currency = z.enum(['ARS', 'USD'])
+const Amount = z.string().regex(/^\d+(\.\d{1,2})?$/, 'a decimal string')
+const Day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'yyyy-mm-dd')
+const Clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'HH:MM')
+/** The Argentine wall clock of a turn: `2026-11-21T12:00`. */
+const Now = z.string().regex(/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/, 'yyyy-mm-ddTHH:MM')
+
+/** A movement already in the ledger when the scenario starts. List them in the order they were logged (oldest first). */
+export const SeedSchema = z.strictObject({
+  ref: z.string().min(1),
+  description: z.string().min(1),
+  amount: Amount,
+  /** The day the movement is dated. */
+  on: Day,
+  /** Argentine time it was logged, shown to the model. */
+  at: Clock,
+  /** The day it was logged, when not the day it is dated. */
+  loggedOn: Day.optional(),
+  category: Category,
+  payment: z.string().nullable().default(null),
+  direction: Direction.default('out'),
+  currency: Currency.default('ARS'),
+})
+export type Seed = z.infer<typeof SeedSchema>
+
+/** What a new movement must look like. Unset fields are not checked, except `date` (the turn's day) and `direction`/`currency`/`payment` (out, ARS, null). */
+const NewMovement = z.strictObject({
+  /** Names the movement for later turns. */
+  ref: z.string().optional(),
+  amount: Amount,
+  /** Loose match: either text contains the other, accents and case ignored. */
+  description: z.string().min(1),
+  date: Day.optional(),
+  direction: Direction.default('out'),
+  currency: Currency.default('ARS'),
+  category: Category.optional(),
+  payment: z.string().nullable().default(null),
+})
+export type NewMovementExpect = z.infer<typeof NewMovement>
+
+const SetFields = z.strictObject({
+  amount: Amount.optional(),
+  date: Day.optional(),
+  description: z.string().optional(),
+  category: Category.optional(),
+  payment: z.string().nullable().optional(),
+  currency: Currency.optional(),
+  direction: Direction.optional(),
+})
+export type SetExpect = z.infer<typeof SetFields>
+
+export const OpSchema = z.discriminatedUnion('op', [
+  z.strictObject({ op: z.literal('log'), movements: z.array(NewMovement).min(1) }),
+  /** `ref` is the movement that must be superseded; its replacement keeps the ref. */
+  z.strictObject({ op: z.literal('correct'), ref: z.string(), set: SetFields }),
+  z.strictObject({ op: z.literal('delete'), ref: z.string() }),
+])
+export type Op = z.infer<typeof OpSchema>
+
+export const ReplySchema = z.strictObject({
+  /** Every one must appear (accents and case ignored). */
+  has: z.array(z.string()).default([]),
+  /** At least one must appear. */
+  any: z.array(z.string()).default([]),
+  /** None may appear. */
+  not: z.array(z.string()).default([]),
+  /** A regular expression (flag i) the reply must match. */
+  re: z.string().optional(),
+})
+export type ReplyExpect = z.infer<typeof ReplySchema>
+
+export const TurnSchema = z.strictObject({
+  now: Now,
+  text: z.string().min(1),
+  ops: z.array(OpSchema).default([]),
+  /** True: the reply must be a question (starts with ¿). With `ops` on the turn it must not be one. */
+  ask: z.boolean().default(false),
+  reply: ReplySchema.default({ has: [], any: [], not: [] }),
+})
+export type Turn = z.infer<typeof TurnSchema>
+
+export const ScenarioSchema = z.strictObject({
+  id: z.string().regex(/^s\d{3}$/),
+  split: z.enum(['dev', 'test']),
+  tags: z.array(z.enum(TAGS)).min(1),
+  /** Where it came from: a real transcript, the spec's Goal, or written for coverage. */
+  source: z.enum(['transcript', 'spec', 'synthetic']),
+  /** One line: what it checks. */
+  note: z.string().min(1),
+  seed: z.array(SeedSchema).default([]),
+  turns: z.array(TurnSchema).min(1),
+})
+export type Scenario = z.infer<typeof ScenarioSchema>
+
+const here = dirname(fileURLToPath(import.meta.url))
+export const SCENARIOS_FILE = join(here, 'scenarios.jsonl')
+
+/** Parses and validates the file; a bad line names its number. */
+export function parseScenarios(raw: string): Scenario[] {
+  return raw
+    .split('\n')
+    .map((line, i) => ({ line, n: i + 1 }))
+    .filter(({ line }) => line.trim() !== '')
+    .map(({ line, n }) => {
+      try {
+        return ScenarioSchema.parse(JSON.parse(line))
+      } catch (error) {
+        throw new Error(
+          `scenarios.jsonl line ${n}: ${error instanceof Error ? error.message : error}`,
+        )
+      }
+    })
+}
+
+export const loadScenarios = (file = SCENARIOS_FILE): Scenario[] =>
+  parseScenarios(readFileSync(file, 'utf8'))

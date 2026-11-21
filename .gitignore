@@ -12,3 +12,5 @@ coverage
 # eval runs: only the committed summary stays in the repository
 evals/results/*
 !evals/results/summary.md
+evals/scenarios/results/*
+!evals/scenarios/results/baseline.md

@@ -18,28 +18,41 @@ export const VERIFY = 'verify-token-123'
 /** The test database, set by `useDatabase`: in-process PGlite behind a socket, or a real Postgres (`real`). Migrated. */
 export let sql: Sql
 
-export function useDatabase(real?: { url: string; max: number }) {
+/** A migrated database and how to shut it down. Needs no test runner, so the scenario eval can use it. */
+export async function createTestDatabase(real?: { url: string; max: number }) {
   let pg: PGlite | undefined
   let socket: PGLiteSocketServer | undefined
+  let url = real?.url
+  if (!url) {
+    pg = await PGlite.create()
+    socket = new PGLiteSocketServer({ db: pg, port: 0, host: '127.0.0.1', maxConnections: 10 })
+    await socket.start()
+    const port = (socket as unknown as { server: { address(): AddressInfo } }).server.address().port
+    url = `postgres://postgres:postgres@127.0.0.1:${port}/postgres`
+  }
+  const db = connect(url, { max: real?.max ?? 1 })
+  await migrate(db)
+  await migrate(db) // idempotent
+  return {
+    sql: db,
+    close: async () => {
+      await db.end({ timeout: 1 })
+      await socket?.stop()
+      await pg?.close()
+    },
+  }
+}
+
+export function useDatabase(real?: { url: string; max: number }) {
+  let close: (() => Promise<void>) | undefined
   beforeAll(async () => {
-    let url = real?.url
-    if (!url) {
-      pg = await PGlite.create()
-      socket = new PGLiteSocketServer({ db: pg, port: 0, host: '127.0.0.1', maxConnections: 10 })
-      await socket.start()
-      const port = (socket as unknown as { server: { address(): AddressInfo } }).server.address()
-        .port
-      url = `postgres://postgres:postgres@127.0.0.1:${port}/postgres`
-    }
-    sql = connect(url, { max: real?.max ?? 1 })
-    await migrate(sql)
-    await migrate(sql) // idempotent
+    const db = await createTestDatabase(real)
+    sql = db.sql
+    close = db.close
   })
 
   afterAll(async () => {
-    await sql.end({ timeout: 1 })
-    await socket?.stop()
-    await pg?.close()
+    await close?.()
   })
 
   beforeEach(async () => {
@@ -120,11 +133,13 @@ export async function setup(
     helpContact?: string
     /** The store the processor sees; the app keeps the real one. */
     processorStore?: (store: Store) => Store
+    /** A database other than the one `useDatabase` set (the scenario eval owns its own). */
+    sql?: Sql
   } = {},
 ) {
   const fake = opts.fake ?? fakeGraph()
   const model = opts.model ?? fakeModel()
-  const store = createStore(sql, { staleMs: opts.staleMs ?? 0, maxAttempts: 3 })
+  const store = createStore(opts.sql ?? sql, { staleMs: opts.staleMs ?? 0, maxAttempts: 3 })
   const makeProcessor = (s: Store, client: Anthropic = model.client) =>
     createProcessor({
       store: s,

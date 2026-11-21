@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "eval": "tsx evals/run.ts",
+    "eval:scenarios": "tsx evals/scenarios/run.ts",
     "start": "tsx src/server.ts",
     "latency": "tsx src/latency.ts"
   },
