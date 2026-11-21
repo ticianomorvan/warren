@@ -183,10 +183,15 @@ export function createProcessor(o: ProcessorOptions) {
       },
       Math.max(0, interimMs - age),
     )
-    /** No new interim note after this, and one on its way finishes before the reply. */
+    /**
+     * No new interim note after this, and one on its way (with its typing call) finishes before the
+     * reply: a typing call landing after the reply would show "typing…" for up to 25 s. Only slow
+     * messages have one, so the wait (~0.4 s) costs nothing that matters.
+     */
     const closeInterim = async () => {
       clearTimeout(interimTimer)
       await interim
+      await interimAgain
     }
 
     const typing = c.typingSent ? Promise.resolve(undefined) : showTyping(c)
@@ -251,7 +256,7 @@ export function createProcessor(o: ProcessorOptions) {
       if (await deliver(c, reply, { typing_ms: await typing, model_ms })) await react(c)
     } finally {
       await closeInterim()
-      await Promise.all([typing, interimAgain])
+      await typing
     }
   }
 
