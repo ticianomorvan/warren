@@ -100,7 +100,7 @@ model at the end. CI never calls the Anthropic API.
   movements (unique on `(inbound_message_id, position)`) and the stored `reply_text`. Before it, a failed
   parse or the deadline ends the message `failed` with one failure notice (`failure_sent_at`, committed
   before the send) and a late model result writes nothing. After it, the stored reply is sent even if late,
-  and the sweep sends it without calling the model. The interim note (`interim_sent_at`) and the ✅ mark
-  (`reaction_sent_at`) are committed before they are sent and never repeated. A model output with an
+  and the sweep sends it without calling the model. The interim note (`interim_sent_at`) and the ✅ mark (only on
+  messages that stored movements, `reaction_sent_at`) are committed before they are sent and never repeated. A model output with an
   unstorable value (bad amount, date or description) is treated as a failed parse, never repaired.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.

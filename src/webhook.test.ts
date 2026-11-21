@@ -913,6 +913,8 @@ describe('logging', () => {
       new Set(['Todavía no puedo corregir, borrar ni responder consultas. Llega pronto.']),
     )
     expect(await movements()).toHaveLength(0)
+    await app.processor.drain(1_000)
+    expect(app.calls.reactions).toHaveLength(0)
     app.close()
   })
 
@@ -940,6 +942,8 @@ describe('logging', () => {
     await post(off.base, messageBody('wamid.O1'))
     await until(() => off.calls.sent.length === 1)
     expect(bodies(off.calls)).toEqual(['Solo puedo ayudarte con tus gastos e ingresos.'])
+    await off.processor.drain(1_000)
+    expect(off.calls.reactions).toHaveLength(0)
     off.close()
   })
 

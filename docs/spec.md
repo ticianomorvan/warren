@@ -199,6 +199,6 @@ Decisions the slice brief did not specify:
 - The commit point is `inbound_message.reply_text IS NOT NULL`. The sweep reads it to send a stored reply without the model.
 - Model output with an invalid amount, date or description is "invalid output": it fails the message, since storing a guess would be a silently wrong amount. Only "more than 10 movements" is stored, as low confidence.
 - The interim note and the failure notice are not stored as `reply` rows (only the failure notice, so its status is kept); this keeps one `reply` row per answered message for `pnpm latency`.
-- The ✅ mark follows every committed reply, including the canned `correct`/`delete`/`query` one, and is not sent for non-text messages.
+- The ✅ mark goes only on messages that stored movements. Canned replies (`correct`/`delete`/`query` "not yet", `help`, `off_topic`) and non-text messages get none, since nothing was done.
 - A failure notice that dies between its timestamp and its send is lost, not retried: at most once beats a duplicate.
 - `ANTHROPIC_API_KEY` is now required config, so a missing key stops the server at startup instead of failing every message.

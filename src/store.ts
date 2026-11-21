@@ -216,6 +216,8 @@ export function createStore(sql: Sql, o: StoreOptions) {
         UPDATE inbound_message SET reaction_sent_at = now(), updated_at = now()
         WHERE id = ${c.id} AND attempts = ${c.attempts} AND status = 'done'
           AND reaction_sent_at IS NULL
+          -- Only a message that stored movements gets the done mark; a canned reply did nothing.
+          AND EXISTS (SELECT 1 FROM movement WHERE movement.inbound_message_id = ${c.id})
         RETURNING id`
       return rows.length > 0
     },
