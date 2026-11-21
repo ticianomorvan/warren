@@ -27,7 +27,8 @@ src/parse/    parseMessage: schema.ts (command), prompt.ts (frozen system prompt
 src/time.ts   The Argentine calendar day
 src/server.ts Entry point: config, migrate, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
-src/process.ts  Claim a row atomically, send read+typing, reply, record timings; the recovery sweep
+src/store.ts  The rules of inbound_message and reply: due predicate, claim, ownership-guarded writes
+src/process.ts  Decide ignored vs reply, read+typing, send at most once, drain on shutdown; the sweep
 src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts (Graph API client)
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
@@ -68,8 +69,9 @@ model at the end. CI never calls the Anthropic API.
 
 - Railway project `warren` (US East, Virginia: `us-east4-eqdc4a`, pinned in `railway.json`), services
   `warren` (the app) and `Postgres`. Deploy by hand with `railway up -s warren` from the repo; there is no
-  GitHub integration yet. `railway.json` is the legacy config format, supported until 2026-12-01; migrate to
-  `.railway/railway.ts` (`railway config migrate`) before then.
+  GitHub integration yet. `railway.json` is the legacy config format, supported until 2026-12-01. Moving to
+  `.railway/railway.ts` (`railway config migrate --apply --variables unmanaged`, then `cutover`, `plan`,
+  `apply`) needs the npm package `railway` as a devDependency; that is not done yet.
 - **Single replica, single process.** The recovery sweep and the in-process worker assume it. The atomic
   claim stops a double send, but do not scale out without revisiting the sweep.
 - The app reaches Postgres on the private network (`DATABASE_URL=${{Postgres.DATABASE_URL}}`). For
@@ -77,5 +79,8 @@ model at the end. CI never calls the Anthropic API.
   variables (a TCP proxy is enabled on that service). Never print it.
 - Webhook host `wa.heywarren.app` (CNAME and TXT in Vercel DNS). The Meta subscription is set by API
   (`/{app-id}/subscriptions`, `/{waba-id}/subscribed_apps`), not in the dashboard.
-- `ALLOWED_WA_IDS` (comma-separated) limits who gets a reply; empty means everyone (dev mode). Other senders
-  are stored with status `ignored`.
+- `ALLOWED_WA_IDS` (comma-separated, `+` and spaces ignored) is who gets a reply. `*` answers everyone (dev
+  mode); empty or unset answers nobody. Every message is stored; the others end as `ignored`.
+- Sends are at most once. `send_started_at` is committed before the Graph call; a row that dies after that
+  (timeout, 5xx, killed worker) ends as `unknown` and is never sent again. Only an HTTP 4xx answer, which
+  proves nothing was sent, goes back to `pending` (retryable codes) or `failed` (permanent codes).

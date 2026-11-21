@@ -1,116 +1,148 @@
-import type { Sql } from './db'
 import { log } from './log'
+import type { Claim, Store } from './store'
 import { type Graph, GraphError } from './whatsapp/graph'
 
 export const REPLY_TEXT = 'recibido'
 export const REPLY_NON_TEXT = 'por ahora solo entiendo texto'
 
 export interface ProcessorOptions {
-  sql: Sql
+  store: Store
   graph: Graph
-  /** Rows that are `pending` or `processing` for longer than this are taken again by the sweep. */
-  staleMs: number
+  /** Normalized ids that get a reply; `*` means everyone. Empty answers nobody. */
+  allowed: string[]
   maxAttempts: number
 }
 
-interface Claimed {
-  wamid: string
-  wa_id: string
-  kind: string
-  attempts: number
-  received_at: Date
-  reply_sent_at: Date | null
-}
+export const isAllowed = (allowed: string[], waId: string) =>
+  allowed.includes('*') || allowed.includes(waId)
 
+/**
+ * Sends at most one reply per message. `send_started_at` is committed before the Graph call; a
+ * row that dies after that is `unknown` and is never sent again. Only an HTTP 4xx answer, which
+ * proves nothing was sent, returns a row to `pending`.
+ *
+ * A worker's time is bounded by two 10 s Graph timeouts plus the database, far under the store's
+ * stale threshold, and every write after the claim is guarded, so a takeover cannot be undone.
+ */
 export function createProcessor(o: ProcessorOptions) {
-  const { sql, graph } = o
-  const staleSecs = o.staleMs / 1000
+  const { store, graph } = o
+  const inflight = new Set<Promise<unknown>>()
+  let sweeping = false
 
-  /** Takes a row atomically, so two workers (or a worker and the sweep) never both send. */
-  async function claim(wamid: string): Promise<Claimed | undefined> {
-    const [row] = await sql<Claimed[]>`
-      UPDATE inbound_message
-      SET status = 'processing', attempts = attempts + 1, claimed_at = now(), updated_at = now()
-      WHERE wamid = ${wamid}
-        AND attempts < ${o.maxAttempts}
-        AND (status = 'pending'
-          OR (status = 'processing' AND claimed_at < now() - make_interval(secs => ${staleSecs})))
-      RETURNING wamid, wa_id, kind, attempts, received_at, reply_sent_at`
-    return row
+  async function work(c: Claim): Promise<void> {
+    if (!isAllowed(o.allowed, c.wa_id)) {
+      await store.settle(c, 'ignored', 'sender not allowed')
+      log('message_ignored', { wamid: c.wamid })
+      return
+    }
+
+    const timings: Record<string, number> = {}
+    try {
+      await graph.markReadAndType(c.wamid)
+      const ms = await store.recordTyping(c)
+      if (ms !== null) timings.typing_ms = Math.round(ms)
+    } catch (err) {
+      // The indicator is cosmetic: still answer.
+      log('typing_failed', { wamid: c.wamid, error: errorText(err) })
+    }
+
+    if (!(await store.recordSendStarted(c))) {
+      log('claim_lost', { wamid: c.wamid, attempt: c.attempts })
+      return
+    }
+
+    let outbound: string
+    try {
+      outbound = await graph.sendText(c.wa_id, c.kind === 'text' ? REPLY_TEXT : REPLY_NON_TEXT)
+    } catch (err) {
+      const error = errorText(err)
+      if (err instanceof GraphError && err.notSent) {
+        const retry = err.retryable && c.attempts < o.maxAttempts
+        await store.settle(c, retry ? 'pending' : 'failed', error)
+        log(
+          'message_error',
+          { wamid: c.wamid, attempt: c.attempts, code: err.code, retry, error, ...timings },
+          err.alert || !retry ? 'error' : 'info',
+        )
+      } else {
+        // A timeout, a network error or a 5xx: Meta may have accepted it. Do not send again.
+        await store.settle(c, 'unknown', error)
+        log('message_unknown', { wamid: c.wamid, attempt: c.attempts, error, ...timings }, 'error')
+      }
+      return
+    }
+
+    // The reply is out. If this write fails the row goes `unknown` by staleness, never resent.
+    const replyMs = await store.recordReplySent(c, outbound)
+    log('message_done', {
+      wamid: c.wamid,
+      attempt: c.attempts,
+      outbound,
+      ...timings,
+      ...(replyMs === null ? { late: true } : { reply_ms: Math.round(replyMs) }),
+    })
   }
 
-  async function processOne(wamid: string): Promise<void> {
-    const m = await claim(wamid)
-    if (!m) return
-    const started = Date.now()
-    const timings: Record<string, number> = {}
-    const since = () => Date.now() - m.received_at.getTime()
+  async function run(c: Claim): Promise<void> {
     try {
-      if (m.reply_sent_at) {
-        // A crash after the send but before `done`: the reply is out, do not send another.
-        await sql`UPDATE inbound_message SET status = 'done', updated_at = now() WHERE wamid = ${m.wamid}`
-        log('message_recovered', { wamid: m.wamid })
-        return
-      }
-
-      try {
-        await graph.markReadAndType(m.wamid)
-        await sql`UPDATE inbound_message SET typing_sent_at = now() WHERE wamid = ${m.wamid}`
-        timings.typing_ms = since()
-      } catch (err) {
-        // The indicator is cosmetic: still answer.
-        log('typing_failed', { wamid: m.wamid, error: errorText(err) })
-      }
-
-      const text = m.kind === 'text' ? REPLY_TEXT : REPLY_NON_TEXT
-      const outbound = await graph.sendText(m.wa_id, text)
-      timings.reply_ms = since()
-      await sql.begin(async (tx) => {
-        await tx`
-          INSERT INTO reply (outbound_wamid, inbound_wamid, sent_at)
-          VALUES (${outbound}, ${m.wamid}, now())
-          ON CONFLICT (outbound_wamid) DO UPDATE
-            SET inbound_wamid = EXCLUDED.inbound_wamid, sent_at = EXCLUDED.sent_at`
-        await tx`
-          UPDATE inbound_message
-          SET status = 'done', reply_sent_at = now(), error = NULL, updated_at = now()
-          WHERE wamid = ${m.wamid}`
-      })
-      log('message_done', {
-        wamid: m.wamid,
-        attempt: m.attempts,
-        ...timings,
-        total_ms: Date.now() - started,
-      })
+      await work(c)
     } catch (err) {
-      const permanent = err instanceof GraphError && err.permanent
-      const status = permanent || m.attempts >= o.maxAttempts ? 'failed' : 'pending'
-      await sql`
-        UPDATE inbound_message SET status = ${status}, error = ${errorText(err)}, updated_at = now()
-        WHERE wamid = ${m.wamid}`
-      log('message_error', {
-        wamid: m.wamid,
-        attempt: m.attempts,
-        status,
-        error: errorText(err),
-        ...timings,
-      })
+      log('process_crash', { wamid: c.wamid, error: errorText(err) }, 'error')
     }
   }
 
-  async function sweep(): Promise<number> {
-    const rows = await sql<{ wamid: string }[]>`
-      SELECT wamid FROM inbound_message
-      WHERE attempts < ${o.maxAttempts}
-        AND ((status = 'pending' AND updated_at < now() - make_interval(secs => ${staleSecs}))
-          OR (status = 'processing' AND claimed_at < now() - make_interval(secs => ${staleSecs})))
-      ORDER BY id LIMIT 50`
-    for (const r of rows) await processOne(r.wamid)
-    if (rows.length) log('sweep', { retried: rows.length })
-    return rows.length
+  function track<T>(p: Promise<T>): Promise<T> {
+    inflight.add(p)
+    p.then(
+      () => inflight.delete(p),
+      () => inflight.delete(p),
+    )
+    return p
   }
 
-  return { processOne, sweep }
+  /** Claims and processes these messages now, if they are due. Never throws. */
+  function kick(wamids: string[]): Promise<void> {
+    if (wamids.length === 0) return Promise.resolve()
+    return track(
+      (async () => {
+        const claims = await store.claimDue({ limit: wamids.length, wamids })
+        await Promise.all(claims.map(run))
+      })().catch((err) => log('kick_error', { error: errorText(err) }, 'error')),
+    )
+  }
+
+  /** The recovery pass. Skipped when the previous one is still running. */
+  async function sweep(): Promise<number> {
+    if (sweeping) return 0
+    sweeping = true
+    const done = track(
+      (async () => {
+        const claims = await store.claimDue({ limit: 50 })
+        for (const c of claims) await run(c)
+        if (claims.length) log('sweep', { claimed: claims.length })
+        return claims.length
+      })(),
+    )
+    try {
+      return await done
+    } finally {
+      sweeping = false
+    }
+  }
+
+  /** Waits for work in flight, at most `ms`. For shutdown. */
+  async function drain(ms: number): Promise<void> {
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      Promise.allSettled([...inflight]),
+      new Promise((r) => {
+        timer = setTimeout(r, ms)
+      }),
+    ])
+    clearTimeout(timer)
+  }
+
+  return { kick, sweep, drain }
 }
 
 export type Processor = ReturnType<typeof createProcessor>

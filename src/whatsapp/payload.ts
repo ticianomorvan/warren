@@ -12,6 +12,9 @@ const status = z.object({
   id: z.string(),
   status: z.string(),
   timestamp: z.coerce.number().optional(),
+  errors: z
+    .array(z.object({ code: z.number().optional(), title: z.string().optional() }))
+    .optional(),
 })
 
 const payload = z.object({

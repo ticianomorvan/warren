@@ -19,7 +19,7 @@ const rows = await sql<{ typing: number | null; reply: number | null; delivered:
     extract(epoch FROM m.reply_sent_at - m.received_at) * 1000 AS reply,
     extract(epoch FROM r.delivered_at - m.meta_ts) * 1000 AS delivered
   FROM (SELECT * FROM inbound_message WHERE kind = 'text' ORDER BY id DESC LIMIT ${last}) m
-  LEFT JOIN reply r ON r.inbound_wamid = m.wamid`
+  LEFT JOIN reply r ON r.inbound_id = m.id`
 await sql.end()
 
 function pct(values: (number | null)[], p: number): string {
@@ -42,4 +42,4 @@ const metric = (name: string, key: 'typing' | 'reply' | 'delivered') => {
 console.log(`Last ${rows.length} inbound text messages`)
 metric('received -> typing sent', 'typing')
 metric('received -> reply sent', 'reply')
-metric('meta ts -> delivered (seconds)', 'delivered')
+metric('meta ts -> delivered (1 s steps)', 'delivered')

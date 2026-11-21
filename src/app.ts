@@ -1,39 +1,32 @@
-import { timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Config } from './config'
-import type { Sql } from './db'
 import { log } from './log'
 import type { Processor } from './process'
+import type { Store } from './store'
 import { parseWebhook } from './whatsapp/payload'
-import { validSignature } from './whatsapp/signature'
+import { safeEqual, validSignature } from './whatsapp/signature'
 
 const MAX_BODY = 1_000_000
 
 export interface AppOptions {
-  sql: Sql
-  config: Pick<Config, 'WHATSAPP_VERIFY_TOKEN' | 'META_APP_SECRET' | 'ALLOWED_WA_IDS'>
+  store: Store
+  config: Pick<Config, 'WHATSAPP_VERIFY_TOKEN' | 'META_APP_SECRET'>
   processor: Processor
 }
 
-function safeEqual(a: string, b: string): boolean {
-  const x = Buffer.from(a)
-  const y = Buffer.from(b)
-  return x.length === y.length && timingSafeEqual(x, y)
-}
-
+/** The raw body, or null when it is over the limit. An oversized body is still read to the end. */
 async function readBody(req: IncomingMessage): Promise<Buffer | null> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > MAX_BODY) return null
-    chunks.push(chunk)
+    if (size <= MAX_BODY) chunks.push(chunk)
   }
-  return Buffer.concat(chunks)
+  return size > MAX_BODY ? null : Buffer.concat(chunks)
 }
 
-function send(res: ServerResponse, status: number, body = '', type = 'text/plain'): void {
-  res.writeHead(status, { 'content-type': type })
+function send(res: ServerResponse, status: number, body = ''): void {
+  res.writeHead(status, { 'content-type': 'text/plain' })
   res.end(body)
 }
 
@@ -41,9 +34,9 @@ const seconds = (n: number | undefined) => (n === undefined ? null : new Date(n 
 
 /** Plain node:http: three routes do not need a framework. */
 export function createApp(o: AppOptions): Server {
-  const { sql, config, processor } = o
+  const { store, config, processor } = o
 
-  async function verify(url: URL, res: ServerResponse) {
+  function verify(url: URL, res: ServerResponse) {
     const mode = url.searchParams.get('hub.mode')
     const token = url.searchParams.get('hub.verify_token') ?? ''
     const challenge = url.searchParams.get('hub.challenge') ?? ''
@@ -54,7 +47,6 @@ export function createApp(o: AppOptions): Server {
   }
 
   async function receive(req: IncomingMessage, res: ServerResponse) {
-    const receivedAt = new Date()
     const raw = await readBody(req)
     if (!raw) return send(res, 413)
     const sig = req.headers['x-hub-signature-256']
@@ -69,60 +61,60 @@ export function createApp(o: AppOptions): Server {
       return send(res, 400)
     }
     const { messages, statuses } = parseWebhook(body)
-    const allowed = config.ALLOWED_WA_IDS
-    const fresh: string[] = []
+    const wamids = messages.map((m) => m.id)
 
-    // Persist before answering: after the 200 Meta will not send this again.
-    for (const m of messages) {
-      const permitted = allowed.length === 0 || allowed.includes(m.from)
-      const [row] = await sql<{ wamid: string }[]>`
-        INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status, meta_ts, received_at)
-        VALUES (${m.id}, ${m.from}, ${m.type}, ${m.text?.body ?? null}, ${sql.json(m.raw as never)},
-                ${permitted ? 'pending' : 'ignored'}, ${seconds(m.timestamp)}, ${receivedAt})
-        ON CONFLICT (wamid) DO NOTHING
-        RETURNING wamid`
-      if (!row) continue
-      log('message_received', { wamid: m.id, kind: m.type, permitted })
-      if (permitted) fresh.push(m.id)
-    }
-    for (const s of statuses) {
-      const at = seconds(s.timestamp) ?? new Date()
-      await sql`
-        INSERT INTO reply (outbound_wamid, delivered_at, read_at, failed_at)
-        VALUES (${s.id},
-                ${s.status === 'delivered' ? at : null},
-                ${s.status === 'read' ? at : null},
-                ${s.status === 'failed' ? at : null})
-        ON CONFLICT (outbound_wamid) DO UPDATE SET
-          delivered_at = LEAST(reply.delivered_at, EXCLUDED.delivered_at),
-          read_at = COALESCE(reply.read_at, EXCLUDED.read_at),
-          failed_at = COALESCE(reply.failed_at, EXCLUDED.failed_at)`
-      // A read implies it was delivered; Meta may skip the delivered event.
-      if (s.status === 'read') {
-        await sql`UPDATE reply SET delivered_at = COALESCE(delivered_at, ${at}) WHERE outbound_wamid = ${s.id}`
+    // Persist before answering: after the 200 Meta will not send this again. Every message goes in
+    // as `pending`; the processor decides whether it is answered. If the batch fails halfway, the
+    // rows already stored are still processed now, and Meta's retry brings the rest.
+    try {
+      for (const m of messages) {
+        const inserted = await store.recordInbound({
+          wamid: m.id,
+          wa_id: m.from,
+          kind: m.type,
+          body: m.text?.body ?? null,
+          raw: m.raw,
+          metaTs: seconds(m.timestamp),
+        })
+        if (inserted) log('message_received', { wamid: m.id, kind: m.type })
       }
+      for (const s of statuses) {
+        await store.recordStatus({
+          wamid: s.id,
+          status: s.status,
+          at: seconds(s.timestamp) ?? new Date(),
+        })
+        if (s.status === 'failed') {
+          const e = s.errors?.[0]
+          log('status_failed', { outbound: s.id, code: e?.code, title: e?.title }, 'error')
+        }
+      }
+    } catch (err) {
+      void processor.kick(wamids)
+      throw err
     }
 
     send(res, 200)
-    for (const wamid of fresh) {
-      processor
-        .processOne(wamid)
-        .catch((err) => log('process_crash', { wamid, error: String(err) }))
+    // A retried batch has rows that are already stored but still pending: claim them too.
+    void processor.kick(wamids)
+  }
+
+  async function handle(req: IncomingMessage, res: ServerResponse) {
+    let url: URL
+    try {
+      url = new URL(req.url ?? '/', 'http://localhost')
+    } catch {
+      return send(res, 400)
     }
+    if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, 'ok')
+    if (url.pathname === '/webhook' && req.method === 'GET') return verify(url, res)
+    if (url.pathname === '/webhook' && req.method === 'POST') return receive(req, res)
+    send(res, 404)
   }
 
   return createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost')
-    const route =
-      url.pathname === '/health' && req.method === 'GET'
-        ? async () => send(res, 200, 'ok')
-        : url.pathname === '/webhook' && req.method === 'GET'
-          ? () => verify(url, res)
-          : url.pathname === '/webhook' && req.method === 'POST'
-            ? () => receive(req, res)
-            : async () => send(res, 404)
-    route().catch((err) => {
-      log('request_error', { error: err instanceof Error ? err.message : String(err) })
+    handle(req, res).catch((err) => {
+      log('request_error', { error: err instanceof Error ? err.message : String(err) }, 'error')
       if (!res.headersSent) send(res, 500)
     })
   })

@@ -1,14 +1,12 @@
 import { z } from 'zod'
 
+/** `+54 9 11 ...` and `549 11 ...` are the same id. `*` is kept as it is. */
+export const normalizeId = (s: string) => (s.trim() === '*' ? '*' : s.replace(/[^0-9]/g, ''))
+
 const list = z
   .string()
   .default('')
-  .transform((s) =>
-    s
-      .split(',')
-      .map((x) => x.trim())
-      .filter(Boolean),
-  )
+  .transform((s) => s.split(',').map(normalizeId).filter(Boolean))
 
 const schema = z.object({
   DATABASE_URL: z.string().min(1),
@@ -18,7 +16,8 @@ const schema = z.object({
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
   WHATSAPP_ACCESS_TOKEN: z.string().min(1),
   GRAPH_API_VERSION: z.string().regex(/^v\d+\.\d+$/),
-  // Empty means every sender is answered (dev mode). Set it to restrict replies.
+  // Comma-separated WhatsApp ids that get a reply. `*` answers everyone (dev mode). Empty or unset
+  // answers nobody: messages are still stored, as `ignored`.
   ALLOWED_WA_IDS: list,
 })
 

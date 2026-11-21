@@ -174,3 +174,8 @@ Each slice ships on its own and comes with its proof.
 ## Slice 2 result (2026-11-20)
 
 Delivered: webhook with signature check, `wamid` dedupe, inbound row persisted before the 200, read receipt plus typing indicator, reply "recibido", per-stage timings, recovery sweep (startup and every 30 s, attempts cap 5, atomic claim), `pnpm latency`. Tests (PGlite, Graph API injected) cover bad signature, duplicate `wamid`, crash then sweep replies once, status webhooks and GET verification. Deployed on Railway US East at `wa.heywarren.app`, Meta subscribed by API. Still open: the floor measured with real messages from a phone (`pnpm latency`).
+
+Slice 3 notes (decided in the slice 2 review):
+- The user table is `account`, not the reserved word `user`. `movement` and `reply` reference `inbound_message.id`, not the wamid.
+- Sends are at most once: a message whose send outcome is unknown ends as `unknown`, never resent.
+- The allowlist is explicit: `ALLOWED_WA_IDS=*` answers everyone, empty answers nobody.
