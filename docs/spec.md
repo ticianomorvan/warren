@@ -203,3 +203,25 @@ Decisions the slice brief did not specify:
 - `ANTHROPIC_API_KEY` is now required config, so a missing key stops the server at startup instead of failing every message.
 - `validateCommand` returns `fatal` (a `log` value the table cannot hold) next to `issues`; only `fatal` fails a message. A `delete` or `correct` with an empty target is doubtful, not fatal, and gets the "not yet" reply.
 - A movement dated in another year than the message renders `dd/mm/yy`.
+
+## Slice 4 notes
+
+Decisions the slice brief did not specify:
+- **`target_index`, not text alone.** `correct` and `delete` carry a nullable `target_index` (the number in the list shown) next to `target`. Code trusts the number only when the words agree with that row, so an off-by-one from the model cannot hit the wrong movement; otherwise the words decide (`last`, or exactly one movement they name by description, category or payment, with 4-letter stems and no accents). Text alone cannot tell two cafés apart and breaks on "el último".
+- **Context is 10 movements, not 5.** A `log` can hold 10 movements, so 10 is the least that lets a person fix any movement of the message they just sent. It costs about 150 tokens in the volatile part.
+- **Ambiguity asks, statelessly.** No match, several matches or low confidence reply `¿Cuál? 1. … · 2. …` and change nothing. The numbers are the ones of the list the parser sees, and the list is unchanged by the question, so "borrá el 2" works next. With several matches the question lists them; with none it lists the newest 3; with an empty list it says there is nothing yet.
+- **A stale target replies, it does not re-resolve.** Re-resolving a message against a newer list could change a different movement than the person meant. The reply is "ya fue corregido o borrado, mandame de nuevo".
+- **A corrected movement is the newest.** The new row has a new id, so "borrá el último" after correcting an older movement means the one just corrected. The reading is natural and keeps the list a plain `ORDER BY id DESC`.
+- **Fatal for a `correct` too.** A changed amount, date, description or payment that cannot be stored fails the message with the failure notice, like the same value in a `log`. A correction that changes nothing is not an error: "No entendí qué cambiar" (nothing set) or "Ya figura así" (values equal to the current ones, no new row).
+- **A new correction row is `high` confidence;** a low-confidence correction never gets that far, it asks.
+- **Soft delete** is `deleted_at` + `deleted_by` (a reference to the deleting inbound message); a row can be superseded or deleted, never both (a CHECK). The partial index on live rows follows.
+- **Weeks are Monday to Sunday and whole**, so `this_week` can end after today; movements cannot be dated in the future, so it makes no difference to totals. Months and years are calendar ones. All ranges are Argentine days (`periodRange`, from the message's own time).
+- **Query wording.** Totals are grouped by direction and currency. One line per direction, ARS first, then `Y US$ … (n movimientos).` on its own line. With no direction asked and both present there is a block per direction. `supermercado` reads as "Súper" in replies.
+- **Payment filter** is `position(needle in lower(translate(payment, accents)))`, with the needle normalized the same way in code; no `unaccent` extension, which Railway's Postgres may not allow.
+- **Commit shape.** `store.commit` takes `execute(tx)` and returns the stored reply (null if it did not commit); the movement SQL moved to `src/ledger.ts`. The `renderReply` "not yet" text is gone.
+- **Test harness** moved from `webhook.test.ts` to `src/test-harness.ts` so `commands.test.ts` can share it.
+
+Known weakness: for a target whose words fit two movements ("el café" with two cafés) the model sometimes commits to number 1 with high confidence instead of returning null. The dev case `c132` fails in most runs (c136, the delete variant, passes). Code cannot tell that guess from a person who wrote "el 1", and asking again would loop, so it is left to the prompt; a follow-up could add a `ambiguous: boolean` the model must fill in explicitly.
+
+Eval (2026-11-21, Haiku 5.5, `pnpm eval --model haiku --split all --budget 0.10`, 137 cases, 6 new for `target_index`, final prompt): 136/137 fully correct (99.3%), command type 100%, 0 silently wrong amounts, gate PASS; description 117/117, category 131/132, payment 132/132; latency p50 1,476 ms, p95 2,124 ms; mean 407 uncached input tokens, 9,331 cache read tokens; US$0.0237 for the run. The only miss is `c132`. Eval spend for this slice, including three dev-split tuning runs and the earlier full run: US$0.126 of the US$0.30 cap.
+
