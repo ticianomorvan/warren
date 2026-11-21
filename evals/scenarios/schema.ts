@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
-import { CATEGORIES } from '../../src/parse/schema'
+import { CATEGORIES } from '../../src/agent/schema'
 
 /**
  * A scenario is a conversation: a seeded ledger, then user turns, each with the Argentine "now" it

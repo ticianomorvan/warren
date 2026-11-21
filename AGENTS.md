@@ -12,9 +12,10 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 
 1. **The program does all arithmetic.** A model never adds, converts or rounds money. Amounts are
    decimal strings ("3500", "1500000.50"); code computes every total.
-2. **The model is a parser.** One LLM call returns one typed command (`log`, `correct`, `delete`,
-   `query`, `help`, `off_topic`). Code validates and executes it and renders the reply from a
-   template. No agent loop, no free-form model replies.
+2. **The model acts only through guarded tools.** A short agent loop (at most 3 model turns) calls typed
+   tools; the write tools are terminal: code validates them, runs them inside the commit point and renders
+   the reply from a template, with no further model turn. The model never writes a reply and never picks a
+   target in code's place: an id it sends must be one it was shown, the sender's, and live.
 3. **Corrections never overwrite a movement, deletes never remove one.** A correction is a new row
    that supersedes the old one (`superseded_by`); a delete stamps `deleted_at` and `deleted_by`. Only
    movements that are neither count (the recent list, query totals).
@@ -23,31 +24,36 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 ## Layout
 
 ```
-src/parse/    parseMessage: schema.ts (command), prompt.ts (frozen system prompt + volatile part),
-              models.ts (Haiku/Sonnet configs, prices), validate.ts (code-side checks), index.ts
-src/time.ts   The Argentine calendar day and the date range of a query period
-src/server.ts Entry point: config, migrate, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
+src/agent/    The agent: schema.ts (tool inputs, categories, periods), tools.ts (the strict tool list, frozen),
+              prompt.ts (frozen system prompt + the per-message context), calls.ts (the guards that need no
+              database), loop.ts (the manual loop, warm-up), validate.ts (the value rules), models.ts
+              (Haiku/Sonnet configs, prices), index.ts
+src/time.ts   The Argentine calendar day and clock, and the date range of a summary period
+src/server.ts Entry point: config, migrate, warm-up, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
-src/store.ts  The rules of the tables (inbound_message, reply, account): due predicate, claim,
-              the commit transaction (guard, then the command's effects, then the stored reply), ownership-guarded writes
-src/ledger.ts All SQL on `movement`: live movements (not superseded, not deleted), insert, lock, supersede,
-              soft delete, query totals
+src/store.ts  The rules of the tables (inbound_message, reply, account): due predicate, claim, the
+              conversation window, the commit transaction (guard, then the actions' effects, then the stored
+              reply and the audit), ownership-guarded writes
+src/ledger.ts All SQL on `movement`: live movements (not superseded, not deleted), find, insert, lock,
+              supersede, soft delete, summary totals
 src/movement.ts Pure: text normalizing, applying a correction's changes, which fields changed
-src/resolve.ts  Pure: turns a correct/delete target (list number, words, and the person's own message) into one movement or a question
-src/execute.ts  Runs a command inside the commit transaction and returns the reply to store
-src/process.ts  Per message: ignored vs reply; for text, typing + parse together, the 10 s interim note, the 30 s
+src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a question we asked (done in code)
+src/execute.ts  Runs a message's actions inside the commit transaction and returns the reply to store
+src/process.ts  Per message: ignored vs reply; for text, typing + agent together, the 10 s interim note, the 30 s
               deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
 src/render.ts The reply templates (Argentine money format) and every canned text; pure
-src/test-harness.ts  Shared integration-test setup: PGlite (or a real Postgres), fake Graph, fake Anthropic client, `setup()`
-src/command-fixtures.ts  Scripted models, seeded movements and `say()` for the command tests
+src/test-harness.ts  Shared integration-test setup: PGlite (or a real Postgres), fake Graph, fake Anthropic client
+              (scripted tool calls), `setup()`
+src/command-fixtures.ts  Scripted tool calls, seeded movements and `say()` for the agent tests
 src/http.ts   keepAliveFetch: a fetch with its own 60 s keep-alive pool (Graph and Anthropic)
 src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts (Graph API client)
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
-src/latency.ts  `pnpm latency` report
-evals/        cases.jsonl (dev/test split), grade.ts, run.ts, results/ (gitignored but summary.md)
+src/latency.ts  `pnpm latency` report, by action
+evals/        cases.jsonl (dev/test split, one command per message), command.ts (that command shape), agent.ts
+              (runs the agent on a case and maps it to a command), grade.ts, run.ts, results/ (gitignored but summary.md)
 evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl, schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts, run.ts, results/baseline.md
-docs/spec.md  Source of truth for what is built and in which order
+docs/spec.md  Source of truth for what is built and in which order; docs/agent-spec.md the agent design
 ```
 
 ## Commands
@@ -62,12 +68,15 @@ PG_TEST_URL=postgres://postgres:test@localhost:55432/postgres pnpm test src/conc
                    # Throwaway database only, it is truncated. docker run --rm -d --name warren-pg-test -p 55432:5432 -e POSTGRES_PASSWORD=test postgres:17
 pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the WhatsApp variables (see src/config.ts)
 pnpm latency [--last N]   # p50/p95 per stage, model time, log-only reply time, from DATABASE_URL (Railway: the Postgres public URL)
-pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # calls the API, needs .env
+pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # one message at a time through the agent, needs .env
 pnpm eval:scenarios [--split dev|test|all] [--budget 0.30] [--only s001,s002]   # multi-turn scenarios, real pipeline and model, needs .env
 ```
 
 `pnpm eval` spends money: tune the prompt on `--split dev` only and run `--split test` once per
-model at the end. CI never calls the Anthropic API.
+model at the end. CI never calls the Anthropic API. Its cases are written as one command per message
+(`evals/command.ts`); `evals/agent.ts` runs the agent on each and maps what it did into that shape (an
+`ask_user` is a low-confidence command). The 5 cases that are only the pick of an option of a question
+(`answeredByCode`) are code's job and are covered by unit tests, not measured on the model.
 
 `pnpm eval:scenarios` does the same for conversations (PGlite, a fake Graph, the real model; stops before its
 `--budget`, default US$0.30). It grades the database after each turn and gates on 95% fully right and 0 silent
@@ -113,40 +122,56 @@ wrong changes. Its test split is held out like the other: never print or tune on
 - Sends are at most once. `send_started_at` is committed before the Graph call; a row that dies after that
   (timeout, 5xx, killed worker) ends as `unknown` and is never sent again. Only an HTTP 4xx answer, which
   proves nothing was sent, goes back to `pending` (retryable codes) or `failed` (permanent codes).
-- **Logging flow (slice 3).** A text message from an allowed sender runs the read receipt plus typing and
-  the parse together. Deadlines count from `received_at` and are processor options (`interimMs` 10 s,
-  `deadlineMs` 30 s). The commit point is one transaction (`store.commit`): the parsed command, the
-  movements (unique on `(inbound_message_id, position)`) and the stored `reply_text`. Before it, a failed
-  parse or the deadline ends the message `failed` with one failure notice (`failure_sent_at`, committed
-  before the send) and a late model result writes nothing. After it, the stored reply is sent even if late,
-  and the sweep sends it without calling the model. The interim note (`interim_sent_at`) and the failure notice are committed before they are sent and never repeated. There is no done mark (a ✅ reaction was removed 2026-11-21). A model output with an
-  unstorable value (bad amount, date or description) is treated as a failed parse, never repaired.
+- **Message flow (slices 3, 4 and agent B).** A text message from an allowed sender runs the read receipt plus
+  typing and the agent together. Deadlines count from `received_at` and are processor options (`interimMs` 10 s,
+  `deadlineMs` 30 s). The commit point is one transaction (`store.commit`): the actions' effects, the movements (unique on
+  `(inbound_message_id, position)`, counted across the whole message), the stored `reply_text` and the audit.
+  Before it, a failed agent run (a model error, no valid action in 3 turns) or the deadline ends the message
+  `failed` with one failure notice (`failure_sent_at`, committed before the send) and a late model result
+  writes nothing. After it, the stored reply is sent even if late,
+  and the sweep sends it without calling the model. The interim note (`interim_sent_at`) and the failure notice are committed before they are sent and never repeated. There is no done mark (a ✅ reaction was removed 2026-11-21). A tool call with an unstorable
+  value (bad amount, date or description) is never repaired: the loop answers it with the reason and the
+  model gets another turn; a model that cannot fix it within 3 turns fails the message.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
-- **Shutdown.** On SIGTERM `processor.stop()` aborts parses that have not reached the commit point and settles
+- **Shutdown.** On SIGTERM `processor.stop()` aborts agent runs that have not reached the commit point and settles
   those rows to `pending`, so the next process's startup sweep answers them inside their deadline. The deadline
   is one `AbortSignal` checked right before the commit; a deadline that fires mid-commit loses (committed
   means the reply goes out). `today` comes from the message's own time (`meta_ts`), not the clock.
-- **Corrections, deletes and queries (slice 4).** They run inside `store.commit`, in the same transaction as
-  the guard and the stored reply, so a replay or a sweep re-claim never applies them twice (the stored reply
-  is sent instead). **One sender's messages run strictly one after the other** (`run` chains them per
-  `wa_id`, kick and sweep alike; different senders stay parallel), because a message reads its context before
-  the parse and must see what the one before it stored. The turn passes at the commit, not at the send, so
-  a burst does not also wait on each reply's send (replies can then arrive out of order when one send is
-  slow; each names its own movements). A shutdown hands queued messages back as `pending`
-  like the one in flight. The parser sees the account's last 10 live movements (`RECENT_LIMIT`, the most one
-  message can log) as a numbered list and returns `target_index` plus `target`. Code (`resolveTarget`) reads
-  the person's own message too, since `target` only echoes the row the model chose. A position the person
-  wrote ("el 2 fue…", "borrá el 3", a bare "2") wins over the model's words and number; dates, amounts and units
-  ("el 3/11", "el 2.500", "el 1 luca") are never positions; "el último X" is the newest X, "el último" alone is
-  number 1; two positions in one message get "una cosa por mensaje". Otherwise the rows whose description the
-  words name (4-letter stems, or a whole category name, never a stem of a category or payment) are the
-  candidates, the message's details (payment, old amount, hoy/ayer, dd/mm, but not the value being set) narrow
-  them, and the newest left wins; the reply shows the old values and, if not from today, the date. Nothing named asks `¿Cuál? 1. … · 2. …` plus how to
-  answer and changes nothing. The parser also gets the sender's previous exchange (last message and its
-  committed reply, at most 10 minutes old) so a bare "2" after a question reads right. Answering a question is code's job: a `¿Cuál?` reply stores the options it showed, number and movement id (`asked_numbers`, `asked_ids`), and a message that is only an answer to it ("2", "el primero" = first shown) within 10 minutes runs the previous correct/delete on that movement (by id; the list may have shifted) whatever the model returned. `parsed` keeps the model's output, `command` what ran. The parser's list shows each movement's logged time, so "el café de las 10", "el otro café" and "uno de los cafés" (asks which and what change) work; a confident model pick among the rows the words name stands, else the newest wins. Inside the transaction the live
-  list is read again: if it differs from the one the model saw, the same question is asked. The target row is
-  locked (`FOR UPDATE`) and must still be live, else the reply says it was already corrected or deleted. A
-  corrected movement is a new row, so it counts as the newest. A `correct` whose new value cannot be stored
-  gets a specific reply, not the failure notice. Query totals are `sum()` in SQL, grouped by direction and
-  currency, never converted; the payment filter is accent- and case-insensitive contains. Changing
-  `schema.ts` or `prompt.ts` means rerunning `pnpm eval` (see Slice 4 notes).
+- **The agent (slice B; `docs/agent-spec.md`, Slice B notes).** `src/agent/loop.ts` is a manual loop on
+  `client.messages.create` (Haiku 5.5, effort low, thinking off, strict tools, a frozen system prompt and tool
+  list under one cache breakpoint; `usage.cache_read_input_tokens` is logged at every commit). The volatile
+  context comes after the breakpoint: the Argentine date and time, a 14-day calendar, the 10 newest live
+  movements with position, **id** and logged time, the conversation window (the sender's committed turns of the
+  last 30 minutes, at most 6, from `inbound_message.body` and `reply_text`) and, within 10 minutes, the
+  question Warren just asked with the id behind each option. Tools:
+  - `find_movements` (read): the sender's whole history, by text, dates, category, payment, amount; at most 20
+    rows with ids. Its results go back in one user message (parallel calls included).
+  - Terminal, run by code at the commit point in the order given, in one transaction, one combined reply:
+    `log_movements`, `correct_movement`, `delete_movement`, `summarize` (today's periods and filters),
+    `ask_user` (a short phrase plus the movements to offer, newest first, numbered 1..k by code; it stores
+    `asked_numbers`, `asked_ids` and `pending`, what choosing an option will do), `reply` (help, off_topic,
+    smalltalk, nothing_logged: canned).
+  - Guards, in code: an id must have been shown to the model in this message (list, find result or pending
+    question) and, at the commit, belong to the sender and be live (`lockLive`, `FOR UPDATE`), else that action's
+    line is "ya fue corregido o borrado" and the others still run; amounts are decimal strings, dates real and
+    not in the future (a refusal is answered to the model, not repaired); at most 10 movements per message; an
+    empty correction is refused; an `ask_user` question longer than a short phrase or with a digit or `$` in it
+    is replaced; the model never computes a total; the cap is 3 model turns and a text-only answer costs one;
+    the deadline signal is on every call; a failure or the deadline writes nothing.
+  - **A bare answer to our question is code's job.** If the previous message got an `ask_user` with a pending
+    action, at most 10 minutes ago, and the new message is only an answer (`answerNumber`: "2", "el primero",
+    "sí" after one option), `answerAction` runs the pending correction or delete on the id that option offered
+    and no model is called. Anything with more in it ("el 2 fue 4500") goes to the model, which sees the options.
+  - A correction is a new row (`superseded_by`), a delete stamps `deleted_at`/`deleted_by`; every correction or
+    delete reply shows before and after, and the logged time (and the day, if not today) when the movement is
+    not the newest.
+  - Stored on the message: `parsed` what the model asked for (null when no model ran), `command` what ran (both
+    lists of `{tool, input}`), `action` (log, correct, delete, summarize, ask, reply, multi), `tool_calls` the
+    audit (every call with turn, input, outcome, ms), `model_turns`, `model_ms`.
+- **Weeks, periods and queries.** Weeks are Monday to Sunday and whole, so `this_week` can end after today; months
+  and years are calendar ones; all ranges are Argentine days (`periodRange`, from the message's own time).
+  Summary totals are `sum()` in SQL, grouped by direction and currency, never converted; the payment filter is
+  accent- and case-insensitive contains (`translate`, no `unaccent` extension). `supermercado` reads as "Súper".
+  Changing `tools.ts`, `schema.ts` or `prompt.ts` means rerunning `pnpm eval` and `pnpm eval:scenarios` (dev
+  first). The first request after a tool-schema change compiles the strict-tool grammar (~10 s): the server
+  sends one tiny warm-up request at startup.

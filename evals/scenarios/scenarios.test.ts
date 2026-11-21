@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { NONE, script } from '../../src/command-fixtures'
-import { SYSTEM_PROMPT } from '../../src/parse/prompt'
-import { createTestDatabase } from '../../src/test-harness'
+import { SYSTEM_PROMPT } from '../../src/agent'
+import { logOf, movement } from '../../src/command-fixtures'
+import { createTestDatabase, fakeModel } from '../../src/test-harness'
 import { Meter, runScenario } from './drive'
 import { isLive } from './grade'
 import { summarize } from './report'
@@ -117,13 +117,15 @@ describe('the driver, with a scripted model', () => {
       ],
       turns: [{ now: '2026-11-21T12:00', text: o.text, ops: o.ops }],
     })
-  const pick = (index: number, amount: string) => ({
-    type: 'correct' as const,
-    target: 'café',
-    target_index: index,
-    changes: { ...NONE, amount },
-    confidence: 'high' as const,
-  })
+  /** A model that corrects the movement at this position of the list it is shown (the ids are the database's). */
+  const pick = (position: number, amount: string) =>
+    fakeModel((_signal, { params }) => {
+      const line = String(params.messages[0]?.content)
+        .split('\n')
+        .find((l) => l.startsWith(`${position}. id=`))
+      const id = Number(/id=(\d+)/.exec(line ?? '')?.[1])
+      return [{ name: 'correct_movement', input: { id, changes: { amount } } }]
+    })
 
   it('passes a right correction and counts its cost and time', async () => {
     const s = make({
@@ -131,7 +133,7 @@ describe('the driver, with a scripted model', () => {
       text: 'el 2 fue 2500',
       ops: [{ op: 'correct', ref: 'b', set: { amount: '2500' } }],
     })
-    const model = script(pick(2, '2500'))
+    const model = pick(2, '2500')
     const r = await runScenario(s, {
       sql: db.sql,
       client: model.client,
@@ -153,7 +155,7 @@ describe('the driver, with a scripted model', () => {
       text: 'el 1 fue 2500',
       ops: [{ op: 'correct', ref: 'b', set: { amount: '2500' } }],
     })
-    const model = script(pick(1, '2500'))
+    const model = pick(1, '2500')
     const r = await runScenario(s, {
       sql: db.sql,
       client: model.client,
@@ -172,7 +174,7 @@ describe('the driver, with a scripted model', () => {
       text: 'el 2 fue 2500',
       ops: [{ op: 'correct', ref: 'b', set: { amount: '2500' } }],
     })
-    const model = script(pick(2, '2500'))
+    const model = pick(2, '2500')
     const r = await runScenario(s, {
       sql: db.sql,
       client: model.client,
@@ -207,22 +209,8 @@ describe('the driver, with a scripted model', () => {
         },
       ],
     })
-    const cafe = {
-      type: 'log' as const,
-      movements: [
-        {
-          direction: 'out' as const,
-          amount: '3500',
-          currency: 'ARS' as const,
-          date: '2026-11-21',
-          description: 'café',
-          category: 'restaurantes' as const,
-          payment: null,
-          confidence: 'high' as const,
-        },
-      ],
-    }
-    const model = script(cafe, cafe)
+    const cafe = [logOf(movement({ date: '2026-11-21', payment: null }))]
+    const model = fakeModel(() => cafe)
     const r = await runScenario(s, {
       sql: db.sql,
       client: model.client,

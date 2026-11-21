@@ -1,0 +1,46 @@
+import type Anthropic from '@anthropic-ai/sdk'
+import { z } from 'zod'
+import { TOOL_INPUTS, type ToolName } from './schema'
+
+const DESCRIPTIONS: Record<ToolName, string> = {
+  find_movements:
+    "Search the person's whole history for a movement that is not in the list of the 10 newest. Returns up to 20 live movements with their ids, newest first. Leave out the filters you do not need.",
+  log_movements: 'Record 1 to 10 new movements (expenses or income) the person tells you about.',
+  correct_movement:
+    'Change fields of one existing movement, by id. Only the fields that change are sent.',
+  delete_movement: 'Delete one existing movement, by id.',
+  summarize:
+    'Answer how much the person spent or received in a period. Code computes the totals; you only choose the period and filters.',
+  ask_user:
+    'Ask the person a question when you cannot act. Code writes the question and lists the movements you give.',
+  reply:
+    'Send a canned reply: help, off_topic, smalltalk, or nothing_logged (the person has no movements to change).',
+}
+
+/** The strict-tool form of a zod schema: the API rejects numeric bounds and the `$schema` key. */
+function inputSchema(schema: z.ZodType): Anthropic.Tool.InputSchema {
+  const { $schema: _, ...json } = z.toJSONSchema(schema) as Record<string, unknown>
+  const strip = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(strip)
+    if (node && typeof node === 'object') {
+      return Object.fromEntries(
+        Object.entries(node)
+          .filter(([key]) => key !== 'minimum' && key !== 'maximum')
+          .map(([key, value]) => [key, strip(value)]),
+      )
+    }
+    return node
+  }
+  return strip(json) as Anthropic.Tool.InputSchema
+}
+
+/**
+ * The tool list, built once and never changed: its order and bytes are part of the cached prefix
+ * (tools come before the system prompt in the cache key).
+ */
+export const TOOLS: Anthropic.Tool[] = (Object.keys(TOOL_INPUTS) as ToolName[]).map((name) => ({
+  name,
+  description: DESCRIPTIONS[name],
+  input_schema: inputSchema(TOOL_INPUTS[name]()),
+  strict: true,
+}))

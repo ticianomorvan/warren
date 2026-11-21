@@ -2,8 +2,11 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { estimateCostUsd, MODELS, type ModelKey, parseMessage, type Usage } from '../src/parse'
-import type { Command } from '../src/parse/schema'
+import Anthropic from '@anthropic-ai/sdk'
+import { estimateCostUsd, MODELS, type ModelKey, type Usage } from '../src/agent'
+import { keepAliveFetch } from '../src/http'
+import { answeredByCode, runCase as runAgentCase } from './agent'
+import type { Command } from './command'
 import { type EvalCase, type Grade, grade, type SoftCounts } from './grade'
 import { mean, percentile } from './stats'
 
@@ -59,10 +62,13 @@ try {
 } catch {}
 if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is missing: set it in .env')
 
-let cases = readFileSync(join(root, 'evals/cases.jsonl'), 'utf8')
+const client = new Anthropic({ fetch: keepAliveFetch() })
+const allCases = readFileSync(join(root, 'evals/cases.jsonl'), 'utf8')
   .split('\n')
   .filter((line) => line.trim() !== '')
   .map((line) => JSON.parse(line) as EvalCase)
+// A bare answer to a question is code's job in the agent (see `answeredByCode`): not a model case.
+let cases = allCases.filter((c) => !answeredByCode(c))
 if (split !== 'all') cases = cases.filter((c) => c.split === split)
 if (values.limit) cases = cases.slice(0, Number(values.limit))
 
@@ -96,18 +102,12 @@ async function runCase(testCase: EvalCase): Promise<CaseResult> {
     }
   }
   try {
-    const result = await parseMessage({
-      text: testCase.text,
-      today: testCase.today,
-      recentMovements: testCase.recent,
-      previous: testCase.previous,
-      model: modelKey,
-    })
+    const result = await runAgentCase(testCase, { client, model: modelKey })
     spent += estimateCostUsd(modelKey, result.usage)
     return {
       ...base,
       actual: result.command,
-      issues: result.issues,
+      issues: [],
       usage: result.usage,
       latencyMs: result.latencyMs,
       error: null,
@@ -211,7 +211,9 @@ appendFileSync(
 
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`
 const ms = (x: number) => `${Math.round(x)} ms`
-console.log(`\nWarren parser eval: ${summary.model}, split ${split}, ${results.length} cases`)
+console.log(
+  `\nWarren agent eval (single message): ${summary.model}, split ${split}, ${results.length} cases`,
+)
 console.table({
   'fully correct': `${summary.fullyCorrect}/${results.length} (${pct(summary.accuracy)})`,
   'command type': pct(summary.typeAccuracy),

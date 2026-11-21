@@ -3,8 +3,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import Anthropic from '@anthropic-ai/sdk'
+import { MODELS, type ModelKey } from '../../src/agent'
 import { keepAliveFetch } from '../../src/http'
-import { MODELS, type ModelKey } from '../../src/parse'
 import { createTestDatabase } from '../../src/test-harness'
 import { Meter, runScenario, type ScenarioResult } from './drive'
 import { failureLines, renderSummary, summarize } from './report'
@@ -57,7 +57,7 @@ if (scenarios.length === 0) {
 const printLog = console.log
 console.log = () => {}
 
-// The pipeline exactly as `src/server.ts` builds it: Haiku, the keep-alive client.
+// The pipeline exactly as `src/server.ts` builds it: the agent on Haiku, the keep-alive client.
 const model: ModelKey = 'haiku'
 const client = new Anthropic({ fetch: keepAliveFetch() })
 const meter = new Meter(budget)

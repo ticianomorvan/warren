@@ -173,3 +173,55 @@ and history in our database.
 2. Trust posture: the agent acts when confident. A wrong pick is visible ("antes …") and is fixed with "deshacer".
 3. Jev: Ticiano asked to use OpenRouter, but OpenRouter only has the router variant. Slice E needs a TypeSafe or Vercel AI Gateway key; ask again when slice E starts.
 4. Budget: US$1–2 of model spend for scenario-eval runs across slices A–D.
+
+## Agent slice B notes (2026-11-21)
+
+Decisions the spec did not fix. Built on branch `agent-b-core`; `AGENTS.md` describes the result.
+
+- **Tool shapes.** Strict tools allow 24 optional parameters and 16 with a union type, in total. So `changes` and
+  the `find_movements` filters are optional (left out when unused) and only a movement's `payment` and
+  `summarize`'s three filters are nullable. `ask_user` is `{question, movement_ids, after_answer, changes?}`:
+  `after_answer` (none, correct or delete) is what a bare answer will do, stored as `pending`, so code can run it
+  without the model. Corrections carry no confidence: the model acts or asks. A logged movement keeps `confidence`
+  (the `(?)` mark). `reply.kind` is help, off_topic, smalltalk or nothing_logged (the canned texts).
+- **Refusals are answered, not repaired.** The guards that need no database (shape, decimal amounts, real dates not
+  in the future, at most 10 movements, an empty correction, an id never shown) run in the loop. A refused call gets an
+  error result with the reason and the model another turn, inside the cap of 3. The valid calls of a turn with a
+  refused one are not run ("skipped"). A text-only answer costs one turn, once (tool use cannot be forced on every
+  model, so the prompt steers and code retries). Without a valid action at the cap the message fails: failure
+  notice, nothing written.
+- **An id must have been shown** to the model in this message (the list, a `find_movements` result or the pending
+  question), on top of "the sender's and live" at the commit. A guessed id that happens to be the sender's is
+  refused. One action that finds its movement gone says so on its own line; the others of the message still run.
+- **Questions are rendered by code.** `question` is a phrase of at most 6 words with no digit, `$` or sentence
+  punctuation, else replaced by "Cuál" / "Qué querés cambiar". Several options are sorted newest first and numbered
+  1..k by code (not list positions); only the sender's live ones are offered. Answering ("2", "la segunda", "sí"
+  after one option) works for 10 minutes, as before; the model sees the same options with their ids.
+- **Conversation window.** 30 minutes, 6 turns, committed messages only (a failed one has no reply), each with
+  "hace N min". Replaces `previousExchange`.
+- **Reply format.** Corrections keep "(antes …)" and add ` · HH:MM` (logged time) after it when the movement is
+  not the newest live one; deletes add it after the movement. The day was already shown when not today. A corrected
+  row is a new row, so it counts as the newest afterwards.
+- **Stored.** Migration 008: `action`, `tool_calls` (audit with each action's outcome), `model_turns`, `pending`.
+  `parsed` is what the model asked for (null when no model ran), `command` what ran, both lists of `{tool, input}`.
+- **Prompt.** Old conventions moved over unchanged (amounts, dates, categories, payment, confidence). New rules:
+  "el X fue N" is a correction (search first, log only if nothing matches), a number followed by a unit is an old
+  amount, not a position. About 11,600 tokens of cached prefix (tools plus system), against 7,770 before.
+- **Warm-up.** The first request after a change to the tool schema compiles the strict grammar: about 10 s measured.
+  The server sends one tiny request at startup, which also writes the cache. A cache write itself costs no latency.
+- **Single-message eval.** It runs the agent and maps the result to the old command shape (`evals/agent.ts`; an
+  `ask_user` is a low-confidence command; a target is the list number of the chosen id). 5 cases that are only the
+  pick of a question's option are code's job and are not run (`answeredByCode`; unit tests cover `answerAction`).
+
+### Results
+
+- Scenario eval, `--split all`, Haiku 5.5 (the final prompt was tuned on dev only): 98/98 fully right (dev 77/77,
+  test 21/21), 0 silent wrong changes, 0 unnecessary questions, 0 invented numbers. Baseline: 82/98, 6 silent.
+  Latency per turn (post to stored reply, from a Mac in Argentina): p50 1,842 ms, p95 3,327 ms; by action p50 / p95:
+  log 1,878 / 2,288 ms, correct 1,806 / 3,188, delete 1,312 / 3,054, summary 1,696 / 2,070, question 3,100 / 4,523,
+  multi-action 2,121 / 2,669. US$0.00026 per turn. Earlier dev runs of the same code: 72/77, 75/77, 76/77 (one
+  silent: "el alquiler fue 250000" logged as new), then 77/77 after the prompt rule above; the model is not
+  perfectly stable, so read these to about ±2 scenarios.
+- Single-message eval, `--split all` (152 cases): 152/152, 0 silent amounts, 0 silent targets, p50 1,634 ms,
+  p95 2,773 ms, US$0.0349.
+- Open: the 20 live messages and `pnpm latency` on Railway are not done (nothing was deployed).
