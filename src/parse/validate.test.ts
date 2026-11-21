@@ -44,9 +44,18 @@ describe('date check', () => {
 })
 
 describe('validateCommand', () => {
+  it('marks only unstorable log values as fatal, never a delete with an empty target', () => {
+    const bad: Command = { type: 'log', movements: [{ ...movement, amount: '3.500' }] }
+    expect(validateCommand(bad, today).fatal).toHaveLength(1)
+    const empty: Command = { type: 'delete', target: ' ', confidence: 'high' }
+    const result = validateCommand(empty, today)
+    expect(result.issues).toHaveLength(1)
+    expect(result.fatal).toEqual([])
+  })
+
   it('keeps a good log untouched', () => {
     const command: Command = { type: 'log', movements: [movement] }
-    expect(validateCommand(command, today)).toEqual({ command, issues: [] })
+    expect(validateCommand(command, today)).toEqual({ command, issues: [], fatal: [] })
   })
 
   it('lowers confidence for a bad amount or date and never repairs the value', () => {

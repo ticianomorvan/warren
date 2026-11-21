@@ -67,16 +67,19 @@ function checkChanges(changes: Changes, today: string, path: string): Issue[] {
 /**
  * Checks what the schema cannot: amount form, calendar dates, the future. A failure is never
  * repaired. It lowers the confidence of the movement (or correction) and is listed as an issue,
- * so the reply can ask the person instead of storing a guess as sure.
+ * so the reply can ask the person instead of storing a guess as sure. `fatal` is the subset that
+ * makes a `log` unstorable (bad amount, date or description); only a `log` ever has any.
  */
 export function validateCommand(
   command: Command,
   today: string,
-): { command: Command; issues: Issue[] } {
+): { command: Command; issues: Issue[]; fatal: Issue[] } {
   if (command.type === 'log') {
     // A log with nothing in it is not a command at all.
     if (command.movements.length === 0) throw new InvalidCommandError('log has no movements')
     const issues: Issue[] = []
+    // Values the movement table cannot hold: an amount, date or description that is not usable.
+    const fatal: Issue[] = []
     // Too many movements is a sign the model invented or split things: none of them is trusted.
     const tooMany = command.movements.length > MAX_MOVEMENTS
     if (tooMany) {
@@ -85,9 +88,10 @@ export function validateCommand(
     const movements = command.movements.map((movement, i) => {
       const found = checkMovement(movement, today, `movements[${i}]`)
       issues.push(...found)
+      fatal.push(...found)
       return found.length > 0 || tooMany ? { ...movement, confidence: 'low' as const } : movement
     })
-    return { command: { ...command, movements }, issues }
+    return { command: { ...command, movements }, issues, fatal }
   }
   if (command.type === 'correct') {
     const issues = [
@@ -97,6 +101,7 @@ export function validateCommand(
     return {
       command: issues.length > 0 ? { ...command, confidence: 'low' } : command,
       issues,
+      fatal: [],
     }
   }
   if (command.type === 'delete') {
@@ -104,7 +109,8 @@ export function validateCommand(
     return {
       command: issues.length > 0 ? { ...command, confidence: 'low' } : command,
       issues,
+      fatal: [],
     }
   }
-  return { command, issues: [] }
+  return { command, issues: [], fatal: [] }
 }

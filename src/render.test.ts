@@ -26,6 +26,8 @@ describe('formatMoney', () => {
     expect(formatMoney('1234.05', 'ARS')).toBe('$1.234,05')
     expect(formatMoney('1234.00', 'ARS')).toBe('$1.234')
     expect(formatMoney('1500000', 'ARS')).toBe('$1.500.000')
+    expect(formatMoney('03500', 'ARS')).toBe('$3.500')
+    expect(formatMoney('0.50', 'ARS')).toBe('$0,50')
     expect(formatMoney('20', 'USD')).toBe('US$ 20')
     expect(formatMoney('1234.5', 'USD')).toBe('US$ 1.234,50')
   })
@@ -47,6 +49,9 @@ describe('renderReply', () => {
     expect(renderReply(log(mv({ date: '2026-11-05' })), TODAY)).toBe('✓ Café $3.500 · 05/11')
     // Across a month boundary, yesterday is still yesterday.
     expect(renderReply(log(mv({ date: '2026-10-31' })), '2026-11-01')).toBe('✓ Café $3.500 · ayer')
+    // A date in another year shows the year, so a wrong year cannot pass for the right day.
+    expect(renderReply(log(mv({ date: '2025-11-05' })), TODAY)).toBe('✓ Café $3.500 · 05/11/25')
+    expect(renderReply(log(mv({ date: '2025-12-31' })), '2026-01-01')).toBe('✓ Café $3.500 · ayer')
   })
 
   it('marks low confidence last', () => {

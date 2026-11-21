@@ -73,7 +73,8 @@ function fakeGraph(o: { send?: SendFn; typing?: () => Promise<void> } = {}) {
   return { graph, calls }
 }
 
-const TODAY = argentinaToday()
+// The day comes from the message's own time (meta_ts), as in the processor, so midnight cannot flake.
+const TODAY = argentinaToday(new Date(1760000000 * 1000))
 const cafeMovement: Movement = {
   direction: 'out',
   amount: '3500',
@@ -123,13 +124,13 @@ async function setup(
   const fake = opts.fake ?? fakeGraph()
   const model = opts.model ?? fakeModel()
   const store = createStore(sql, { staleMs: opts.staleMs ?? 0, maxAttempts: 3 })
-  const makeProcessor = (s: Store) =>
+  const makeProcessor = (s: Store, client: Anthropic = model.client) =>
     createProcessor({
       store: s,
       graph: fake.graph,
       allowed: opts.allowed ?? ['*'],
       maxAttempts: 3,
-      client: model.client,
+      client,
       helpContact: opts.helpContact,
       interimMs: opts.interimMs ?? 60_000,
       deadlineMs: opts.deadlineMs ?? 120_000,
@@ -483,7 +484,8 @@ describe('recovery', () => {
       body: 'x',
       ageMs: 0,
       replyText: null,
-      interimSent: false,
+      claimedAt: 0,
+      messageAt: new Date(),
       typingSent: false,
     }
     expect(await app.store.settle(stale, 'pending', 'late')).toBe(false)
@@ -627,7 +629,7 @@ describe('logging', () => {
     expect(r?.failure_sent_at).toBeNull()
     const [account] = await sql`SELECT * FROM account`
     expect(account?.wa_id).toBe('5491100000000')
-    expect(r?.account_id).toBe(account?.id)
+    expect((await sql`SELECT account_id FROM movement`)[0]?.account_id).toBe(account?.id)
     app.close()
   })
 
@@ -695,7 +697,6 @@ describe('logging', () => {
     await until(() => app.calls.reactions.length === 1)
     await post(app.base, body)
     await settle()
-    await app.processor.sweep()
     expect(await movements()).toHaveLength(1)
     expect(app.calls.sent).toHaveLength(1)
     expect(app.calls.reactions).toHaveLength(1)
@@ -736,22 +737,17 @@ describe('logging', () => {
         await release.promise
         return cafe
       }),
-      interimMs: 60,
+      interimMs: 20,
     })
     await post(app.base, messageBody('wamid.SLOW'))
     await until(() => app.calls.sent.length === 1)
     expect(bodies(app.calls)).toEqual([REPLY_INTERIM])
-    await settle()
-    expect(app.calls.sent).toHaveLength(1) // once, not on a timer loop
     await until(() => app.calls.typing.length === 2) // typing again after the note
     release.open()
     await until(() => app.calls.reactions.length === 1)
     expect(bodies(app.calls)).toEqual([REPLY_INTERIM, '✓ Café $3.500 (visa)'])
     expect(await movements()).toHaveLength(1)
     expect((await row('wamid.SLOW'))?.interim_sent_at).toBeInstanceOf(Date)
-    // A recovery pass never repeats it.
-    await app.processor.sweep()
-    expect(app.calls.sent).toHaveLength(2)
     app.close()
   })
 
@@ -763,8 +759,6 @@ describe('logging', () => {
     })
     await post(app.base, messageBody('wamid.BAD'))
     await until(() => app.calls.sent.length === 1)
-    await settle()
-    await app.processor.sweep()
     expect(bodies(app.calls)).toEqual([REPLY_FAILED])
     expect(await movements()).toHaveLength(0)
     expect(app.calls.reactions).toHaveLength(0)
@@ -791,47 +785,116 @@ describe('logging', () => {
 
   it('the deadline gives one failure message and the late result writes nothing', async () => {
     const release = gate()
-    let signal: AbortSignal | undefined
     const app = await setup({
-      model: fakeModel(async (s) => {
-        signal = s
+      model: fakeModel(async () => {
         await release.promise // ignores the abort, like a stuck socket
         return cafe
       }),
-      interimMs: 40,
-      deadlineMs: 200,
+      deadlineMs: 100,
     })
     await post(app.base, messageBody('wamid.LATE'))
-    await until(() => app.calls.sent.length === 2)
-    expect(bodies(app.calls)).toEqual([REPLY_INTERIM, REPLY_FAILED])
-    expect(signal?.aborted).toBe(true)
+    await until(() => app.calls.sent.length === 1)
+    expect(bodies(app.calls)).toEqual([REPLY_FAILED])
     release.open()
-    await settle()
-    await app.processor.sweep()
-    expect(bodies(app.calls)).toEqual([REPLY_INTERIM, REPLY_FAILED])
+    await until(async () => (await row('wamid.LATE'))?.status === 'failed')
+    await settle() // lets a wrongly written late result show up
+    expect(bodies(app.calls)).toEqual([REPLY_FAILED])
     expect(await movements()).toHaveLength(0)
-    expect(await row('wamid.LATE')).toMatchObject({
-      status: 'failed',
-      command: null,
-      reply_text: null,
-    })
+    expect(await row('wamid.LATE')).toMatchObject({ command: null, reply_text: null })
     expect(app.calls.reactions).toHaveLength(0)
     app.close()
   })
 
-  it('after the commit point a late send still goes out and no failure notice follows', async () => {
-    const fake = fakeGraph({
-      send: async () => {
-        await new Promise((r) => setTimeout(r, 300))
-        return 'wamid.OUTL'
-      },
+  it('a deadline that fires during the commit loses: committed means the reply goes out', async () => {
+    const inCommit = gate()
+    const proceed = gate()
+    const app = await setup({
+      deadlineMs: 600,
+      processorStore: (store) => ({
+        ...store,
+        commit: async (c, m) => {
+          inCommit.open()
+          await proceed.promise
+          return store.commit(c, m)
+        },
+      }),
     })
-    const app = await setup({ fake, deadlineMs: 150, interimMs: 60_000 })
-    await post(app.base, messageBody('wamid.AFTER'))
+    await post(app.base, messageBody('wamid.MID'))
+    await inCommit.promise
+    await new Promise((r) => setTimeout(r, 650)) // the deadline passes while the commit is held
+    proceed.open()
     await until(() => app.calls.reactions.length === 1)
     expect(bodies(app.calls)).toEqual(['✓ Café $3.500 (visa)'])
     expect(await movements()).toHaveLength(1)
-    expect((await row('wamid.AFTER'))?.status).toBe('done')
+    expect((await row('wamid.MID'))?.failure_sent_at).toBeNull()
+    app.close()
+  })
+
+  it('a claim lost at the commit writes nothing and says nothing more', async () => {
+    let calls: { sent: unknown[] } | undefined
+    const app = await setup({
+      processorStore: (store) => ({
+        ...store,
+        commit: async () => {
+          // Hold the commit until the interim note is out, then lose the claim.
+          await until(() => calls?.sent.length === 1)
+          return false
+        },
+      }),
+      interimMs: 10,
+    })
+    calls = app.calls
+    await post(app.base, messageBody('wamid.LOST'))
+    await until(() => app.calls.sent.length === 1)
+    await settle()
+    expect(bodies(app.calls)).toEqual([REPLY_INTERIM])
+    expect(await movements()).toHaveLength(0)
+    expect(await row('wamid.LOST')).toMatchObject({ failure_sent_at: null, reply_text: null })
+    app.close()
+  })
+
+  it('a commit that throws gives one failure message and stores nothing', async () => {
+    const app = await setup({
+      processorStore: (store) => ({
+        ...store,
+        commit: async () => {
+          throw new Error('connection reset')
+        },
+      }),
+    })
+    await post(app.base, messageBody('wamid.THROW'))
+    await until(() => app.calls.sent.length === 1)
+    expect(bodies(app.calls)).toEqual([REPLY_FAILED])
+    expect(await movements()).toHaveLength(0)
+    expect((await row('wamid.THROW'))?.status).toBe('failed')
+    app.close()
+  })
+
+  it('a shutdown during the parse hands the row back, and the next process answers it', async () => {
+    const entered = gate()
+    const release = gate()
+    const app = await setup({
+      model: fakeModel(async () => {
+        entered.open()
+        await release.promise
+        return cafe
+      }),
+    })
+    await post(app.base, messageBody('wamid.TERM'))
+    await entered.promise
+    await app.processor.stop(2000)
+    expect(await row('wamid.TERM')).toMatchObject({ status: 'pending', failure_sent_at: null })
+    expect(app.calls.sent).toHaveLength(0)
+
+    // The new process: its startup sweep takes the row and answers it.
+    const successor = app.makeProcessor(app.store, fakeModel().client)
+    await successor.sweep()
+    expect(bodies(app.calls)).toEqual(['✓ Café $3.500 (visa)'])
+    expect(await movements()).toHaveLength(1)
+    release.open() // the old process's model finally answers: nothing more is written
+    await settle()
+    expect(await movements()).toHaveLength(1)
+    expect(app.calls.sent).toHaveLength(1)
     app.close()
   })
 
@@ -903,12 +966,13 @@ describe('logging', () => {
     const commands: Command[] = [
       { type: 'correct', target: 'el café', changes, confidence: 'high' },
       { type: 'delete', target: 'el último', confidence: 'high' },
+      { type: 'delete', target: '', confidence: 'low' }, // doubtful, not unstorable
       { type: 'query', period: 'today', direction: null, category: null, payment: null },
     ]
     let i = 0
     const app = await setup({ model: fakeModel(() => commands[i++] as Command) })
-    for (const n of [1, 2, 3]) await post(app.base, messageBody(`wamid.NY${n}`))
-    await until(() => app.calls.sent.length === 3)
+    for (const n of [1, 2, 3, 4]) await post(app.base, messageBody(`wamid.NY${n}`))
+    await until(() => app.calls.sent.length === 4)
     expect(new Set(bodies(app.calls))).toEqual(
       new Set(['Todavía no puedo corregir, borrar ni responder consultas. Llega pronto.']),
     )

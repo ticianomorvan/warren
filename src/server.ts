@@ -42,9 +42,10 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     log('shutdown', { signal })
     clearInterval(timer)
     server.close()
-    // Let replies already being sent finish, so a deploy does not leave rows `unknown`.
+    // Messages still parsing go back to `pending` for the next process; replies already being sent
+    // finish, so a deploy does not leave rows `unknown`.
     processor
-      .drain(10_000)
+      .stop(10_000)
       .then(() => sql.end({ timeout: 5 }))
       .finally(() => process.exit(0))
   })

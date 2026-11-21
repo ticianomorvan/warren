@@ -202,3 +202,5 @@ Decisions the slice brief did not specify:
 - The ✅ mark goes only on messages that stored movements. Canned replies (`correct`/`delete`/`query` "not yet", `help`, `off_topic`) and non-text messages get none, since nothing was done.
 - A failure notice that dies between its timestamp and its send is lost, not retried: at most once beats a duplicate.
 - `ANTHROPIC_API_KEY` is now required config, so a missing key stops the server at startup instead of failing every message.
+- `validateCommand` returns `fatal` (a `log` value the table cannot hold) next to `issues`; only `fatal` fails a message. A `delete` or `correct` with an empty target is doubtful, not fatal, and gets the "not yet" reply.
+- A movement dated in another year than the message renders `dd/mm/yy`.

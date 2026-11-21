@@ -104,3 +104,7 @@ model at the end. CI never calls the Anthropic API.
   messages that stored movements, `reaction_sent_at`) are committed before they are sent and never repeated. A model output with an
   unstorable value (bad amount, date or description) is treated as a failed parse, never repaired.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
+- **Shutdown.** On SIGTERM `processor.stop()` aborts parses that have not reached the commit point and settles
+  those rows to `pending`, so the next process's startup sweep answers them inside their deadline. The deadline
+  is one `AbortSignal` checked right before the commit; a deadline that fires mid-commit loses (committed
+  means the reply goes out). `today` comes from the message's own time (`meta_ts`), not the clock.

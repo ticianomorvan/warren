@@ -50,6 +50,8 @@ export function createProcessor(o: ProcessorOptions) {
   const interimMs = o.interimMs ?? 10_000
   const deadlineMs = o.deadlineMs ?? 30_000
   const inflight = new Set<Promise<unknown>>()
+  /** Aborted by `shutdown`: parses that have not reached the commit point give their rows back. */
+  const shutdown = new AbortController()
   let sweeping = false
 
   /** Read receipt plus typing indicator. Cosmetic: a failure is only logged. */
@@ -63,40 +65,46 @@ export function createProcessor(o: ProcessorOptions) {
     }
   }
 
-  /** The slow-message note, at most once: its timestamp is committed before the send. Cosmetic. */
-  async function sendInterim(c: Claim): Promise<void> {
+  /**
+   * "Stamp, then send, never again": `stamp` commits that the message is going out (false means do
+   * not send), then `send` runs. A failure of either is only logged, so nothing here is retried.
+   */
+  async function once(
+    what: string,
+    c: Claim,
+    stamp: () => Promise<boolean>,
+    send: () => Promise<unknown>,
+    level: 'info' | 'error' = 'info',
+  ): Promise<void> {
     try {
-      if (!(await store.recordInterim(c))) return
-      await graph.sendText(c.wa_id, REPLY_INTERIM)
-      log('interim_sent', { wamid: c.wamid })
-      await graph.markReadAndType(c.wamid)
+      if (await stamp()) await send()
     } catch (err) {
-      log('interim_failed', { wamid: c.wamid, error: errorText(err) })
+      log(`${what}_failed`, { wamid: c.wamid, error: errorText(err) }, level)
     }
   }
 
-  /** The failure path: one notice, only if the reply send never started, never retried. */
-  async function fail(c: Claim, reason: string): Promise<void> {
-    if (!(await store.recordFailure(c, reason))) {
-      log('failure_skipped', { wamid: c.wamid, reason })
-      return
-    }
-    log('message_failed', { wamid: c.wamid, attempt: c.attempts, reason }, 'error')
-    try {
-      await store.recordFailureSent(c, await graph.sendText(c.wa_id, REPLY_FAILED))
-    } catch (err) {
-      log('failure_notice_failed', { wamid: c.wamid, error: errorText(err) }, 'error')
-    }
-  }
+  /** The failure path: one notice, only if the reply send never started and nothing was committed. */
+  const fail = (c: Claim, reason: string) =>
+    once(
+      'failure_notice',
+      c,
+      async () => {
+        const ok = await store.recordFailure(c, reason)
+        log(ok ? 'message_failed' : 'failure_skipped', { wamid: c.wamid, reason }, 'error')
+        return ok
+      },
+      async () => store.recordFailureSent(c, await graph.sendText(c.wa_id, REPLY_FAILED)),
+      'error',
+    )
 
-  /** The done mark, best effort: committed before the call, never retried. */
-  async function react(c: Claim): Promise<void> {
-    try {
-      if (await store.recordReaction(c)) await graph.sendReaction(c.wa_id, c.wamid, DONE_MARK)
-    } catch (err) {
-      log('reaction_failed', { wamid: c.wamid, error: errorText(err) })
-    }
-  }
+  /** The done mark: best effort, never retried. */
+  const react = (c: Claim) =>
+    once(
+      'reaction',
+      c,
+      () => store.recordReaction(c),
+      () => graph.sendReaction(c.wa_id, c.wamid, DONE_MARK),
+    )
 
   /** The at-most-once send. True when the reply is out and recorded. */
   async function deliver(
@@ -142,114 +150,108 @@ export function createProcessor(o: ProcessorOptions) {
     return true
   }
 
-  /** Parses a text message that has no stored reply yet, commits it, and answers. */
-  async function parseAndAnswer(c: Claim): Promise<void> {
-    // 'running' until the commit point starts. The deadline and a failed parse move it to 'failed'
-    // and a result that arrives after that is dropped. Checked and set without an await between.
-    let phase: 'running' | 'committing' | 'failed' = 'running'
-    const abort = new AbortController()
-    const timers: NodeJS.Timeout[] = []
-    let interim: Promise<void> | undefined
-
-    const deadline = new Promise<'deadline'>((resolve) => {
-      timers.push(
-        setTimeout(
-          () => {
-            if (phase === 'running') {
-              phase = 'failed'
-              abort.abort(new Error('deadline'))
-            }
-            resolve('deadline')
-          },
-          Math.max(0, deadlineMs - c.ageMs),
-        ),
-      )
+  /**
+   * Parses a text message that has no stored reply yet, commits it, and answers. `age` is how long
+   * ago the message was received. One signal ends the wait before the commit point: the 30 s
+   * deadline, or the shutdown of this process. It is checked right before the commit starts, with
+   * no await in between, so no commit starts after it. A deadline that fires while the commit is
+   * running loses: committed means the reply is sent, late if need be.
+   */
+  async function parseAndAnswer(c: Claim, age: number): Promise<void> {
+    const deadline = AbortSignal.timeout(Math.max(0, Math.ceil(deadlineMs - age)))
+    const signal = AbortSignal.any([deadline, shutdown.signal])
+    const aborted = new Promise<'aborted'>((resolve) => {
+      if (signal.aborted) resolve('aborted')
+      else signal.addEventListener('abort', () => resolve('aborted'), { once: true })
     })
-    const interimTimer = c.interimSent
-      ? undefined
-      : setTimeout(
-          () => {
-            if (phase === 'running') interim = sendInterim(c)
+
+    let interim: Promise<void> | undefined
+    let interimAgain: Promise<void> | undefined
+    const interimTimer = setTimeout(
+      () => {
+        interim = once(
+          'interim',
+          c,
+          () => store.recordInterim(c),
+          async () => {
+            await graph.sendText(c.wa_id, REPLY_INTERIM)
+            log('interim_sent', { wamid: c.wamid })
+            // The typing indicator again, without holding the reply back.
+            interimAgain = graph.markReadAndType(c.wamid).catch(() => {})
           },
-          Math.max(0, interimMs - c.ageMs),
         )
-    /** No new interim note after this, and one already on its way finishes before the reply. */
+      },
+      Math.max(0, interimMs - age),
+    )
+    /** No new interim note after this, and one on its way finishes before the reply. */
     const closeInterim = async () => {
       clearTimeout(interimTimer)
       await interim
     }
 
     const typing = c.typingSent ? Promise.resolve(undefined) : showTyping(c)
+    const today = argentinaToday(c.messageAt)
     const parsing = (async () => {
       const accountId = await store.upsertAccount(c.wa_id)
       const recentMovements = await store.recentMovements(accountId)
-      const today = argentinaToday()
       const result = await parseMessage({
         text: c.body ?? '',
         today,
         recentMovements,
         model: o.model ?? 'haiku',
         client: o.client,
-        signal: abort.signal,
+        signal,
       })
-      return { accountId, today, result }
+      return { accountId, result }
     })().then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
     )
 
-    let reply: string
     try {
-      const outcome = await Promise.race([parsing, deadline])
-      let reason: string | undefined
-      if (outcome === 'deadline' || phase !== 'running')
-        reason = 'deadline passed before the commit point'
-      else if ('error' in outcome) reason = `parse failed: ${errorText(outcome.error)}`
-      else {
-        const { accountId, today, result } = outcome.value
-        const { command, issues } = result
-        // Every problem but "too many movements" means a value that cannot be stored as it is.
-        const unusable = issues.filter((i) => i.path !== 'movements')
-        if (unusable.length > 0) {
-          reason = `invalid model output: ${unusable.map((i) => `${i.path}: ${i.message}`).join('; ')}`
-        } else {
-          reply = renderReply(command, today, { helpContact: o.helpContact })
-          phase = 'committing'
-          const committed = await store.commit(c, {
-            accountId,
-            command,
-            modelMs: result.latencyMs,
-            reply,
-            movements: command.type === 'log' ? command.movements : [],
-          })
-          if (!committed) {
-            log('claim_lost', { wamid: c.wamid, attempt: c.attempts })
-            return
-          }
-          log('committed', {
-            wamid: c.wamid,
-            command: command.type,
-            model_ms: Math.round(result.latencyMs),
-          })
-          await closeInterim()
-          if (
-            await deliver(c, reply, {
-              typing_ms: await typing,
-              model_ms: Math.round(result.latencyMs),
-            })
-          )
-            await react(c)
-          return
-        }
+      const outcome = await Promise.race([parsing, aborted])
+      if (deadline.aborted) return await fail(c, 'deadline passed before the commit point')
+      if (shutdown.signal.aborted) {
+        // Nothing was committed and no send started: hand the row to the next process at once.
+        await store.settle(c, 'pending', 'shutdown before the commit point')
+        log('message_released', { wamid: c.wamid })
+        return
       }
-      phase = 'failed'
-      abort.abort(new Error('failed'))
+      if (outcome === 'aborted') return
+      if ('error' in outcome) return await fail(c, `parse failed: ${errorText(outcome.error)}`)
+
+      const { accountId, result } = outcome.value
+      const { command } = result
+      if (result.fatal.length > 0) {
+        const detail = result.fatal.map((i) => `${i.path}: ${i.message}`).join('; ')
+        return await fail(c, `invalid model output: ${detail}`)
+      }
+      const reply = renderReply(command, today, { helpContact: o.helpContact })
+
+      // The commit point. Nothing awaits between the signal check above and this call.
+      let committed: boolean
+      try {
+        committed = await store.commit(c, {
+          accountId,
+          command,
+          modelMs: result.latencyMs,
+          reply,
+          movements: command.type === 'log' ? command.movements : [],
+        })
+      } catch (err) {
+        return await fail(c, `commit failed: ${errorText(err)}`)
+      }
+      if (!committed) {
+        log('claim_lost', { wamid: c.wamid, attempt: c.attempts })
+        return
+      }
+      const model_ms = Math.round(result.latencyMs)
+      log('committed', { wamid: c.wamid, command: command.type, model_ms })
       await closeInterim()
-      await fail(c, reason)
+      if (await deliver(c, reply, { typing_ms: await typing, model_ms })) await react(c)
     } finally {
-      for (const t of timers) clearTimeout(t)
-      clearTimeout(interimTimer)
-      await typing
+      await closeInterim()
+      await Promise.all([typing, interimAgain])
     }
   }
 
@@ -271,11 +273,13 @@ export function createProcessor(o: ProcessorOptions) {
       if (await deliver(c, c.replyText, { typing_ms })) await react(c)
       return
     }
-    if (c.ageMs >= deadlineMs) {
+    // A sweep claims many rows and works them in turn: age each from when its own work starts.
+    const age = c.ageMs + (performance.now() - c.claimedAt)
+    if (age >= deadlineMs) {
       await fail(c, 'deadline passed before the commit point')
       return
     }
-    await parseAndAnswer(c)
+    await parseAndAnswer(c, age)
   }
 
   async function run(c: Claim): Promise<void> {
@@ -297,7 +301,7 @@ export function createProcessor(o: ProcessorOptions) {
 
   /** Claims and processes these messages now, if they are due. Never throws. */
   function kick(wamids: string[]): Promise<void> {
-    if (wamids.length === 0) return Promise.resolve()
+    if (wamids.length === 0 || shutdown.signal.aborted) return Promise.resolve()
     return track(
       (async () => {
         const claims = await store.claimDue({ limit: wamids.length, wamids })
@@ -308,7 +312,7 @@ export function createProcessor(o: ProcessorOptions) {
 
   /** The recovery pass. Skipped when the previous one is still running. */
   async function sweep(): Promise<number> {
-    if (sweeping) return 0
+    if (sweeping || shutdown.signal.aborted) return 0
     sweeping = true
     const done = track(
       (async () => {
@@ -337,7 +341,16 @@ export function createProcessor(o: ProcessorOptions) {
     clearTimeout(timer)
   }
 
-  return { kick, sweep, drain }
+  /**
+   * For SIGTERM: stop taking work, give back every message that is still parsing (it goes to
+   * `pending`, so the next process answers it inside its deadline), then wait for sends in flight.
+   */
+  async function stop(ms: number): Promise<void> {
+    shutdown.abort(new Error('shutdown'))
+    await drain(ms)
+  }
+
+  return { kick, sweep, drain, stop }
 }
 
 export type Processor = ReturnType<typeof createProcessor>

@@ -11,9 +11,12 @@ export interface Claim {
   body: string | null
   /** Ms since `received_at` when the row was claimed (database clock). The deadlines count from it. */
   ageMs: number
+  /** `performance.now()` when the claim came back, to age `ageMs` up to when the work starts. */
+  claimedAt: number
+  /** The message's own time (`meta_ts`, else `received_at`): the Argentine day is taken from it. */
+  messageAt: Date
   /** The reply stored at the commit point; set means the model must not be called again. */
   replyText: string | null
-  interimSent: boolean
   typingSent: boolean
 }
 
@@ -106,7 +109,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
         SET status = 'failed', updated_at = now(),
             error = COALESCE(error, 'attempts exhausted')
         WHERE attempts >= ${o.maxAttempts} AND (status = 'pending' OR (${stale})) ${only}`
-      const rows = await sql<(Omit<Claim, 'ageMs'> & { ageMs: string })[]>`
+      const rows = await sql<(Omit<Claim, 'ageMs' | 'claimedAt'> & { ageMs: string })[]>`
         UPDATE inbound_message
         SET status = 'processing', attempts = attempts + 1, claimed_at = now(), updated_at = now()
         WHERE id IN (
@@ -115,24 +118,24 @@ export function createStore(sql: Sql, o: StoreOptions) {
           ORDER BY id LIMIT ${opts.limit}
           FOR UPDATE SKIP LOCKED)
         RETURNING id, wamid, wa_id, kind, attempts, body, reply_text AS "replyText",
-          interim_sent_at IS NOT NULL AS "interimSent", typing_sent_at IS NOT NULL AS "typingSent",
+          typing_sent_at IS NOT NULL AS "typingSent",
+          COALESCE(meta_ts, received_at) AS "messageAt",
           extract(epoch FROM now() - received_at) * 1000 AS "ageMs"`
-      return rows.map((r) => ({ ...r, ageMs: Number(r.ageMs) }))
+      const claimedAt = performance.now()
+      return rows.map((r) => ({ ...r, ageMs: Number(r.ageMs), claimedAt }))
     },
 
     /** The account for a WhatsApp id, created on the first allowed message. */
     async upsertAccount(waId: string): Promise<number> {
-      const [row] = await sql<{ id: number }[]>`
-        INSERT INTO account (wa_id) VALUES (${waId})
-        ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id
-        RETURNING id`
+      await sql`INSERT INTO account (wa_id) VALUES (${waId}) ON CONFLICT (wa_id) DO NOTHING`
+      const [row] = await sql<{ id: number }[]>`SELECT id FROM account WHERE wa_id = ${waId}`
       return Number(row?.id)
     },
 
     /** The account's last `limit` movements that no correction replaced, newest first. */
     async recentMovements(accountId: number, limit = 5): Promise<RecentMovement[]> {
       return sql<RecentMovement[]>`
-        SELECT direction, amount::text AS amount, currency, occurred_on::text AS date,
+        SELECT direction, amount::text AS amount, currency, to_char(occurred_on, 'YYYY-MM-DD') AS date,
                description, category, payment
         FROM movement
         WHERE account_id = ${accountId} AND superseded_by IS NULL
@@ -140,8 +143,8 @@ export function createStore(sql: Sql, o: StoreOptions) {
     },
 
     /**
-     * The commit point, one transaction: the parsed command, the movements (idempotent on
-     * `(inbound_message_id, position)`) and the rendered reply. False, with nothing written, when
+     * The commit point, one transaction: the parsed command, the movements (unique on
+     * `(inbound_message_id, position)`: the guarded UPDATE means a conflict is a bug, so it raises) and the rendered reply. False, with nothing written, when
      * the claim was lost, the point was already passed, or a failure notice was already started.
      */
     async commit(c: Claim, m: Commit): Promise<boolean> {
@@ -149,7 +152,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
         const rows = await tx`
           UPDATE inbound_message
           SET command = ${tx.json(m.command as never)}, model_ms = ${Math.round(m.modelMs)},
-              reply_text = ${m.reply}, account_id = ${m.accountId}, updated_at = now()
+              reply_text = ${m.reply}, updated_at = now()
           WHERE ${owned(c)} AND reply_text IS NULL AND failure_sent_at IS NULL
           RETURNING id`
         if (rows.length === 0) return false
@@ -168,8 +171,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
             confidence: x.confidence,
           }))
           await tx`
-            INSERT INTO movement ${tx(values)}
-            ON CONFLICT (inbound_message_id, position) DO NOTHING`
+            INSERT INTO movement ${tx(values)}`
         }
         return true
       })
@@ -196,7 +198,8 @@ export function createStore(sql: Sql, o: StoreOptions) {
       const rows = await sql`
         UPDATE inbound_message
         SET status = 'failed', error = ${error}, failure_sent_at = now(), updated_at = now()
-        WHERE ${owned(c)} AND send_started_at IS NULL AND failure_sent_at IS NULL
+        WHERE ${owned(c)} AND send_started_at IS NULL AND reply_text IS NULL
+          AND failure_sent_at IS NULL
         RETURNING id`
       return rows.length > 0
     },

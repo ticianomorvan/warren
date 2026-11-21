@@ -7,7 +7,6 @@ CREATE TABLE account (
 );
 
 ALTER TABLE inbound_message
-  ADD COLUMN account_id        bigint REFERENCES account (id),
   ADD COLUMN command           jsonb,           -- the parsed command, stored at the commit point
   ADD COLUMN reply_text        text,            -- the rendered reply, stored at the commit point
   ADD COLUMN model_ms          integer,         -- time spent in parseMessage

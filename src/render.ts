@@ -16,7 +16,8 @@ const REPLY_HELP =
  * `validateCommand` has already checked.
  */
 export function formatMoney(amount: string, currency: Movement['currency']): string {
-  const [whole = '0', fraction = ''] = amount.split('.')
+  const [rawWhole = '0', fraction = ''] = amount.split('.')
+  const whole = rawWhole.replace(/^0+(?=\d)/, '') // "03500" is 3500
   const grouped = whole.replace(/\B(?=(\d{3})+$)/g, '.')
   const decimals = /^0*$/.test(fraction) ? '' : `,${fraction.padEnd(2, '0')}`
   return currency === 'USD' ? `US$ ${grouped}${decimals}` : `$${grouped}${decimals}`
@@ -25,8 +26,9 @@ export function formatMoney(amount: string, currency: Movement['currency']): str
 function when(date: string, today: string): string {
   if (date === today) return ''
   if (date === addDays(today, -1)) return ' · ayer'
-  const [, month = '', day = ''] = date.split('-')
-  return ` · ${day}/${month}`
+  const [year = '', month = '', day = ''] = date.split('-')
+  // A different year is shown, so a wrong year cannot pass for the right day.
+  return year === today.slice(0, 4) ? ` · ${day}/${month}` : ` · ${day}/${month}/${year.slice(2)}`
 }
 
 /** One movement as a line, without the leading mark. `today` is the Argentine day, yyyy-mm-dd. */
