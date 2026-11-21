@@ -34,12 +34,12 @@ export class GraphError extends Error {
 }
 
 /**
- * The number to send to for a webhook `wa_id`. Webhooks give Argentine mobiles as `549…` and Mexican
- * ones as `521…`, but Meta saves test-number recipients without that mobile digit and matches sends
- * against it exactly, so a send to the `wa_id` fails with 131030. The short form reaches the same
- * account in production too (Meta answers with the long `wa_id`), so it is used everywhere.
+ * The short form of a webhook `wa_id`, or the `wa_id` itself. Webhooks give Argentine mobiles as
+ * `549…` and Mexican ones as `521…`, but Meta saves test-number recipients without that mobile digit
+ * and matches sends against it exactly, so a send to the `wa_id` fails with 131030 there. Only used
+ * as a fallback after that rejection; production sends to the `wa_id` as documented.
  */
-export function recipientFor(waId: string): string {
+export function shortRecipient(waId: string): string {
   const ar = /^549(\d{10})$/.exec(waId)
   if (ar) return `54${ar[1]}`
   const mx = /^521(\d{10})$/.exec(waId)
@@ -68,7 +68,9 @@ export interface GraphOptions {
  * (2026-11-21); 60 s stays inside that, so a burst of messages reuses one connection. undici
  * also drops a socket early when the server closes it or sends a shorter `Keep-Alive`.
  */
-const agent = new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 60_000 })
+// One connection, so the read-and-typing call just before each send proves the socket the send uses
+// is alive; two sockets alternate otherwise. Graph calls are sequential per message anyway.
+const agent = new Agent({ connections: 1, keepAliveTimeout: 60_000, keepAliveMaxTimeout: 60_000 })
 const keptAliveFetch = ((url: string, init: RequestInit) =>
   undiciFetch(url, { ...(init as object), dispatcher: agent })) as unknown as typeof fetch
 
@@ -97,16 +99,32 @@ export function createGraph(o: GraphOptions): Graph {
     return text ? JSON.parse(text) : {}
   }
 
+  /** wa_ids whose send needed the short form (Meta's test-number recipient list). */
+  const useShort = new Set<string>()
+
+  async function send(to: string, body: string): Promise<string> {
+    const res = await post({ recipient_type: 'individual', to, type: 'text', text: { body } })
+    const id = res.messages?.[0]?.id
+    if (!id) throw new GraphError(200, 'no message id in response')
+    return id
+  }
+
   return {
     async markReadAndType(wamid) {
       await post({ status: 'read', message_id: wamid, typing_indicator: { type: 'text' } })
     },
     async sendText(waId, body) {
-      const to = recipientFor(waId)
-      const res = await post({ recipient_type: 'individual', to, type: 'text', text: { body } })
-      const id = res.messages?.[0]?.id
-      if (!id) throw new GraphError(200, 'no message id in response')
-      return id
+      const short = shortRecipient(waId)
+      if (useShort.has(waId)) return send(short, body)
+      try {
+        return await send(waId, body)
+      } catch (err) {
+        // 131030 is a 4xx, so nothing was sent and a second try cannot duplicate the reply.
+        if (!(err instanceof GraphError && err.code === 131030) || short === waId) throw err
+        const id = await send(short, body)
+        useShort.add(waId)
+        return id
+      }
     },
   }
 }

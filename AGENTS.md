@@ -84,8 +84,8 @@ model at the end. CI never calls the Anthropic API.
   mode); empty or unset answers nobody. Every message is stored; the others end as `ignored`.
 - **Meta test number:** it only delivers to its recipient list, matched exactly. Meta saves Argentine
   mobiles there without the `9` (and Mexican ones without the `1`), even when typed with it, while
-  webhooks give `549…` / `521…`. `recipientFor` in `src/whatsapp/graph.ts` sends to the short form, which
-  production resolves to the same account. A list entry typed with the local `15` is saved with it and
+  webhooks give `549…` / `521…`. `sendText` in `src/whatsapp/graph.ts` sends to the `wa_id` and, only
+  after a 131030 (nothing was sent), retries once with the short form and remembers it for that number. A list entry typed with the local `15` is saved with it and
   never matches; re-add the number as `+54 9 <area> <number>`. The symptom is `131030 Recipient phone number
   not in allowed list` on every send while read and typing still work.
 - Sends are at most once. `send_started_at` is committed before the Graph call; a row that dies after that

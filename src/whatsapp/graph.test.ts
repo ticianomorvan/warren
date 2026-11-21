@@ -1,35 +1,58 @@
 import { describe, expect, it } from 'vitest'
-import { createGraph, GraphError, recipientFor } from './graph'
+import { createGraph, GraphError, shortRecipient } from './graph'
 
-describe('recipientFor', () => {
+describe('shortRecipient', () => {
   it('drops the mobile digit from Argentine and Mexican wa_ids', () => {
-    expect(recipientFor('5493515138578')).toBe('543515138578')
-    expect(recipientFor('5491123456789')).toBe('541123456789')
-    expect(recipientFor('5215512345678')).toBe('525512345678')
+    expect(shortRecipient('5493515138578')).toBe('543515138578')
+    expect(shortRecipient('5491123456789')).toBe('541123456789')
+    expect(shortRecipient('5215512345678')).toBe('525512345678')
   })
 
   it('leaves every other number alone', () => {
-    expect(recipientFor('543515138578')).toBe('543515138578')
-    expect(recipientFor('15551439243')).toBe('15551439243')
-    expect(recipientFor('34612345678')).toBe('34612345678')
-    expect(recipientFor('54935151385789')).toBe('54935151385789')
+    expect(shortRecipient('543515138578')).toBe('543515138578')
+    expect(shortRecipient('15551439243')).toBe('15551439243')
+    expect(shortRecipient('34612345678')).toBe('34612345678')
+    expect(shortRecipient('54935151385789')).toBe('54935151385789')
   })
 })
 
 describe('createGraph', () => {
-  it('sends to the short recipient form and returns the wamid', async () => {
-    const bodies: unknown[] = []
+  const fakeGraph = (allowed: (to: string) => boolean) => {
+    const tos: string[] = []
     const graph = createGraph({
       version: 'v27.0',
       phoneNumberId: '1',
       token: 't',
       fetch: async (_url, init) => {
-        bodies.push(JSON.parse(String(init?.body)))
-        return new Response(JSON.stringify({ messages: [{ id: 'wamid.out' }] }))
+        const { to } = JSON.parse(String(init?.body))
+        tos.push(to)
+        if (!allowed(to))
+          return new Response(JSON.stringify({ error: { message: 'not in list', code: 131030 } }), {
+            status: 400,
+          })
+        return new Response(JSON.stringify({ messages: [{ id: `wamid.${tos.length}` }] }))
       },
     })
-    await expect(graph.sendText('5493515138578', 'hola')).resolves.toBe('wamid.out')
-    expect(bodies[0]).toMatchObject({ to: '543515138578', type: 'text', text: { body: 'hola' } })
+    return { graph, tos }
+  }
+
+  it('sends to the wa_id when Meta accepts it', async () => {
+    const { graph, tos } = fakeGraph(() => true)
+    await expect(graph.sendText('5493515138578', 'hola')).resolves.toBe('wamid.1')
+    expect(tos).toEqual(['5493515138578'])
+  })
+
+  it('retries once with the short form after 131030, then remembers it', async () => {
+    const { graph, tos } = fakeGraph((to) => to === '543515138578')
+    await expect(graph.sendText('5493515138578', 'a')).resolves.toBe('wamid.2')
+    await expect(graph.sendText('5493515138578', 'b')).resolves.toBe('wamid.3')
+    expect(tos).toEqual(['5493515138578', '543515138578', '543515138578'])
+  })
+
+  it('does not retry a 131030 for a number with no short form', async () => {
+    const { graph, tos } = fakeGraph(() => false)
+    await expect(graph.sendText('34612345678', 'a')).rejects.toMatchObject({ code: 131030 })
+    expect(tos).toEqual(['34612345678'])
   })
 
   it('treats a recipient-list rejection as permanent', () => {
