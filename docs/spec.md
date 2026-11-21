@@ -78,7 +78,8 @@ How we know it worked:
 - **Slow.** If the answer is not out 10 s after the webhook, send one interim note ("Sigo con esto, ya te respondo.") and show the typing indicator again. At most once per message.
 - **Failed.** When processing fails for good (the model keeps failing after its retries, or there is nothing valid to answer with), send a short failure message saying the message was not processed and to try again. A 30 s deadline per message ends in the same failure message, and work still running after it is dropped, so a late answer can never contradict it.
 - **Cost.** Interim and failure messages count toward the 1,000 free delivered service messages a month, like any reply. Both are rare by design. The per-user pair limit (1 message per 6 s, bursts of up to 45) does not bind.
-- **Reactions** (⏳, then ✅ on the user's message) were considered. Meta documents neither their billing nor replacing a reaction, so test them in dev before relying on them.
+- **Done mark (decided 2026-11-21).** After the reply is sent, react ✅ on the user's message, so a run of messages shows which ones were handled. It is best effort: it never delays the reply, a failure is only logged and never retried, and it is not sent for `unknown` or failed messages. A reaction needs a recipient, so it uses the same `wa_id`-then-short-form fallback as replies.
+- **Why not a reaction as the first signal.** Measured 2026-11-21 against Graph: a reaction takes 670–763 ms to be accepted, like a text send (510–720 ms), against 320–390 ms for read plus typing. Setting, replacing and removing a reaction (emoji `""`) all succeeded. Meta does not document whether reactions are billed; check Meta's pricing analytics once there is a payment method.
 
 **Prompt.**
 - A frozen system prompt sits first, under one cache breakpoint. It holds the Argentine money conventions:
@@ -147,7 +148,7 @@ Each slice ships on its own and comes with its proof.
      - a message from your phone, then `pnpm latency` showing the floor.
 3. **Logging live.**
    - Parser command `log`, movements stored, reply rendered from the template; multiple movements per message.
-   - The transparency rules in Design: typing in parallel with the model, the 10 s interim note, the failure message and the 30 s deadline.
+   - The transparency rules in Design: typing in parallel with the model, the 10 s interim note, the failure message, the 30 s deadline and the ✅ done mark after the reply.
    - Proof:
      - integration test: a recorded webhook payload against a local server and Postgres produces the expected rows and reply text, and a slow or failing model produces exactly one interim note or one failure message;
      - live, 20 real messages from your phone, then `pnpm latency` meets the latency targets in Goal.
