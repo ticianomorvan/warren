@@ -304,10 +304,16 @@ describe('silent wrong targets', () => {
     expect(g.silentWrongTarget).toBe(true)
   })
 
-  it('does not count a wrong number that code turns into the right movement (the newest match)', () => {
+  it('counts a confident number among the named rows that is not the expected one: code trusts it', () => {
     const g = grade(deleting('borrá el café', 1), del('café', 3))
+    expect(g.full).toBe(false)
+    expect(g.silentWrongTarget).toBe(true)
+  })
+
+  it('does not count a low-confidence one: code takes the newest match', () => {
+    const g = grade(deleting('borrá el café', 1), del('café', 3, 'low'))
     expect(g.full).toBe(false) // the model was wrong
-    expect(g.silentWrongTarget).toBe(false) // two cafés, no position: code takes the newest, number 1
+    expect(g.silentWrongTarget).toBe(false)
   })
 
   it('does not count a right number, or a low-confidence answer', () => {

@@ -493,7 +493,9 @@ describe('logging', () => {
       (seen[i] as { messages: { content: string }[] }).messages[0]?.content
     expect(content(0)).toContain(`Hoy es`)
     expect(content(0)).toContain('(ninguno)')
-    expect(content(1)).toContain(`1. out 3500 ARS ${TODAY} café [restaurantes] (visa)`)
+    expect(content(1)).toMatch(
+      new RegExp(`1\\. out 3500 ARS ${TODAY} \\d\\d:\\d\\d café \\[restaurantes\\] \\(visa\\)`),
+    )
     app.close()
   })
 

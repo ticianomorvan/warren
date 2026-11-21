@@ -15,6 +15,7 @@ import {
   REPLY_NO_CHANGES,
   REPLY_ONE_THING,
   type RenderOptions,
+  renderChangeQuestion,
   renderCorrection,
   renderDeletion,
   renderQuery,
@@ -22,7 +23,14 @@ import {
   renderReply,
   renderUnchanged,
 } from './render'
-import { answerNumber, type Numbered, positionsIn, resolveTarget } from './resolve'
+import {
+  answerNumber,
+  type Numbered,
+  namesMovement,
+  positionsIn,
+  resolveTarget,
+  saysOneOf,
+} from './resolve'
 import type { Executed, Previous } from './store'
 import { periodRange } from './time'
 
@@ -44,33 +52,32 @@ export interface ExecuteInput {
 
 const say = (reply: string): Executed => ({ reply })
 
+const offered = (candidates: Numbered[]) =>
+  candidates.map((c) => ({ number: c.number, id: c.movement.id }))
+
 const question = (candidates: Numbered[], today: string): Executed => ({
   reply: renderQuestion(candidates, today),
-  asked: candidates.map((c) => c.number),
+  asked: offered(candidates),
 })
 
 /**
- * When the message is only the answer to the `¿Cuál?` question we just asked ("2", "el primero"),
- * the previous message's action aimed at that row, whatever the model made of the short text. The
- * model wins only when it returned a confident correction with changes of its own.
+ * When the message is only the answer to the `¿Cuál?` question we just asked ("2", "el primero",
+ * "la segunda"), the previous message's action aimed at the movement that option offered, by its id,
+ * whatever the model made of the short text. An answer-shaped message cannot carry a change of its
+ * own, so the model never overrides it. The list may have shifted since the question; the id has not.
  */
-function answerToQuestion(i: ExecuteInput): { command: Command; movement: MovementRow } | null {
-  const { previous, command } = i
-  const asked = previous?.askedNumbers
-  const before = previous?.command
+function answerToQuestion(i: ExecuteInput): { command: Command; id: number } | null {
+  const asked = i.previous?.asked
+  const before = i.previous?.command
   if (!asked?.length || !before || (before.type !== 'correct' && before.type !== 'delete')) {
     return null
   }
-  if (
-    command.type === 'correct' &&
-    command.confidence === 'high' &&
-    Object.values(command.changes).some((v) => v !== null)
-  ) {
-    return null
-  }
-  const n = answerNumber(i.text, asked)
-  const movement = n === null ? undefined : i.recent[n - 1]
-  return movement ? { command: before, movement } : null
+  const n = answerNumber(
+    i.text,
+    asked.map((a) => a.number),
+  )
+  const id = asked.find((a) => a.number === n)?.id
+  return id === undefined ? null : { command: before, id }
 }
 
 /**
@@ -99,17 +106,30 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
       // Two positions in one message ("el 2 bórralo, cambiame el primero") are two actions.
       if (!answer && positionsIn(i.text, i.recent.length).length >= 2) return say(REPLY_ONE_THING)
       if (command.type === 'correct' && Object.values(command.changes).every((v) => v === null)) {
+        // "Me equivoqué en uno de los cafés": the words name several movements and no change.
+        const named = i.recent
+          .map((movement, k) => ({ number: k + 1, movement }))
+          .filter((n) => namesMovement(command.target, n.movement))
+        const [only] = named
+        if (!answer && only && (named.length > 1 || saysOneOf(i.text))) {
+          return {
+            reply: renderChangeQuestion(command.target, named, today),
+            asked: offered(named),
+          }
+        }
         return say(REPLY_NO_CHANGES)
       }
       // The pick was made on the list the model saw. If the ledger moved since, the numbers mean
-      // other movements now: ask, listing the list as it is.
-      const fresh = await recentMovements(tx, i.accountId)
-      if (fresh.length !== i.recent.length || fresh.some((m, k) => m.id !== i.recent[k]?.id)) {
-        const numbered: Numbered[] = fresh.map((movement, k) => ({ number: k + 1, movement }))
-        return question(numbered.slice(0, 3), today)
+      // other movements now: ask, listing the list as it is. (An answer goes by id, not by number.)
+      if (!answer) {
+        const fresh = await recentMovements(tx, i.accountId)
+        if (fresh.length !== i.recent.length || fresh.some((m, k) => m.id !== i.recent[k]?.id)) {
+          const numbered: Numbered[] = fresh.map((movement, k) => ({ number: k + 1, movement }))
+          return question(numbered.slice(0, 3), today)
+        }
       }
       const target = answer
-        ? { kind: 'found' as const, movement: answer.movement }
+        ? { kind: 'found' as const, movement: { id: answer.id } }
         : resolveTarget(command, i.recent, { text: i.text, today })
       if (target.kind === 'ask') return question(target.candidates, today)
       const old = await lockLive(tx, i.accountId, target.movement.id)

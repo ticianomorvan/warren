@@ -16,7 +16,7 @@ import {
 } from './command-fixtures'
 import type { Sql } from './db'
 import { execute } from './execute'
-import type { MovementRow } from './ledger'
+import { type MovementRow, recentMovements } from './ledger'
 import type { Command } from './parse'
 import { REPLY_BAD_CHANGE, REPLY_NO_CHANGES, REPLY_NO_MOVEMENTS, REPLY_ONE_THING } from './render'
 import { createStore } from './store'
@@ -339,7 +339,7 @@ describe('correct', () => {
     expect(seen[0]).not.toContain('11. ')
     await say(app)
     // The corrected movement (was number 3, vino) is now the newest.
-    expect(seen[1]).toMatch(/1\. out 9 ARS \S+ vino /)
+    expect(seen[1]).toMatch(/1\. out 9 ARS \S+ \d\d:\d\d vino /)
     expect(seen[1]).not.toMatch(/\d\. out 109 ARS/)
     app.close()
   })
@@ -777,15 +777,24 @@ describe('answering a question', () => {
     app.close()
   })
 
-  it('"el primero" is the first option shown in the question, not list row 1', async () => {
+  /** Pretends the question offered only rows 2 and 3 (verdulería, kiosco), by number and id. */
+  const offeredTwoAndThree = async (wamid: string) => {
+    await sql`UPDATE inbound_message SET asked_numbers = '{2,3}',
+      asked_ids = ARRAY(SELECT id FROM movement WHERE description IN ('verdulería', 'kiosco') AND superseded_by IS NULL AND deleted_at IS NULL ORDER BY id DESC)
+      WHERE wamid = ${wamid}`
+  }
+
+  it('"el primero", "la segunda" are the first and second options shown, not list rows', async () => {
     await seed(rows)
-    const app = await setup({ model: script(ask5000, help) })
+    const app = await setup({ model: script(ask5000, help, ask5000, help) })
     await say(app, { text: 'cambiame el almuerzo a 5000' })
-    // A question that listed rows 2 and 3 only.
-    await sql`UPDATE inbound_message SET asked_numbers = '{2,3}' WHERE wamid = ${lastWamid}`
+    await offeredTwoAndThree(lastWamid)
     expect(await say(app, { text: 'el primero' })).toBe(
       '✓ Corregido: Verdulería $5.000 (antes $7.400)',
     )
+    await say(app, { text: 'cambiame el almuerzo a 5000' })
+    await offeredTwoAndThree(lastWamid)
+    expect(await say(app, { text: 'la segunda' })).toBe('✓ Corregido: Kiosco $5.000 (antes $2.300)')
     app.close()
   })
 
@@ -817,16 +826,75 @@ describe('answering a question', () => {
     app.close()
   })
 
-  it('a confident correction with changes of its own wins over the question', async () => {
+  it('an answer runs the previous command even when the model returns a confident correction (it was told to repeat it)', async () => {
     await seed(rows)
     const app = await setup({
       model: script(
         ask5000,
-        correct({ target: 'verdulería', index: 2, changes: { amount: '7000' } }),
+        correct({ target: 'gimnasio', index: 1, changes: { amount: '7000' } }),
       ),
     })
     await say(app, { text: 'cambiame el almuerzo a 5000' })
-    expect(await say(app, { text: '2' })).toBe('✓ Corregido: Verdulería $7.000 (antes $7.400)')
+    await offeredTwoAndThree(lastWamid)
+    // The model picked number 1 (gimnasio); the first option offered was the verdulería.
+    expect(await say(app, { text: 'el primero' })).toBe(
+      '✓ Corregido: Verdulería $5.000 (antes $7.400)',
+    )
+    app.close()
+  })
+
+  it('the option is the movement offered, even when the list shifted before the answer', async () => {
+    await seed(rows)
+    const app = await setup({ model: script(ask5000, help) })
+    await say(app, { text: 'cambiame el almuerzo a 5000' })
+    const questionId = (await row(lastWamid))?.id
+    // A log processed in between: a new movement is now number 1 and every number moved down.
+    await sql`INSERT INTO movement (account_id, inbound_message_id, position, direction, amount, currency,
+      occurred_on, description, category, confidence)
+      SELECT id, ${questionId}, 9, 'out', 100, 'ARS', ${TODAY}, 'taxi', 'transporte', 'high'
+      FROM account LIMIT 1`
+    expect(await say(app, { text: '2' })).toBe('✓ Corregido: Verdulería $5.000 (antes $7.400)')
+    app.close()
+  })
+
+  it('answers "sí, dale" and "ok dale" to a one-option question', async () => {
+    await seed([{ on: TODAY, amount: '2300', description: 'kiosco' }])
+    const app = await setup({ model: script(remove('almuerzo', null), help) })
+    expect(await say(app, { text: 'borrá lo del almuerzo' })).toContain('¿Cuál? 1. Kiosco')
+    expect(await say(app, { text: 'sí, dale' })).toBe('✓ Borré: Kiosco $2.300')
+    app.close()
+  })
+
+  it('a movement that was deleted before the answer is gone, not changed', async () => {
+    await seed(rows)
+    const app = await setup({ model: script(ask5000, help) })
+    await say(app, { text: 'cambiame el almuerzo a 5000' })
+    await sql`UPDATE movement SET deleted_at = now(), deleted_by = (SELECT id FROM inbound_message LIMIT 1)
+      WHERE description = 'verdulería'`
+    expect(await say(app, { text: '2' })).toMatch(/ya fue corregido o borrado/)
+    app.close()
+  })
+
+  it('"me equivoqué en uno de los cafés" asks which, listing all of them, and what to change', async () => {
+    await seed(
+      Array.from({ length: 5 }, (_, k) => ({
+        on: TODAY,
+        amount: String(2000 + k * 100),
+        description: k % 2 === 0 ? 'café' : 'kiosco',
+      })),
+    )
+    const app = await setup({
+      model: script(correct({ target: 'café', index: null, low: true, changes: {} }), help),
+    })
+    const reply = await say(app, { text: 'me equivoque en uno de los cafes' })
+    expect(reply).toContain('¿Cuál café y qué cambio? ')
+    expect(reply).toContain('1. Café $2.400')
+    expect(reply).toContain('3. Café $2.200')
+    expect(reply).toContain('5. Café $2.000')
+    expect(reply).not.toContain('Kiosco')
+    expect(reply).toContain('Respondé por ejemplo "el 1 fue 2500"')
+    // "el 3 fue 2500" is a normal correction with a position.
+    expect((await history()).every((r) => r.superseded_by === null)).toBe(true)
     app.close()
   })
 
@@ -847,6 +915,21 @@ describe('answering a question', () => {
     const corrected = await sql`SELECT 1 FROM movement WHERE amount = 5000`
     expect(corrected).toHaveLength(1)
     expect(await history()).toHaveLength(4)
+    app.close()
+  })
+})
+
+describe('time logged', () => {
+  it('a correction keeps the time the movement was first logged', async () => {
+    const app = await setup({
+      model: script(logOf(movement()), correct({ changes: { amount: '3800' } }), ask('today')),
+    })
+    await say(app)
+    await sql`UPDATE movement SET created_at = '2025-10-09T13:13:00Z'` // 10:13 in Buenos Aires
+    await say(app)
+    const [account] = await sql`SELECT id FROM account`
+    const [live] = await recentMovements(sql, Number(account?.id))
+    expect(live).toMatchObject({ amount: '3800', time: '10:13' })
     app.close()
   })
 })

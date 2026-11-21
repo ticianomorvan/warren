@@ -73,7 +73,15 @@ describe('resolveTarget: words that fit several movements', () => {
       10,
     )
     expect(found(del({ target: 'café', target_index: 1 }), 'perdón, el café salió 4100')).toBe(10)
-    expect(found(del({ target: 'café', target_index: 4 }), 'borrá el café')).toBe(10)
+    expect(
+      found(del({ target: 'café', target_index: 4, confidence: 'low' }), 'borrá el café'),
+    ).toBe(10)
+  })
+
+  it('a confident model pick among the named rows stands: it may have understood a detail code cannot parse', () => {
+    expect(found(del({ target: 'café', target_index: 4 }), 'el café de la quinta')).toBe(7)
+    expect(found(del({ target: 'café', target_index: 2 }), 'el café de la quinta')).toBe(10) // not a café: newest
+    expect(found(del({ target: 'café', target_index: null }), 'el café de la quinta')).toBe(10)
   })
 
   it('a detail of the message narrows the matches first, then the newest left wins', () => {
@@ -86,9 +94,9 @@ describe('resolveTarget: words that fit several movements', () => {
   })
 
   it('does not take a date or an amount for a position', () => {
-    expect(found(del({ target: 'café', target_index: 4 }), 'el café del 15 de octubre')).toBe(10)
-    expect(found(del({ target: 'café', target_index: 4 }), 'el café fue 20 lucas')).toBe(10)
-    expect(found(del({ target: 'café', target_index: 4 }), 'el 30 mil era el café')).toBe(10)
+    expect(found(del({ target: 'café', target_index: null }), 'el café del 15 de octubre')).toBe(10)
+    expect(found(del({ target: 'café', target_index: null }), 'el café fue 20 lucas')).toBe(10)
+    expect(found(del({ target: 'café', target_index: null }), 'el 30 mil era el café')).toBe(10)
   })
 })
 
@@ -96,10 +104,10 @@ describe('resolveTarget: a position in the message wins', () => {
   it("uses the number the person wrote, even when the model's words name another row", () => {
     // "el 4 fue 4500": the model pointed at number 4 (a café) but wrote target "súper".
     expect(found(del({ target: 'súper', target_index: 4 }), 'el 4 fue 4500')).toBe(7)
-    // And even when the model's number differs.
-    expect(found(del({ target: 'súper', target_index: 2 }), 'el 4 fue 4500')).toBe(7)
+    // But not when the model's number differs and the words name another row: it asks.
+    expect(asked(del({ target: 'súper', target_index: 2 }), 'el 4 fue 4500')).toEqual([2])
     expect(found(del({ target: 'café', target_index: null }), 'borrá el 4')).toBe(7)
-    expect(found(del({ target: 'café', target_index: 1 }), 'la 3 bórrala')).toBe(8)
+    expect(found(del({ target: 'cena', target_index: 1 }), 'la 3 bórrala')).toBe(8)
   })
 
   it('understands bare numbers, number words and "último"', () => {
@@ -109,7 +117,7 @@ describe('resolveTarget: a position in the message wins', () => {
 
   it('"primero" and "anterior" take the model\'s number', () => {
     expect(found(del({ target: 'café', target_index: 4 }), 'el café anterior')).toBe(7)
-    expect(found(del({ target: 'gimnasio', target_index: 2 }), 'el primero')).toBe(9)
+    expect(asked(del({ target: 'gimnasio', target_index: 2 }), 'el primero')).toEqual([1, 2, 3]) // no row named
   })
 
   it('lists the positions a message names', () => {
@@ -272,7 +280,8 @@ describe('resolveTarget: amounts written with units', () => {
     expect(found(del({ target: 'gimnasio', target_index: 2 }), 'el gimnasio de 18 mil', gyms)).toBe(
       2,
     )
-    expect(found(del({ target: 'gimnasio', target_index: 2 }), 'el gimnasio', gyms)).toBe(2)
+    expect(found(del({ target: 'gimnasio', target_index: 2 }), 'el gimnasio', gyms)).toBe(1) // confident pick
+    expect(found(del({ target: 'gimnasio', target_index: null }), 'el gimnasio', gyms)).toBe(2)
   })
 })
 
@@ -351,5 +360,124 @@ describe('answerNumber', () => {
     expect(answerNumber('café 3500', [1, 2, 3])).toBeNull()
     expect(answerNumber('4500', [1, 2, 3])).toBeNull()
     expect(answerNumber('el anterior', [1, 2, 3])).toBeNull()
+  })
+})
+
+describe('resolveTarget: "del N" is a day, not a position', () => {
+  // 1 kiosco, 2 café, 3 pan, 4 café
+  const list = [
+    row(40, 'kiosco'),
+    row(30, 'café'),
+    row(20, 'pan', { category: 'supermercado' }),
+    row(10, 'café', { amount: '3100' }),
+  ]
+  it('"el café del 3" and "el café del 3 fue 4500" are not row 3', () => {
+    expect(found(del({ target: 'café', target_index: null }), 'borrá el café del 3', list)).toBe(30)
+    expect(found(del({ target: 'café', target_index: null }), 'el café del 3 fue 4500', list)).toBe(
+      30,
+    )
+    expect(positionsIn('el café del 3 fue 4500')).toEqual([])
+  })
+
+  it('a position that is not one of the rows the words name asks', () => {
+    // "fue el 5 en la panadería": 5 is not the panadería.
+    const bakery = [
+      row(5, 'kiosco'),
+      row(4, 'panadería'),
+      row(3, 'pan'),
+      row(2, 'café'),
+      row(1, 'luz'),
+    ]
+    expect(positionsIn('fue el 5 en la panadería', 5)).toEqual([5])
+    expect(
+      asked(del({ target: 'panadería', target_index: 2 }), 'fue el 5 en la panadería', bakery),
+    ).toEqual([2])
+    // "el 10 a la noche": number 10 is not the cena.
+    const ten = Array.from({ length: 10 }, (_, k) => row(100 - k, k === 3 ? 'cena' : `algo${k}x`))
+    expect(asked(del({ target: 'cena', target_index: 4 }), 'el 10 a la noche', ten)).toEqual([4])
+  })
+})
+
+describe('resolveTarget: ordinals', () => {
+  it('"la segunda" and "la tercera" are model-placed like "primero", only on a named row', () => {
+    expect(found(del({ target: 'café', target_index: 4 }), 'la segunda')).toBe(7)
+    expect(asked(del({ target: 'café', target_index: 2 }), 'la tercera')).toEqual([1, 4])
+    expect(asked(del({ target: 'café', target_index: null }), 'el cuarto')).toEqual([1, 4])
+  })
+})
+
+describe('resolveTarget: time of day, "el otro", and a confident model pick', () => {
+  // Cafés logged at 10:10, 11:11 and 11:52 (newest first), and a súper.
+  const cafes = [
+    row(5, 'café', { amount: '2700', time: '11:52' }),
+    row(4, 'súper', { category: 'supermercado', time: '11:30' }),
+    row(3, 'café', { amount: '2600', time: '11:11' }),
+    row(2, 'café', { amount: '2400', time: '10:10' }),
+  ]
+  const fix = (text: string, pick: number | null = null, amount = '2500') =>
+    found(
+      {
+        type: 'correct',
+        target: 'café',
+        target_index: pick,
+        confidence: 'high',
+        changes: {
+          direction: null,
+          amount,
+          currency: null,
+          date: null,
+          description: null,
+          category: null,
+          payment: null,
+        },
+      } as never,
+      text,
+      cafes,
+    )
+
+  it('"de las 10" narrows to the café logged at 10:xx, not the newest', () => {
+    expect(fix('el café de las 10 fueron 2500')).toBe(2)
+    expect(fix('el café de las 11:11 fueron 2500')).toBe(3)
+    expect(fix('el café a las 11 fue 2500')).toBe(5) // two at 11: the newest of them
+    expect(fix('el café de las 11:52 fue 2500')).toBe(5)
+  })
+
+  it('parts of the day', () => {
+    expect(fix('el café de esta mañana')).toBe(5) // all before noon: newest
+    const mixed = [
+      row(9, 'café', { time: '20:00' }),
+      row(8, 'café', { time: '13:00' }),
+      row(7, 'café', { time: '09:00' }),
+    ]
+    expect(found(del({ target: 'café' }), 'el café de la mañana', mixed)).toBe(7)
+    expect(found(del({ target: 'café' }), 'el café de la tarde', mixed)).toBe(8)
+    expect(found(del({ target: 'café' }), 'el café de la noche', mixed)).toBe(9)
+    const yesterdayNight = [
+      row(9, 'café', { time: '20:00' }),
+      row(8, 'café', { time: '21:00', date: '2026-11-19' }),
+    ]
+    expect(found(del({ target: 'café' }), 'el café de anoche', yesterdayNight)).toBe(8)
+  })
+
+  it('"el otro café" is the second newest café', () => {
+    expect(found(del({ target: 'café' }), 'el otro café fue 3000', cafes)).toBe(3)
+    expect(found(del({ target: 'café' }), 'el anterior café', cafes)).toBe(3)
+    expect(asked(del({ target: 'súper' }), 'el otro súper', cafes)).toEqual([2])
+  })
+
+  it('a confident pick among the named rows stands; a low-confidence one does not', () => {
+    expect(fix('el café de la quinta', 4)).toBe(2) // number 4 is the 10:10 café
+    expect(fix('el café de la quinta', 2)).toBe(5) // number 2 is the súper: not named, newest
+    expect(
+      found(
+        del({ target: 'café', target_index: 4, confidence: 'low' }),
+        'el café de la quinta',
+        cafes,
+      ),
+    ).toBe(5)
+  })
+
+  it('"el último café" is the newest café whatever the model picked', () => {
+    expect(found(del({ target: 'café', target_index: 4 }), 'el último café', cafes)).toBe(5)
   })
 })

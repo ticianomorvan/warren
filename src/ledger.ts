@@ -30,7 +30,8 @@ const LIVE = `superseded_by IS NULL AND deleted_at IS NULL`
 
 const columns = (sql: Sql) => sql`
   id::int AS id, direction, amount::text AS amount, currency,
-  to_char(occurred_on, 'YYYY-MM-DD') AS date, description, category, payment`
+  to_char(occurred_on, 'YYYY-MM-DD') AS date, description, category, payment,
+  to_char(created_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI') AS time`
 
 /** The account's newest live movements, newest first. A corrected movement counts as new again. */
 export function recentMovements(sql: Sql, accountId: number, limit = RECENT_LIMIT) {
@@ -89,6 +90,10 @@ export async function supersede(
     inboundId: o.inboundId,
     movements: [{ ...o.next, confidence: 'high' }],
   })
+  // The correction keeps the time the movement was first logged: that is how the person tells it apart.
+  await sql`
+    UPDATE movement SET created_at = old.created_at
+    FROM movement old WHERE movement.id = ${id ?? null} AND old.id = ${o.old.id}`
   await sql`UPDATE movement SET superseded_by = ${id ?? null} WHERE id = ${o.old.id}`
 }
 

@@ -97,7 +97,10 @@ export type Command = z.infer<typeof CommandSchema>
 export type RecentMovement = Pick<
   Movement,
   'direction' | 'amount' | 'currency' | 'date' | 'description' | 'category' | 'payment'
->
+> & {
+  /** When it was logged, Argentine HH:MM. Tells apart movements of the same day. */
+  time?: string
+}
 
 /** The sender's previous message and the reply it got: context for a short answer ("2", "sí"). */
 export type PreviousExchange = { text: string; reply: string }

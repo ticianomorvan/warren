@@ -105,6 +105,25 @@ function details(text: string, today: string, m: MovementRow, setting: Changing)
   if (/\bayer\b/.test(norm) && m.date === yesterday && setting.date !== yesterday) {
     fits.add('day:yesterday')
   }
+  if (m.time) {
+    const [hh = '', mm = ''] = m.time.split(':')
+    for (const [, h = '', min] of norm.matchAll(
+      /\blas?\s+(\d{1,2})(?::(\d{2}))?\b(?!\s*(?:mil|k|lucas?|pesos|usd))/g,
+    )) {
+      const hour = Number(h)
+      if ((Number(hh) === hour || Number(hh) === hour + 12) && (min === undefined || min === mm)) {
+        fits.add('time:clock')
+      }
+    }
+    if (/\b(?:de|a)\s+(?:esta|la)\s+manana\b/.test(norm) && m.time < '12:00')
+      fits.add('time:morning')
+    if (/\b(?:de|a)\s+la\s+tarde\b/.test(norm) && m.time >= '12:00' && m.time < '19:00') {
+      fits.add('time:afternoon')
+    }
+    if (/\b(?:de|a)\s+(?:esta|la)\s+noche\b/.test(norm) && m.time >= '19:00') fits.add('time:night')
+    if (/\banoche\b/.test(norm) && m.date === yesterday && m.time >= '19:00')
+      fits.add('time:last-night')
+  }
   for (const [, d = '', mo = ''] of norm.matchAll(/\b(\d{1,2})\/(\d{1,2})\b/g)) {
     const suffix = `-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
     if (m.date.endsWith(suffix) && !setting.date?.endsWith(suffix)) fits.add('day:date')
@@ -125,6 +144,9 @@ const NUMBER_WORDS: Record<string, number> = {
   diez: 10,
 }
 
+/** "primero", "segunda", "tercer", "cuarta": positions of a list only the model can place. */
+const ORDINAL = /\b(?:primer[oa]?|segund[oa]|tercer[oa]?|cuart[oa])\b/
+
 const CONNECTORS =
   '(?:fue|era|es|son|eran|por|a|con|en|borr\\w*|elimin\\w*|sac\\w*|quit\\w*|cancel\\w*|cambi\\w*|corrig\\w*|modific\\w*|pon\\w*|pas\\w*)'
 
@@ -140,7 +162,7 @@ export function positionsIn(text: string, max = 99): number[] {
   const norm = normalizeText(text)
   const found: number[] = []
   const number = new RegExp(
-    `(?<!\\bno\\s)(?:\\b(?:el|la|lo|del|numero|nro)\\s+|#\\s*)(\\d{1,2}|[a-z]+)(?=\\s*$|\\s*(?:,(?!\\d)|[;:!?])|\\s*\\.(?!\\d)|\\s+${CONNECTORS}\\b)`,
+    `(?<!\\bno\\s)(?:\\b(?:el|la|lo|numero|nro)\\s+|#\\s*)(\\d{1,2}|[a-z]+)(?=\\s*$|\\s*(?:,(?!\\d)|[;:!?])|\\s*\\.(?!\\d)|\\s+${CONNECTORS}\\b)`,
     'g',
   )
   for (const m of norm.matchAll(number)) {
@@ -150,12 +172,20 @@ export function positionsIn(text: string, max = 99): number[] {
   }
   const bare = norm.match(/^\s*#?(\d{1,2})\s*[.!]?\s*$/)
   if (bare) found.push(Number(bare[1]))
-  if (/\b(primer[oa]?|anterior)\b/.test(norm)) found.push(0)
+  if (ORDINAL.test(norm) || /\banterior\b/.test(norm)) found.push(0)
   return [...new Set(found)].filter((n) => n <= max)
 }
 
 /** The message says "último/a" ("el último", "borrá lo último", "la última nafta"). */
 export const saysLast = (text: string) => /\bultim[oa]\b/.test(normalizeText(text))
+
+/** "Uno de los cafés estaba mal": one of several, not said which. */
+export const saysOneOf = (text: string) =>
+  /\buno\s+de\s+(?:los|las|mis)\b/.test(normalizeText(text))
+
+/** "El otro café", "el anterior café": the one before the newest. */
+export const saysOther = (text: string) =>
+  /\b(?:el|la)\s+otr[oa]\b|\banterior\b/.test(normalizeText(text))
 
 /** How many candidates a question lists when nothing is known. */
 const ASK_FALLBACK = 3
@@ -189,17 +219,44 @@ export function resolveTarget(
       ? index
       : undefined
 
+  const named = numbered.filter((n) => namesMovement(command.target, n.movement))
+  const askAbout = (): Resolution => ({
+    kind: 'ask',
+    candidates: named.length > 0 ? named : numbered.slice(0, ASK_FALLBACK),
+  })
+  // A position must be one of the rows the target's words name, or the model's own number (two
+  // sources agree on it): "fue el 5 en la panadería" is not row 5 when the panadería is row 2.
+  const fits = (n: number) =>
+    named.length === 0 || named.some((x) => x.number === n) || modelPick === n
+
   const positions = positionsIn(ctx.text, recent.length)
   const said = positions.filter((n) => n >= 1)
   if (said.length > 0) {
     const n = modelPick !== undefined && said.includes(modelPick) ? modelPick : (said[0] ?? 1)
-    return { kind: 'found', movement: (numbered[n - 1] ?? newest).movement }
+    return fits(n) ? { kind: 'found', movement: (numbered[n - 1] ?? newest).movement } : askAbout()
   }
-  if (positions.includes(0) && modelPick !== undefined) {
-    return { kind: 'found', movement: (numbered[modelPick - 1] ?? newest).movement }
+  const setting = command.type === 'correct' ? command.changes : {}
+  const narrowedNamed = named.filter(
+    (n) => details(ctx.text, ctx.today, n.movement, setting).size > 0,
+  )
+  const candidates = narrowedNamed.length > 0 ? narrowedNamed : named
+  // "El último café": the newest row the description names, whatever number the model gave.
+  if (saysLast(ctx.text) && candidates.length > 0) {
+    return { kind: 'found', movement: candidates[0]?.movement ?? newest.movement }
+  }
+  // "El otro café": the second newest of the rows the words name.
+  if (saysOther(ctx.text) && candidates.length > 0) {
+    const [, second] = candidates
+    return second ? { kind: 'found', movement: second.movement } : askAbout()
+  }
+  // "Primero", "segunda"…: only the model can place them, and only on a row the words name.
+  if (positions.includes(0)) {
+    const pick = modelPick !== undefined ? numbered[modelPick - 1] : undefined
+    return pick && named.some((x) => x.number === pick.number)
+      ? { kind: 'found', movement: pick.movement }
+      : askAbout()
   }
 
-  const named = numbered.filter((n) => namesMovement(command.target, n.movement))
   // "El último" alone is number 1. With a description ("el último café", "la última nafta") it is
   // the newest row that description names, which the default below already is.
   if (saysLast(ctx.text) && named.length === 0 && command.confidence !== 'low') {
@@ -210,33 +267,44 @@ export function resolveTarget(
     return index === null || index === 1 ? { kind: 'found', movement: newest.movement } : ask()
   }
 
-  const [first] = named
+  const [first] = candidates
   if (!first) return ask()
-  const setting = command.type === 'correct' ? command.changes : {}
-  const narrowed = named.filter((n) => details(ctx.text, ctx.today, n.movement, setting).size > 0)
-  const [winner = first] = narrowed.length > 0 ? narrowed : named
-  return { kind: 'found', movement: winner.movement }
+  // A confident model pick among the candidates stands (it may have understood a detail code
+  // cannot parse: "el de la mañana"); otherwise the newest candidate wins.
+  const pick =
+    command.confidence === 'high' && modelPick !== undefined
+      ? candidates.find((n) => n.number === modelPick)
+      : undefined
+  return { kind: 'found', movement: (pick ?? first).movement }
 }
 
 const SHAPE =
   /^(?:(?:dale|bueno|ok|si)[,\s]+)?(?:(?:el|la|lo|numero|nro)\s*|#\s*)?(\d{1,2}|[a-z]+)\s*[.!]?$/
+const YES = /^(?:(?:si|dale|ok|bueno)[,\s]*)+[.!]?$/
+const ORDINAL_INDEX: [RegExp, number][] = [
+  [/^primer[oa]?$/, 0],
+  [/^segund[oa]$/, 1],
+  [/^tercer[oa]?$/, 2],
+  [/^cuart[oa]$/, 3],
+]
 
 /**
  * Which of the options of a `¿Cuál?` question (`asked`: the list numbers it showed, in order) a
- * message picks, when the message is only that answer: "2", "el 2", "la tres", "el primero" (the
- * first option shown, not list row 1), "el último" (row 1), or "sí"/"dale" after a one-option
- * question. Anything with more in it (a change, a description) is not an answer.
+ * message picks, when the message is only that answer: "2", "el 2", "la tres", "el primero" /
+ * "la segunda" (the first, second… option shown, not list rows), "el último" (row 1), or "sí" /
+ * "dale" / "sí, dale" after a one-option question. Anything with more in it (a change, a
+ * description) is not an answer.
  */
 export function answerNumber(text: string, asked: number[]): number | null {
   const norm = normalizeText(text)
-  if (/^(?:si|dale|ok|bueno|si dale)\s*[.!]?$/.test(norm))
-    return asked.length === 1 ? (asked[0] ?? null) : null
+  if (YES.test(norm)) return asked.length === 1 ? (asked[0] ?? null) : null
   const token = SHAPE.exec(norm)?.[1]
   if (token === undefined) return null
+  const ordinal = ORDINAL_INDEX.find(([re]) => re.test(token))
   const n = /^\d+$/.test(token)
     ? Number(token)
-    : /^primer[oa]?$/.test(token)
-      ? asked[0]
+    : ordinal
+      ? asked[ordinal[1]]
       : /^ultim[oa]$/.test(token)
         ? 1
         : NUMBER_WORDS[token]

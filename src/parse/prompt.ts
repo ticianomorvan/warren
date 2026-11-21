@@ -78,7 +78,7 @@ Today's date and a calendar of the last 14 days are given after the message pref
 The numbered list "Últimos movimientos" is given after the message prefix, newest first: number 1 is the most recent. Point at the movement with two fields:
 - target_index: the number of that movement in the list.
 - target: the word "last" when they mean the most recent movement or give no hint, otherwise the short description of the chosen movement exactly as the list shows it (for example "super"). Always describe the movement you chose; never copy a word that does not name it.
-When the words they used fit more than one movement of the list ("el cafe" with two cafes), choose the most recent of them (the lowest number): a correction almost always means the one just mentioned. "El ultimo X" / "la ultima X" is the most recent X in the list (the lowest number among the movements called X), not number 1 unless X is number 1. If they give a number ("borra el 2", "el 3 fue 4500"), use that number even if its description is not the word they used. If the message gives a detail (the payment, the old amount, "ayer"), choose the movement that detail fits. Use target_index null (and put what they said in target) only when nothing in the list fits what they said or the list is empty, with confidence "low". Code then asks the person.
+When the words they used fit more than one movement of the list ("el cafe" with two cafes), choose the most recent of them (the lowest number): a correction almost always means the one just mentioned. "El ultimo X" / "la ultima X" is the most recent X in the list (the lowest number among the movements called X), not number 1 unless X is number 1. Each movement of the list shows the time it was logged (Argentine time, HH:MM): "el cafe de las 10" is the one logged at 10:xx, "el de la mañana" one logged before noon, "el de anoche" yesterday after 19:00; choose that movement's number. "El otro cafe" / "el anterior" is the second most recent of the movements called that. "Me equivoque en uno de los cafes" names several movements and no change: return correct with every change null, target_index null and confidence "low". If they give a number ("borra el 2", "el 3 fue 4500"), use that number even if its description is not the word they used. If the message gives a detail (the payment, the old amount, "ayer"), choose the movement that detail fits. Use target_index null (and put what they said in target) only when nothing in the list fits what they said or the list is empty, with confidence "low". Code then asks the person.
 
 # Short answers (previous exchange)
 
@@ -200,6 +200,10 @@ Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 
 Message: la primera
 {"type":"correct","target":"café","target_index":1,"changes":{"direction":null,"amount":"800","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
+Recent: 1. out 2900 ARS <today> 11:40 café [restaurantes] (sin medio) / 2. out 15400 ARS <today> 10:20 súper [supermercado] (crédito visa) / 3. out 2400 ARS <today> 09:05 café [restaurantes] (sin medio)
+Message: el cafe de las 9 eran 2600
+{"type":"correct","target":"café","target_index":3,"changes":{"direction":null,"amount":"2600","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
+
 Intercambio anterior, de hace pocos minutos:
 (persona) sacame lo del almuerzo
 (Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400 · 3. Farmacia $6.200
@@ -281,7 +285,7 @@ export function renderVolatile(input: {
       : recentMovements
           .map(
             (m, i) =>
-              `${i + 1}. ${m.direction} ${m.amount} ${m.currency} ${m.date} ${oneLine(m.description)} [${m.category}] (${oneLine(m.payment ?? 'sin medio')})`,
+              `${i + 1}. ${m.direction} ${m.amount} ${m.currency} ${m.date}${m.time ? ` ${m.time}` : ''} ${oneLine(m.description)} [${m.category}] (${oneLine(m.payment ?? 'sin medio')})`,
           )
           .join('\n')
   // One line each, bounded, and no raw angle brackets: this is data, like the message.

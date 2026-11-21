@@ -3,6 +3,7 @@ import { changedFields } from './movement'
 import type { Movement, RecentMovement } from './parse'
 import {
   formatMoney,
+  renderChangeQuestion,
   renderCorrection,
   renderDeletion,
   renderQuery,
@@ -174,6 +175,32 @@ describe('renderQuestion', () => {
     )
     expect(asked).toBe(
       '¿Cuál? 1. Café $3.500 · 3. Súper $12.000 (Visa) · 4. Café $3.500 del 18/11\nRespondé con el número, por ejemplo "el 1 fue 4100" o "borrá el 1".',
+    )
+  })
+
+  it('adds the time logged to options that would otherwise look alike', () => {
+    const asked = renderQuestion(
+      [
+        { number: 1, movement: { id: 1, ...row({ time: '11:52' }) } },
+        { number: 3, movement: { id: 3, ...row({ time: '10:10' }) } },
+        { number: 4, movement: { id: 4, ...row({ description: 'súper', time: '09:00' }) } },
+      ],
+      TODAY,
+    )
+    expect(asked).toContain('1. Café $3.500 · 11:52 · 3. Café $3.500 · 10:10 · 4. Súper $3.500\n')
+  })
+
+  it('asks which one and what to change', () => {
+    const asked = renderChangeQuestion(
+      'café',
+      [
+        { number: 1, movement: { id: 1, ...row({ amount: '2700' }) } },
+        { number: 3, movement: { id: 3, ...row({ amount: '2600' }) } },
+      ],
+      TODAY,
+    )
+    expect(asked).toBe(
+      '¿Cuál café y qué cambio? 1. Café $2.700 · 3. Café $2.600\nRespondé por ejemplo "el 1 fue 2500".',
     )
   })
 

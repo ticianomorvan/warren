@@ -114,13 +114,33 @@ export const renderDeletion = (m: RecentMovement, today: string) =>
  */
 export function renderQuestion(candidates: Numbered[], today: string): string {
   if (candidates.length === 0) return REPLY_NO_MOVEMENTS
-  const list = candidates.map(({ number, movement: m }) => {
+  const [first] = candidates
+  return `¿Cuál? ${listOptions(candidates, today)}\nRespondé con el número, por ejemplo "el ${first?.number} fue 4100" o "borrá el ${first?.number}".`
+}
+
+/**
+ * `¿Cuál café y qué cambio? 1. … · 3. …`: a correction that names several movements and no change.
+ * `what` is the person's word for them ("café"); the answer, "el 3 fue 2500", is a normal correction.
+ */
+export function renderChangeQuestion(what: string, candidates: Numbered[], today: string): string {
+  const [first] = candidates
+  const named = what.trim() ? ` ${what.trim()}` : ''
+  return `¿Cuál${named} y qué cambio? ${listOptions(candidates, today)}\nRespondé por ejemplo "el ${first?.number} fue 2500".`
+}
+
+/** The options of a question, with the time logged on those that would otherwise look alike. */
+function listOptions(candidates: Numbered[], today: string): string {
+  const lines = candidates.map(({ number, movement: m }) => {
     const day = dayName(m.date, today)
     const suffix = m.date === today ? '' : day === 'ayer' ? ' de ayer' : ` del ${day}`
-    return `${number}. ${movementText(m)}${suffix}`
+    return { number, text: `${movementText(m)}${suffix}`, time: m.time }
   })
-  const [first] = candidates
-  return `¿Cuál? ${list.join(' · ')}\nRespondé con el número, por ejemplo "el ${first?.number} fue 4100" o "borrá el ${first?.number}".`
+  return lines
+    .map((l) => {
+      const alike = lines.filter((o) => o.text === l.text).length > 1
+      return `${l.number}. ${l.text}${alike && l.time ? ` · ${l.time}` : ''}`
+    })
+    .join(' · ')
 }
 
 const PERIOD_TEXT: Record<Period, string> = {

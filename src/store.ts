@@ -35,8 +35,8 @@ export interface Commit {
 /** What running a command gives back: the reply, and what to store with it. */
 export interface Executed {
   reply: string
-  /** The list numbers a `¿Cuál?` reply showed; stored so the next message can answer it. */
-  asked?: number[]
+  /** The options a `¿Cuál?` reply showed, number and movement id; stored so the next message can answer it. */
+  asked?: { number: number; id: number }[]
   /** The command that was really run, when it is not the model's (an answer to a question). */
   command?: Command
 }
@@ -44,7 +44,8 @@ export interface Executed {
 /** The sender's previous exchange, with what code needs to answer a question it asked. */
 export interface Previous extends PreviousExchange {
   command: Command | null
-  askedNumbers: number[] | null
+  /** The options that exchange's question offered, if it was one. */
+  asked: { number: number; id: number }[] | null
 }
 
 export type Settled = 'done' | 'failed' | 'pending' | 'unknown' | 'ignored'
@@ -166,19 +167,28 @@ export function createStore(sql: Sql, o: StoreOptions) {
           reply: string | null
           command: Command | null
           askedNumbers: number[] | null
+          askedIds: number[] | null
         }[]
       >`
         SELECT p.body AS text, p.reply_text AS reply, p.command,
-          p.asked_numbers AS "askedNumbers"
+          p.asked_numbers AS "askedNumbers", p.asked_ids::int[] AS "askedIds"
         FROM inbound_message cur
         JOIN LATERAL (
-          SELECT body, reply_text, received_at, kind, command, asked_numbers FROM inbound_message
+          SELECT body, reply_text, received_at, kind, command, asked_numbers, asked_ids FROM inbound_message
           WHERE wa_id = cur.wa_id AND id < cur.id
           ORDER BY id DESC LIMIT 1) p ON true
         WHERE cur.id = ${c.id} AND p.kind = 'text'
           AND p.received_at > cur.received_at - make_interval(secs => ${windowMs / 1000})`
       return row?.text && row.reply
-        ? { text: row.text, reply: row.reply, command: row.command, askedNumbers: row.askedNumbers }
+        ? {
+            text: row.text,
+            reply: row.reply,
+            command: row.command,
+            asked:
+              row.askedNumbers && row.askedIds
+                ? row.askedNumbers.map((number, k) => ({ number, id: row.askedIds?.[k] ?? 0 }))
+                : null,
+          }
         : null
     },
 
@@ -199,8 +209,10 @@ export function createStore(sql: Sql, o: StoreOptions) {
         await tx`
           UPDATE inbound_message
           SET command = ${tx.json((done.command ?? m.command) as never)},
+              parsed = ${tx.json(m.command as never)},
               model_ms = ${Math.round(m.modelMs)}, reply_text = ${done.reply},
-              asked_numbers = ${done.asked && done.asked.length > 0 ? done.asked : null}::int[],
+              asked_numbers = ${done.asked?.length ? done.asked.map((a) => a.number) : null}::int[],
+              asked_ids = ${done.asked?.length ? done.asked.map((a) => a.id) : null}::bigint[],
               updated_at = now()
           WHERE id = ${c.id}`
         return done.reply
