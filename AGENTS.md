@@ -33,7 +33,6 @@ src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts 
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
 src/latency.ts  `pnpm latency` report
-railway.json  Railway config (build, start, healthcheck, region)
 evals/        cases.jsonl (dev/test split), grade.ts, run.ts, results/ (gitignored but summary.md)
 docs/spec.md  Source of truth for what is built and in which order
 ```
@@ -67,11 +66,12 @@ model at the end. CI never calls the Anthropic API.
 
 ## Deploy
 
-- Railway project `warren` (US East, Virginia: `us-east4-eqdc4a`, pinned in `railway.json`), services
-  `warren` (the app) and `Postgres`. Deploy by hand with `railway up -s warren` from the repo; there is no
-  GitHub integration yet. `railway.json` is the legacy config format, supported until 2026-12-01. Moving to
-  `.railway/railway.ts` (`railway config migrate --apply --variables unmanaged`, then `cutover`, `plan`,
-  `apply`) needs the npm package `railway` as a devDependency; that is not done yet.
+- Railway project `warren` (US East, Virginia: `us-east4-eqdc4a`), services `warren` (the app) and
+  `Postgres`. Deploy by hand with `railway up -s warren` from the repo; there is no GitHub integration yet.
+- Service settings live on the Railway service itself, not in the repo: start `pnpm start`, healthcheck
+  `/health` (timeout 60 s), restart on failure, 1 replica. The legacy `railway.json` was never applied to this
+  service and is removed. Moving to `.railway/railway.ts` (Infrastructure as Code) needs the npm package
+  `railway` as a devDependency, which needs Ticiano's approval first.
 - **Single replica, single process.** The recovery sweep and the in-process worker assume it. The atomic
   claim stops a double send, but do not scale out without revisiting the sweep.
 - The app reaches Postgres on the private network (`DATABASE_URL=${{Postgres.DATABASE_URL}}`). For
