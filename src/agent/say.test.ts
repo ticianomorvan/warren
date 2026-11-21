@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   checkSay,
   composeReply,
+  type Evidence,
   hasForeignDigit,
   hasLongNumber,
   hasNumberWord,
@@ -19,9 +20,18 @@ const sources = [
   'opción 1',
 ]
 
-const ok = (text: string, extra: string[] = []) => checkSay(text, [...sources, ...extra]).ok
+const NOTHING = { deleted: false, corrected: false, logged: false }
+const EVERYTHING = { deleted: true, corrected: true, logged: true }
+/** Evidence where this message did every kind of change, so that only numbers and words are judged. */
+const evidence = (extra: string[] = [], o: Partial<Evidence> = {}): Evidence => ({
+  numbers: [...sources, ...extra],
+  words: [...sources, ...extra],
+  applied: EVERYTHING,
+  ...o,
+})
+const ok = (text: string, extra: string[] = []) => checkSay(text, evidence(extra)).ok
 const reason = (text: string, extra: string[] = []) => {
-  const r = checkSay(text, [...sources, ...extra])
+  const r = checkSay(text, evidence(extra))
   return r.ok ? null : r.reason
 }
 
@@ -195,7 +205,7 @@ describe('checkSay: shape', () => {
   })
 
   it('returns the text on one line, single spaces', () => {
-    const r = checkSay('  No encontré\n\nel   súper.  ', sources)
+    const r = checkSay('  No encontré\n\nel   súper.  ', evidence())
     expect(r).toEqual({ ok: true, text: 'No encontré el súper.' })
   })
 })
@@ -236,7 +246,7 @@ describe('checkSay: pieces that make a new amount', () => {
     // "2" is in the conversation ("hace 2 min") and "lucas" in the person's message, but "2 lucas" is 2000
     expect(ok('La nafta fue 2 lucas.', ['nafta 20 lucas'])).toBe(false)
     expect(reason('La nafta fue 2 lucas.', ['nafta 20 lucas'])).toMatch(
-      /amount made of given pieces/,
+      /figure made of given pieces/,
     )
     expect(ok('La nafta fue 20 lucas.', ['nafta 20 lucas'])).toBe(true)
     expect(ok('Son 2k.')).toBe(false)
@@ -283,40 +293,62 @@ describe('checkSay: digits that are not 0-9', () => {
   })
 })
 
-describe('checkSay: a text cannot say a change happened that the record does not show', () => {
-  const none = ['el café fue 3800', 'out 3500 ARS 2026-11-21 10:10 café restaurantes']
-  const asText = (text: string, record: string[] = []) => checkSay(text, [...none, ...record]).ok
+describe('checkSay: a text cannot say a change happened that this message did not make', () => {
+  const facts = ['el café fue 3800', 'out 3500 ARS 2026-11-21 10:10 café restaurantes']
+  const say = (text: string, applied = NOTHING, window?: string[]) =>
+    checkSay(text, { numbers: facts, words: facts, applied, ...(window ? { window } : {}) }).ok
 
-  it('refuses the claim with no record of it', () => {
-    expect(asText('Listo, el café quedó en $3.800 (antes $3.500).')).toBe(false)
-    expect(asText('Corregí el café.')).toBe(false)
-    expect(asText('Ya borré el súper.')).toBe(false)
-    expect(asText('Anoté el café.')).toBe(false)
-    expect(asText('Ya está.')).toBe(false)
+  it('refuses the claim when the message did not make that change', () => {
+    expect(say('Listo, el café quedó en $3.500 (antes $3.500).')).toBe(false)
+    expect(say('Corregí el café.')).toBe(false)
+    expect(say('Ya borré el súper.')).toBe(false)
+    expect(say('Anoté el café.')).toBe(false)
+    expect(say('Ya está.')).toBe(false)
   })
 
-  it('lets it through when a line of the record shows that change', () => {
-    expect(asText('Corregí el café.', ['✓ Corregido: Café $3.800 (antes $3.500)'])).toBe(true)
-    expect(asText('Ya borré el súper.', ['✓ Borré: Súper $12.000'])).toBe(true)
-    expect(asText('Anoté el café.', ['✓ Café $3.500'])).toBe(true)
-    expect(asText('Listo, quedó en $3.800.', ['✓ Corregido: Café $3.800 (antes $3.500)'])).toBe(
-      true,
+  it('lets it through when the message made that change', () => {
+    expect(say('Corregí el café.', { ...NOTHING, corrected: true })).toBe(true)
+    expect(say('Ya borré el súper.', { ...NOTHING, deleted: true })).toBe(true)
+    expect(say('Anoté el café.', { ...NOTHING, logged: true })).toBe(true)
+    expect(say('Listo, ya está.', { ...NOTHING, deleted: true })).toBe(true)
+  })
+
+  it('does not count a different change as the proof', () => {
+    expect(say('Corregí el café.', { ...NOTHING, deleted: true })).toBe(false)
+    expect(say('Ya borré el súper.', { ...NOTHING, corrected: true })).toBe(false)
+    expect(say('Anoté el café.', { ...NOTHING, deleted: true })).toBe(false)
+  })
+
+  it('does not take the person’s own words or an earlier message as proof', () => {
+    // the person wrote "borre el super" and the numbers/words sources hold it: it proves nothing
+    const said = ['borre el super y el cafe fue 3800', '(Warren) ✓ Anoté 2:']
+    expect(checkSay('Borré el súper.', { numbers: said, words: said, applied: NOTHING }).ok).toBe(
+      false,
+    )
+    expect(checkSay('Listo, ya está.', { numbers: said, words: said, applied: NOTHING }).ok).toBe(
+      false,
     )
   })
 
-  it('does not count a different change as the record', () => {
-    expect(asText('Corregí el café.', ['✓ Borré: Súper $12.000'])).toBe(false)
-    expect(asText('Ya borré el súper.', ['✓ Corregido: Café $3.800 (antes $3.500)'])).toBe(false)
+  it('lets a reply lean on what Warren answered earlier, and only a reply', () => {
+    const earlier = ['✓ Borré: Súper $12.000 · 09:12']
+    expect(say('Sí, lo borré.', NOTHING, earlier)).toBe(true)
+    expect(say('Sí, lo borré.', NOTHING)).toBe(false) // not a reply: no window
+    // the window proves the kind it shows, not another
+    expect(say('Sí, lo corregí.', NOTHING, earlier)).toBe(false)
+    expect(say('Listo, ya está.', NOTHING, ['✓ Anoté 2:'])).toBe(true) // the generic claim: any ✓ line
+    expect(say('Sí, lo anoté.', NOTHING, ['✓ Corregido: Café $3.800 (antes $3.500)'])).toBe(false)
   })
 
   it('leaves a denial alone: not doing something is not a claim', () => {
-    expect(asText('No borré nada: no encontré el súper.')).toBe(true)
-    expect(asText('No lo anoté porque falta el monto.')).toBe(true)
+    expect(say('No borré nada: no encontré el súper.')).toBe(true)
+    expect(say('No lo anoté porque falta el monto.')).toBe(true)
   })
 })
 
 describe('composeReply', () => {
-  const base = { facts: ['borra el super'], fallback: 'FALLBACK' }
+  const step = (tool: string, outcome = 'applied') => ({ tool, outcome })
+  const base = { facts: ['borra el super'], window: [] as string[], fallback: 'FALLBACK' }
 
   it('puts the lines first, then the texts that pass, once each', () => {
     const r = composeReply({
@@ -326,7 +358,7 @@ describe('composeReply', () => {
         { action: 0, text: 'No encontré la nafta.' },
         { action: 1, text: 'No encontré la nafta.' },
       ],
-      outcomes: ['applied', 'applied'],
+      steps: [step('log_movements'), step('log_movements')],
     })
     expect(r.reply).toBe('✓ Borré: Súper $12.000\nNo encontré la nafta.')
     expect(r.verdicts.get(1)).toEqual({ text: 'sent' })
@@ -340,11 +372,52 @@ describe('composeReply', () => {
         { action: 0, text: 'Listo.' },
         { action: 1, text: 'Borré $9.999.' },
       ],
-      outcomes: ['gone', 'applied'],
+      steps: [step('delete_movement', 'gone'), step('delete_movement')],
     })
     expect(r.reply).toBe('Ese movimiento ya fue corregido o borrado.\n✓ Borré: Café $2.900')
     expect(r.verdicts.get(0)).toEqual({ text: 'dropped', textReason: 'its action was gone' })
     expect(r.verdicts.get(1)?.textReason).toMatch(/9\.999/)
+  })
+
+  it('judges a claim by this message’s steps: a delete that came back gone proves nothing', () => {
+    const r = composeReply({
+      ...base,
+      lines: ['Ese movimiento ya fue corregido o borrado.', '✓ Café $3.500'],
+      says: [{ action: 1, text: 'Corregí el café y borré la nafta.' }],
+      steps: [step('delete_movement', 'gone'), step('log_movements')],
+    })
+    expect(r.verdicts.get(1)?.textReason).toMatch(
+      /claims a (correction|deletion) this message did not make/,
+    )
+    // …and a correct that was sent alone does not prove a deletion (live message 48)
+    const only = composeReply({
+      ...base,
+      lines: ['✓ Corregido: Nafta $4.000 (antes $20.000)'],
+      says: [{ action: 0, text: 'Borré la nafta y corregí el café.' }],
+      steps: [step('correct_movement')],
+    })
+    expect(only.reply).toBe('✓ Corregido: Nafta $4.000 (antes $20.000)')
+    expect(only.verdicts.get(0)?.textReason).toMatch(/deletion/)
+  })
+
+  it('lets only a reply lean on the window', () => {
+    const window = ['✓ Borré: Súper $12.000']
+    const asReply = composeReply({
+      ...base,
+      window,
+      lines: [],
+      says: [{ action: 0, text: 'Sí, lo borré.' }],
+      steps: [step('reply')],
+    })
+    expect(asReply.reply).toBe('Sí, lo borré.')
+    const beside = composeReply({
+      ...base,
+      window,
+      lines: ['✓ Café $3.500'],
+      says: [{ action: 0, text: 'Sí, lo borré.' }],
+      steps: [step('log_movements')],
+    })
+    expect(beside.reply).toBe('✓ Café $3.500')
   })
 
   it('sends the fallback when there is no line and no text left, never an empty reply', () => {
@@ -353,10 +426,10 @@ describe('composeReply', () => {
         ...base,
         lines: [],
         says: [{ action: 0, text: 'Son $9.999.' }],
-        outcomes: ['applied'],
+        steps: [step('log_movements')],
       }).reply,
     ).toBe('FALLBACK')
-    expect(composeReply({ ...base, lines: [], says: [], outcomes: [] }).reply).toBe('FALLBACK')
+    expect(composeReply({ ...base, lines: [], says: [], steps: [] }).reply).toBe('FALLBACK')
   })
 
   it('takes numbers from the lines but number words only from the facts', () => {
@@ -366,7 +439,7 @@ describe('composeReply', () => {
       ...base,
       lines,
       says: [{ action: 0, text: 'Anoté el de $3.500, no el de doce mil.' }],
-      outcomes: ['applied'],
+      steps: [step('log_movements')],
     })
     expect(r.verdicts.get(0)?.textReason).toMatch(/words/)
     expect(
@@ -374,8 +447,43 @@ describe('composeReply', () => {
         ...base,
         lines,
         says: [{ action: 0, text: 'Anoté el de $3.500.' }],
-        outcomes: ['applied'],
+        steps: [step('log_movements')],
       }).verdicts.get(0),
     ).toEqual({ text: 'sent' })
+  })
+})
+
+describe('canonical numbers with odd separators', () => {
+  it('keeps "1,000,000" and "1.2.3" distinct instead of reading them as another number', () => {
+    // 1,000,000 must not be read as 1 thousand; nothing given may make it pass
+    expect(ok('Fueron 1,000,000.')).toBe(false)
+    expect(ok('Fueron 1000.', ['gasté 1,000,000'])).toBe(false)
+    expect(ok('Fueron 1,000,000.', ['gasté 1,000,000'])).toBe(true) // exactly as given
+    expect(ok('Fueron 1.2.3.')).toBe(false)
+    expect(ok('Fueron 123.', ['1.2.3'])).toBe(false)
+    expect(ok('Fueron 1.500.000.', ['1500000'])).toBe(true) // a real grouping is still read
+    expect(ok('Fueron 1.500.000,50.', ['1500000.5'])).toBe(true)
+  })
+})
+
+describe('checkSay: pieces that are each given', () => {
+  it('a source "12 lucas" does not allow "2 lucas"', () => {
+    expect(ok('Son 2 lucas.', ['12 lucas', 'hace 2 min'])).toBe(false)
+    expect(ok('Son 12 lucas.', ['12 lucas'])).toBe(true)
+  })
+
+  it('refuses a minus, a range and a percent that no source has', () => {
+    expect(ok('Fueron -3.500.', ['3500'])).toBe(false)
+    expect(ok('Entre 2900-3500.', ['2900', '3500'])).toBe(false)
+    expect(ok('Subió 10%.', ['10'])).toBe(false)
+    expect(ok('Subió 10%.', ['subió 10%'])).toBe(true)
+    // a date's dashes are not a minus
+    expect(ok('Fue el 2026-11-03.')).toBe(true)
+  })
+
+  it('refuses a number split by a space unless a source has it that way', () => {
+    expect(ok('Son 12 500.', ['12', '500'])).toBe(false)
+    expect(ok('Son 12 500.', ['pagué 12 500'])).toBe(true) // exactly as given
+    expect(ok('Son 2 900.', ['hace 2', '900'])).toBe(false)
   })
 })

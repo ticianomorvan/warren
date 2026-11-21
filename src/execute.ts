@@ -1,6 +1,6 @@
 import type { Action } from './agent'
 import type { AuditEntry } from './agent/loop'
-import { composeReply, type Say } from './agent/say'
+import { composeReply, type Say, type Step } from './agent/say'
 import type { Sql } from './db'
 import {
   insertMovements,
@@ -41,7 +41,9 @@ export interface ExecuteInput {
    * What the model's own words may take numbers from, besides the lines this run renders: the person's
    * message, the context and the search results of this message (`contextFacts`).
    */
-  facts?: string[]
+  facts: string[]
+  /** What Warren answered earlier in the conversation: the one proof a `reply` may lean on. */
+  window: string[]
   render?: RenderOptions
 }
 
@@ -76,14 +78,15 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
   /** Corrections insert rows too, so positions run across the whole message. */
   let position = 0
   const lines: string[] = []
-  const outcomes: string[] = []
+  const steps: Step[] = []
   const out: Pick<Executed, 'asked' | 'pending'> = {}
   /** The model's words, to send after the lines if every number in them is one code gave. */
   const says: Say[] = []
 
   for (const [index, action] of i.actions.entries()) {
-    if (action.tool !== 'notice' && action.input.text?.trim()) {
-      says.push({ action: index, text: action.input.text })
+    // A `reply` is all text: an empty one is still refused (and answered), never skipped.
+    if (action.tool !== 'notice' && (action.input.text?.trim() || action.tool === 'reply')) {
+      says.push({ action: index, text: action.input.text ?? '' })
     }
     switch (action.tool) {
       case 'log_movements': {
@@ -96,21 +99,21 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         })
         position += movements.length
         lines.push(renderLog(movements, today))
-        outcomes.push('applied')
+        steps.push({ tool: action.tool, outcome: 'applied' })
         break
       }
       case 'correct_movement': {
         const old = await lockLive(tx, i.accountId, action.input.id)
         if (!old) {
           lines.push(REPLY_GONE)
-          outcomes.push('gone')
+          steps.push({ tool: action.tool, outcome: 'gone' })
           break
         }
         const next = applyChanges(old, action.input.changes)
         const changed = changedFields(old, next)
         if (changed.length === 0) {
           lines.push(renderUnchanged(old, today))
-          outcomes.push('unchanged')
+          steps.push({ tool: action.tool, outcome: 'unchanged' })
           break
         }
         await supersede(tx, {
@@ -121,19 +124,19 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
           position: position++,
         })
         lines.push(renderCorrection(old, next, changed, today, old.id === newest))
-        outcomes.push('applied')
+        steps.push({ tool: action.tool, outcome: 'applied' })
         break
       }
       case 'delete_movement': {
         const old = await lockLive(tx, i.accountId, action.input.id)
         if (!old) {
           lines.push(REPLY_GONE)
-          outcomes.push('gone')
+          steps.push({ tool: action.tool, outcome: 'gone' })
           break
         }
         await softDelete(tx, old.id, i.inboundId)
         lines.push(renderDeletion(old, today, old.id === newest))
-        outcomes.push('applied')
+        steps.push({ tool: action.tool, outcome: 'applied' })
         break
       }
       case 'summarize': {
@@ -145,7 +148,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
           range: periodRange(period, today),
         })
         lines.push(renderQuery({ period, direction, category, payment }, totals))
-        outcomes.push('applied')
+        steps.push({ tool: action.tool, outcome: 'applied' })
         break
       }
       case 'ask_user': {
@@ -154,7 +157,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         const options =
           a.movement_ids.length > 0 ? await liveByIds(tx, i.accountId, a.movement_ids) : []
         lines.push(renderAsk(a.question, options, a.after_answer, today))
-        outcomes.push('applied')
+        steps.push({ tool: action.tool, outcome: 'applied' })
         if (!out.asked && options.length > 0) {
           out.asked = options.map((m, k) => ({ number: k + 1, id: m.id }))
           if (a.after_answer === 'delete') out.pending = { action: 'delete' }
@@ -166,16 +169,14 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
       }
       case 'help':
         lines.push(renderHelp(i.render))
-        outcomes.push('applied')
+        steps.push({ tool: action.tool, outcome: 'applied' })
         break
       case 'notice':
         lines.push(action.input.text)
-        outcomes.push('applied')
+        steps.push({ tool: action.tool, outcome: 'applied' })
         break
       case 'reply':
-        // Its text is the whole answer, so it is one of `says` (an empty one is refused below).
-        if (!action.input.text.trim()) says.push({ action: index, text: '' })
-        outcomes.push('applied')
+        steps.push({ tool: action.tool, outcome: 'applied' })
         break
     }
   }
@@ -184,14 +185,15 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
   const { reply, verdicts } = composeReply({
     lines,
     says,
-    outcomes,
-    facts: i.facts ?? [],
+    steps,
+    facts: i.facts,
+    window: i.window,
     fallback: REPLY_SAY_FALLBACK,
   })
   const audit = i.audit.map((e) =>
     e.action === undefined
       ? e
-      : { ...e, status: outcomes[e.action] ?? e.status, ...verdicts.get(e.action) },
+      : { ...e, status: steps[e.action]?.outcome ?? e.status, ...verdicts.get(e.action) },
   )
   return { reply, ...out, audit }
 }

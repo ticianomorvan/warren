@@ -373,3 +373,6 @@ export function contextFacts(i: ContextInput, found: MovementRow[] = []): string
     ...found.map(movementFact),
   ]
 }
+
+/** What Warren answered earlier in the conversation, as the model saw it: the only proof a `reply` may lean on. */
+export const windowReplies = (i: ContextInput): string[] => i.conversation.map((t) => clip(t.reply))

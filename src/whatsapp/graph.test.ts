@@ -241,6 +241,23 @@ describe('createGraph.fetchImage', () => {
     expect(bad.seen).toHaveLength(0)
   })
 
+  it('gives up on a download that hangs, inside one budget for the lookup and the download', async () => {
+    const hang = (_url: unknown, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      })
+    const graph = createGraph({
+      version: 'v27.0',
+      phoneNumberId: '1',
+      token: 't',
+      mediaBudgetMs: 30,
+      fetch: hang as unknown as typeof fetch,
+    })
+    const started = Date.now()
+    await expect(graph.fetchImage('12345')).rejects.toMatchObject({ problem: 'unavailable' })
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
   it('passes an abort through instead of calling it a photo problem', async () => {
     const abort = new AbortController()
     abort.abort(new Error('deadline'))

@@ -74,29 +74,50 @@ const NUMBER_WORD_RE = new RegExp(
 const FOREIGN_DIGIT = /(?![0-9])\p{Nd}/u
 export const hasForeignDigit = (text: string) => FOREIGN_DIGIT.test(text.normalize('NFKC'))
 
-/** A number with a multiplier ("2 lucas", "20k", "5 mil"): two allowed pieces must not make a new amount. */
-const MULTIPLIED = /\d+(?:[.,]\d+)?\s*(?:mil|lucas?|lukas?|palos?|millon(?:es)?|k|m)\b/g
+/** The kinds of change a message actually made, from its outcomes (never read back from rendered text). */
+export interface Applied {
+  deleted: boolean
+  corrected: boolean
+  logged: boolean
+}
 
-/** What a first-person past claim ("borré", "corregí", "anoté") needs to find in the record to be true. */
-const CLAIMS: { said: RegExp; needs: RegExp; what: string }[] = [
+const KIND_OF_TOOL = {
+  delete_movement: 'deleted',
+  correct_movement: 'corrected',
+  log_movements: 'logged',
+} as const
+
+/**
+ * A first-person past claim ("borré", "corregí", "anoté", "listo") is true only if this message did that.
+ * `window` is the one other proof: a `reply` that answers about earlier work ("¿borraste el super?" "Sí, lo
+ * borré") may lean on what Warren answered before, read from those replies' own wording (`✓ Borré`,
+ * `✓ Corregido`, `✓`). That is a wording dependency on render.ts, kept to `reply` and covered by tests; the
+ * risk is that an old line proves a claim about a thing it did not do (the same word, another movement).
+ */
+const NOT = '(?<!\\bno )(?<!\\bno lo )(?<!\\bno te )'
+const CLAIMS: { said: RegExp; kind: keyof Applied | 'any'; window: RegExp; what: string }[] = [
   {
-    said: /(?<!\bno )(?<!\bno lo )(?<!\bno te )\b(?:borre|elimine|saque)\b/,
-    needs: /\bborre\b/,
+    said: new RegExp(`${NOT}\\b(?:borre|elimine|saque)\\b`),
+    kind: 'deleted',
+    window: /\bborre\b/,
     what: 'a deletion',
   },
   {
-    said: /(?<!\bno )(?<!\bno lo )(?<!\bno te )\b(?:corregi|cambie|modifique|actualice)\b/,
-    needs: /\bcorregido\b/,
+    said: new RegExp(`${NOT}\\b(?:corregi|cambie|modifique|actualice)\\b`),
+    kind: 'corrected',
+    window: /\bcorregido\b/,
     what: 'a correction',
   },
   {
-    said: /(?<!\bno )(?<!\bno lo )(?<!\bno te )\b(?:anote|registre|agregue|guarde)\b/,
-    needs: /✓/,
+    said: new RegExp(`${NOT}\\b(?:anote|registre|agregue|guarde)\\b`),
+    kind: 'logged',
+    window: /✓ (?!borre\b|corregido\b)/,
     what: 'a new movement',
   },
   {
     said: /\b(?:listo|hecho|ya esta|quedo en|ahora (?:es|esta|figura|queda))\b/,
-    needs: /✓|\bcorregido\b|\bborre\b/,
+    kind: 'any',
+    window: /✓/,
     what: 'a change',
   },
 ]
@@ -119,19 +140,19 @@ const pad = (n: string) => n.padStart(2, '0')
 
 /** The value of digits written the Argentine way: `.` groups thousands, `,` is the decimal mark. */
 export function canonical(token: string): string {
+  const [w = '', f = '', ...extra] = token.split(',')
+  const groups = w.split('.')
+  const thousands = groups.length > 1 && groups.slice(1).every((g) => g.length === 3)
+  const hasComma = token.includes(',')
+  // Only forms we read: at most one comma, and dots that group thousands (or, with no comma, make one
+  // decimal point). Anything else ("1,000,000", "1.2.3") is kept distinct and exact: it matches only itself.
+  const readable =
+    extra.length === 0 && (groups.length === 1 || thousands || (!hasComma && groups.length === 2))
+  if (!readable) return `~${token}`
   let whole: string
-  let fraction = ''
-  const comma = token.lastIndexOf(',')
-  if (comma >= 0) {
-    whole = token.slice(0, comma).replaceAll('.', '').replaceAll(',', '')
-    fraction = token.slice(comma + 1)
-  } else {
-    const groups = token.split('.')
-    const thousands = groups.length > 1 && groups.slice(1).every((g) => g.length === 3)
-    if (groups.length === 1 || thousands) whole = groups.join('')
-    else if (groups.length === 2) [whole = '', fraction = ''] = groups
-    else whole = groups.join('') // "1.2.3": not a number we read; keep it distinct and exact
-  }
+  let fraction = f
+  if (hasComma || thousands || groups.length === 1) whole = groups.join('')
+  else [whole = '', fraction = ''] = groups
   whole = whole.replace(/^0+(?=\d)/, '')
   fraction = fraction.replace(/0+$/, '')
   return fraction === '' ? whole : `${whole}.${fraction}`
@@ -177,15 +198,49 @@ export type SayCheck = { ok: true; text: string } | { ok: false; reason: string 
 /** One line, single spaces. */
 export const squash = (text: string) => text.replace(/\s+/g, ' ').trim()
 
+/** What a text may lean on. */
+export interface Evidence {
+  /** Where numbers may come from: facts and the lines code rendered. */
+  numbers: readonly string[]
+  /** Where number words may come from: the person's side only (never the model's own descriptions). */
+  words: readonly string[]
+  /** The changes this message made. A claim of a change needs it here... */
+  applied: Applied
+  /** ...or, for a `reply` that answers about earlier work, in what Warren answered before. */
+  window?: readonly string[]
+}
+
+/**
+ * Whether `phrase` appears in `source` on its own: not as the tail of a longer number ("12 lucas" does not
+ * hold "2 lucas") .
+ */
+const holds = (source: string, phrase: string) => {
+  for (let at = source.indexOf(phrase); at >= 0; at = source.indexOf(phrase, at + 1)) {
+    if (!/[\d.,]/.test(source[at - 1] ?? '')) return true
+  }
+  return false
+}
+
+/** ISO days are numbers of their own (the dashes are theirs): leave them out before looking for other dashes. */
+const withoutDays = (text: string) => text.replace(/\d{4}-\d{2}-\d{2}/g, ' ')
+
+/**
+ * Pieces of a figure that are each given but make a new one when put together: a number with a multiplier
+ * ("2 lucas"), digits split by a space ("12 500"), a minus or a range ("-3500", "3500-4000"), a percent.
+ * Each must appear in a source exactly as it is written in the text.
+ */
+const MADE_OF_PIECES = [
+  /\d+(?:[.,]\d+)?\s*(?:mil|lucas?|lukas?|palos?|millon(?:es)?|k|m)\b/g,
+  /(?<!\d)(?<!\d[.,])\d{1,3}(?: \d{3})+(?!\d|[.,]\d)/g,
+  /(?<![\p{L}\d])-\s*\d+(?:[.,]\d+)*|\d+(?:[.,]\d+)*\s*-\s*\d+(?:[.,]\d+)*/gu,
+  /\d+(?:[.,]\d+)*\s*%|%/g,
+]
+
 /**
  * Whether `text` may be sent: short, not shaped like a code-rendered record (`✓ …`), and with no number
- * that is not in `sources`. The reason of a refusal names the first offence, for the audit.
+ * that code did not give. The reason of a refusal names the first offence, for the audit.
  */
-export function checkSay(
-  text: string,
-  sources: readonly string[],
-  wordSources: readonly string[] = sources,
-): SayCheck {
+export function checkSay(text: string, e: Evidence): SayCheck {
   const one = squash(text.normalize('NFKC'))
   if (hasForeignDigit(text)) return { ok: false, reason: 'digits that are not 0-9' }
   if (one === '') return { ok: false, reason: 'empty' }
@@ -193,7 +248,7 @@ export function checkSay(
     return { ok: false, reason: `longer than ${MAX_SAY_LENGTH} characters` }
   if (one.includes('✓')) return { ok: false, reason: 'imitates a code-rendered line (✓)' }
 
-  const known = new Set(sources.flatMap((s) => tokens(s).flatMap((t) => t.provides)))
+  const known = new Set(e.numbers.flatMap((s) => tokens(s).flatMap((t) => t.provides)))
   const unknown = tokens(one).filter((t) => !known.has(t.needs))
   if (unknown.length > 0) {
     return {
@@ -203,24 +258,29 @@ export function checkSay(
   }
 
   // "2 lucas" is 2000 whatever 2 and "lucas" were given separately: the whole phrase must be given.
-  const given = sources.map((src) => fold(squash(src.normalize('NFKC'))))
-  const made = (fold(one).match(MULTIPLIED) ?? []).filter(
-    (phrase) => !given.some((src) => src.includes(phrase)),
-  )
-  if (made.length > 0)
-    return { ok: false, reason: `amount made of given pieces: ${made.join(', ')}` }
-
-  // A text may say it did something only when the record says so: it adds to the record, never replaces it.
-  const foldedOne = fold(one)
-  for (const claim of CLAIMS) {
-    const word = claim.said.exec(foldedOne)?.[0]
-    if (word && !given.some((src) => claim.needs.test(src))) {
-      return { ok: false, reason: `claims ${claim.what} the record does not show: ${word}` }
+  const given = e.numbers.map((src) => fold(withoutDays(squash(src.normalize('NFKC')))))
+  const mine = fold(withoutDays(one))
+  for (const re of MADE_OF_PIECES) {
+    const made = (mine.match(re) ?? []).filter((phrase) => !given.some((src) => holds(src, phrase)))
+    if (made.length > 0) {
+      return { ok: false, reason: `figure made of given pieces: ${made.join(', ')}` }
     }
   }
 
-  const spelled = new Set(wordSources.flatMap((s) => fold(s).match(NUMBER_WORD_RE) ?? []))
-  const words = [...new Set(fold(one).match(NUMBER_WORD_RE) ?? [])].filter((w) => !spelled.has(w))
+  // A text may say it did something only when this message did it: it adds to the record, never replaces it.
+  const proof = (e.window ?? []).map((src) => fold(src))
+  for (const claim of CLAIMS) {
+    const word = claim.said.exec(mine)?.[0]
+    if (!word) continue
+    const done =
+      claim.kind === 'any' ? Object.values(e.applied).some(Boolean) : e.applied[claim.kind]
+    if (!done && !proof.some((src) => claim.window.test(src))) {
+      return { ok: false, reason: `claims ${claim.what} this message did not make: ${word}` }
+    }
+  }
+
+  const spelled = new Set(e.words.flatMap((s) => fold(s).match(NUMBER_WORD_RE) ?? []))
+  const words = [...new Set(mine.match(NUMBER_WORD_RE) ?? [])].filter((w) => !spelled.has(w))
   if (words.length > 0) {
     return { ok: false, reason: `number written in words not given by code: ${words.join(', ')}` }
   }
@@ -247,6 +307,12 @@ export interface Say {
   text: string
 }
 
+/** What became of each action of the message: its tool and its outcome (`applied`, `gone`, `unchanged`). */
+export interface Step {
+  tool: string
+  outcome: string
+}
+
 export interface Verdict {
   text: 'sent' | 'dropped'
   textReason?: string
@@ -254,29 +320,41 @@ export interface Verdict {
 
 /**
  * The reply of a message: the lines code rendered first, then the model's texts that pass `checkSay`,
- * in order and without repeats. `outcomes[k]` is what happened to action k; a text beside an action that
- * did not apply (`gone`, `unchanged`) was written for a change that did not happen and is dropped. When
- * nothing is left to send, `fallback` is, so the person is never left without an answer. Numbers may come
- * from `facts` and from the lines; number words only from `facts`, so a description the model wrote
- * ("doce mil") cannot make its own words allowed.
+ * in order and without repeats. A text beside an action that did not apply (`gone`, `unchanged`) was
+ * written for a change that did not happen and is dropped. When nothing is left to send, `fallback` is, so
+ * the person is never left without an answer. Numbers may come from `facts` and from the lines; number
+ * words only from `facts`, so a description the model wrote ("doce mil") cannot make its own words
+ * allowed. A claim of a change needs this message's own `steps`; only a `reply` may lean on `window`, the
+ * earlier replies of the conversation.
  */
 export function composeReply(i: {
   lines: string[]
   says: Say[]
-  outcomes: string[]
+  steps: Step[]
   facts: readonly string[]
+  window: readonly string[]
   fallback: string
 }): { reply: string; verdicts: Map<number, Verdict> } {
-  const sources = [...i.facts, ...i.lines]
+  const applied: Applied = { deleted: false, corrected: false, logged: false }
+  for (const step of i.steps) {
+    const kind = KIND_OF_TOOL[step.tool as keyof typeof KIND_OF_TOOL]
+    if (kind && step.outcome === 'applied') applied[kind] = true
+  }
+  const numbers = [...i.facts, ...i.lines]
   const verdicts = new Map<number, Verdict>()
   const notes: string[] = []
   for (const say of i.says) {
-    const outcome = i.outcomes[say.action]
-    if (outcome !== 'applied') {
-      verdicts.set(say.action, { text: 'dropped', textReason: `its action was ${outcome}` })
+    const step = i.steps[say.action]
+    if (step?.outcome !== 'applied') {
+      verdicts.set(say.action, { text: 'dropped', textReason: `its action was ${step?.outcome}` })
       continue
     }
-    const check = checkSay(say.text, sources, i.facts)
+    const check = checkSay(say.text, {
+      numbers,
+      words: i.facts,
+      applied,
+      ...(step.tool === 'reply' ? { window: i.window } : {}),
+    })
     if (check.ok) {
       verdicts.set(say.action, { text: 'sent' })
       if (!notes.includes(check.text)) notes.push(check.text)

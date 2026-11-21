@@ -66,6 +66,8 @@ describe.skipIf(!url)('real Postgres: concurrency', () => {
                 actions: aimed,
                 audit: [],
                 today: TODAY,
+                facts: [],
+                window: [],
               })
             },
           })

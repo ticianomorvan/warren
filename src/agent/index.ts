@@ -14,6 +14,7 @@ export {
   contextFacts,
   renderContext,
   SYSTEM_PROMPT,
+  windowReplies,
 } from './prompt'
 export type {
   Action,

@@ -176,10 +176,10 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       continue
     }
 
-    // Writes are checked against what the model had seen when this turn began: results of a
-    // find_movements in the same turn reach the model only on the next turn, so an id that appears
-    // there for the first time was guessed, not chosen.
-    const guard: Guard = { today: i.today, seen: new Set(i.seen), logged: 0 }
+    // Ids found in this turn are added to `i.seen` only after every call is checked, so an id that
+    // appears in a search of this very turn was guessed, not chosen (and a turn that searched runs no
+    // write anyway: it is held).
+    const guard: Guard = { today: i.today, seen: i.seen, logged: 0 }
     const foundThisTurn: number[] = []
     const actions: ModelAction[] = []
     const checked: {

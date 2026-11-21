@@ -10,6 +10,7 @@ import {
   renderContext,
   runAgent,
   type Usage,
+  windowReplies,
 } from './agent'
 import { actionLabel, execute } from './execute'
 import { log } from './log'
@@ -212,53 +213,41 @@ export function createProcessor(o: ProcessorOptions) {
         store.conversation(c),
       ])
       const photo = await download
+      // Answers that need no model: a photo that cannot be read, a bare answer to our question.
+      const unprompted = (
+        action: Action,
+        entry: Omit<AuditEntry, 'turn' | 'ms' | 'action'>,
+      ): Worked => ({
+        accountId,
+        actions: [action],
+        parsed: null,
+        audit: [{ ...entry, turn: 0, ms: 0, action: 0 }],
+        turns: 0,
+        ms: 0,
+        usage: null,
+        facts: [],
+        window: [],
+      })
       if (photo && 'problem' in photo) {
         log('photo_unreadable', {
           wamid: c.wamid,
           problem: photo.problem.problem,
           detail: photo.problem.message,
         })
-        const entry = {
-          turn: 0,
-          tool: 'notice',
-          input: { media_id: c.mediaId },
-          status: 'answered',
-          detail: photo.problem.message,
-          ms: 0,
-          action: 0,
-        }
-        return {
-          accountId,
-          actions: [{ tool: 'notice', input: { text: REPLY_IMAGE[photo.problem.problem] } }],
-          parsed: null,
-          audit: [entry],
-          turns: 0,
-          ms: 0,
-          usage: null,
-          facts: [],
-        }
+        return unprompted(
+          { tool: 'notice', input: { text: REPLY_IMAGE[photo.problem.problem] } },
+          {
+            tool: 'notice',
+            input: { media_id: c.mediaId },
+            status: 'answered',
+            detail: photo.problem.message,
+          },
+        )
       }
       // A bare answer to the question we just asked is code's job: no model call at all.
       const answer = isPhoto ? null : answerAction(text, conversation.question)
       if (answer) {
-        const entry = {
-          turn: 0,
-          tool: answer.tool,
-          input: answer.input,
-          status: 'answered',
-          ms: 0,
-          action: 0,
-        }
-        return {
-          accountId,
-          actions: [answer],
-          parsed: null,
-          audit: [entry],
-          turns: 0,
-          ms: 0,
-          usage: null,
-          facts: [],
-        }
+        return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }
       const seen = new Set([
         ...movements.map((m) => m.id),
@@ -270,7 +259,7 @@ export function createProcessor(o: ProcessorOptions) {
         time: argentinaTime(c.messageAt),
         movements,
         conversation: conversation.turns,
-        photo: isPhoto,
+        photo: Boolean(photo),
         pending: conversation.question
           ? {
               asked: conversation.question.asked,
@@ -292,6 +281,7 @@ export function createProcessor(o: ProcessorOptions) {
         accountId,
         parsed: result.actions,
         facts: contextFacts(context, result.found),
+        window: windowReplies(context),
         ...result,
       }
     })().then(
@@ -316,7 +306,7 @@ export function createProcessor(o: ProcessorOptions) {
         return await fail(c, `parse failed: ${errorText(e)}`, trace)
       }
 
-      const { accountId, actions, parsed, audit, turns, ms, usage, facts } = outcome.value
+      const { accountId, actions, parsed, audit, turns, ms, usage, facts, window } = outcome.value
 
       // The commit point. Nothing awaits between the signal check above and this call.
       let reply: string | null
@@ -335,6 +325,7 @@ export function createProcessor(o: ProcessorOptions) {
               audit,
               today,
               facts,
+              window,
               render: { helpContact: o.helpContact },
             }),
         })
@@ -509,6 +500,8 @@ interface Worked {
   usage: Usage | null
   /** What the model's words may take numbers from (see `contextFacts`). */
   facts: string[]
+  /** What Warren answered earlier (see `windowReplies`). */
+  window: string[]
 }
 
 /** The photo of a message, or why it cannot be read. Anything else (the deadline's abort) is thrown. */

@@ -357,6 +357,8 @@ describe('guards at the commit point', () => {
         actions,
         audit: [],
         today: TODAY,
+        facts: [],
+        window: [],
       }),
     )
     expect(done.reply.split('\n')).toEqual([
@@ -401,6 +403,8 @@ describe('guards at the commit point', () => {
         ],
         audit: [],
         today: TODAY,
+        facts: [],
+        window: [],
       }),
     )
     expect(done.reply).toBe('¿Cuál? Mío $1.000')

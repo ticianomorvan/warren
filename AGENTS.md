@@ -168,7 +168,10 @@ wrong changes. Its test split is held out like the other: never print or tune on
   - **The model's own words (B2).** Every write tool, `summarize` and `ask_user` carry a `text` (a nullable, always
     present). Code sends the record of what changed (and the totals, and the question) first, then the texts, in
     order. A text goes out only if `checkSay` passes: at most 280 characters, no `✓`, no number in digits or
-    in words that was not given by code. A number is given if it is in the person's message, the movement list
+    in words that was not given by code, no figure made of given pieces ("2 lucas", "12 500", a minus, a
+    percent) and no claim of a change ("borré", "corregí", "anoté", "listo") that this message's own outcomes
+    do not show (`composeReply` takes them as structured steps); only a `reply` may lean on the replies earlier in
+    the conversation, and so can be fooled by an old line about another movement. A number is given if it is in the person's message, the movement list
     (ids left out), the conversation window, the pending question's option numbers, this message's
     `find_movements` results or the lines code rendered for this message; amounts, times and days are compared by
     value (`12.000` = `12000`, `9:12` = `09:12`, `2026-11-03` = `03/11`). A failing text is dropped (the audit

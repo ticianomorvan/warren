@@ -207,6 +207,70 @@ describe('the model’s own words', () => {
   })
 })
 
+describe('a claim of a change must be this message’s own (live message 48 again)', () => {
+  it('drops "Borré la nafta y corregí el café" when only one correction ran, even if the person said "borre"', async () => {
+    await day()
+    const app = await setup({
+      model: script(saying(correct(2, { amount: '4000' }), 'Borré la nafta y corregí el café.')),
+    })
+    const reply = await say(app, { text: 'borre la nafta y el cafe fue 4000' })
+    expect(reply).toBe('✓ Corregido: Café $4.000 (antes $3.500) · 10:10')
+    expect((await audit())[0]?.textReason).toMatch(
+      /claims a deletion this message did not make: borre/,
+    )
+    app.close()
+  })
+
+  it('drops a claim that an earlier "✓ Anoté" in the window would have seemed to prove, beside a write', async () => {
+    await day()
+    const app = await setup({
+      model: script(
+        saying(logOf(movement()), 'Corregí el café.'),
+        saying(remove(1), 'Listo, ya está.'),
+      ),
+    })
+    await say(app, { text: 'cafe 3500' })
+    expect((await audit())[0]?.textReason).toMatch(/claims a correction/)
+    // the window now has "✓ Café $3.500": still not proof for a delete's "listo"? it is: this one deleted
+    expect(await say(app, { text: 'borra el super' })).toContain('Listo, ya está.')
+    app.close()
+  })
+
+  it('lets a reply answer from the window, and refuses it when the window shows another change', async () => {
+    await day()
+    const app = await setup({
+      model: script(
+        remove(1),
+        replyCall('Sí, lo borré.'),
+        replyCall('Sí, lo corregí.'),
+        replyCall('Sí, lo anoté.'),
+      ),
+    })
+    await say(app, { text: 'borra el super' })
+    expect(await say(app, { text: 'lo borraste?' })).toBe('Sí, lo borré.')
+    expect(await say(app, { text: 'y lo corregiste?' })).toBe(REPLY_SAY_FALLBACK)
+    expect(await say(app, { text: 'y lo anotaste?' })).toBe(REPLY_SAY_FALLBACK)
+    app.close()
+  })
+
+  it('a correct that came back gone does not prove a correction next to an applied action', async () => {
+    await day()
+    const app = await setup({
+      model: fakeModel(async () => {
+        await sql`UPDATE movement SET deleted_at = now(), deleted_by = (SELECT id FROM inbound_message LIMIT 1) WHERE id = 2`
+        return [
+          correct(2, { amount: '4000' }),
+          saying(logOf(movement()), 'Corregí el café y anoté el otro.'),
+        ]
+      }),
+    })
+    const reply = await say(app, { text: 'el cafe fue 4000 y anota cafe 3500' })
+    expect(reply).not.toContain('Corregí')
+    expect((await audit())[1]?.textReason).toMatch(/claims a correction/)
+    app.close()
+  })
+})
+
 describe('the model’s words beside an action that did not apply', () => {
   it('are dropped: the record says it was already corrected or deleted', async () => {
     await day()

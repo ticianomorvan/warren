@@ -308,8 +308,8 @@ and keeps every guard. `AGENTS.md` (rule 2, layout, message flow) describes the 
 - Review fixes (a fresh Opus 5.5 review of the diff): the numbers check now also refuses a number plus a multiplier
   that was not given as a phrase ("2 lucas" from "2" and "lucas"), the open families of number words (veinti-,
   dieci-, -cientos, doble, mitad), non-ASCII digits (after NFKC), and a first-person claim of a change ("borré",
-  "corregí", "anoté", "listo", "ya está") that no line of the record shows (a best-effort wording check; a denial such as
-  "no borré" is fine). `ask_user`'s question refuses number words too. Number words are checked against the
+  "corregí", "anoté", "listo", "ya está") that this message did not make (a wording check, a denial such as "no
+  borré" is fine). `ask_user`'s question refuses number words too. Number words are checked against the
   person's side only, never against lines the model's own descriptions appear in. A search turn tells the model
   before its last turn that it is the last. The media download follows no redirect and has one 8 s budget.
   Known and left: a text cannot quote a figure printed in a photo (it is dropped, so the model is told to log the
@@ -431,8 +431,8 @@ and keeps every guard. `AGENTS.md` (rule 2, layout, message flow) describes the 
 - Review fixes (a fresh Opus 5.5 review of the diff): the numbers check now also refuses a number plus a multiplier
   that was not given as a phrase ("2 lucas" from "2" and "lucas"), the open families of number words (veinti-,
   dieci-, -cientos, doble, mitad), non-ASCII digits (after NFKC), and a first-person claim of a change ("borré",
-  "corregí", "anoté", "listo", "ya está") that no line of the record shows (a best-effort wording check; a denial such as
-  "no borré" is fine). `ask_user`'s question refuses number words too. Number words are checked against the
+  "corregí", "anoté", "listo", "ya está") that this message did not make (a wording check, a denial such as "no
+  borré" is fine). `ask_user`'s question refuses number words too. Number words are checked against the
   person's side only, never against lines the model's own descriptions appear in. A search turn tells the model
   before its last turn that it is the last. The media download follows no redirect and has one 8 s budget.
   Known and left: a text cannot quote a figure printed in a photo (it is dropped, so the model is told to log the
@@ -475,3 +475,25 @@ and keeps every guard. `AGENTS.md` (rule 2, layout, message flow) describes the 
 - Model spend for the whole slice: about US$0.90 of US$1.00 (tracked runs US$0.83: scenario runs US$0.66 including
   the slice B baseline runs, `pnpm eval` runs US$0.17; plus about US$0.07 of probes, estimated from token use).
 - Open: the live test (photo download against real Meta, the 20 live messages) is not done; nothing was deployed.
+
+### Review round 2 (Opus 5.5), fixed on the same PR
+
+- **Claims are judged by this message's outcomes, not by text.** The first version looked for proof in every source,
+  including the person's own "borre el super" and old `✓` lines in the window, so "Borré la nafta y corregí el café"
+  passed beside a lone correction (#48 again). Now `execute` gives `composeReply` its steps (tool and outcome);
+  a deletion, correction or new movement counts only when one of that kind was `applied` in this message (a `gone`
+  or `unchanged` one proves nothing). **Only `reply` may also lean on the replies earlier in the conversation**
+  (`windowReplies`: "¿borraste el super?" → "Sí, lo borré"), by the wording of those replies (`✓ Borré`, `✓ Corregido`,
+  `✓`). Written risk: an old line about another movement can prove a claim about a different one; a reply is
+  still checked for numbers, and the record of this message is never replaced by it.
+- `canonical("1,000,000")` was read as 1000. A number with more than one comma, or dots that are neither thousands
+  nor a single decimal point, now stays distinct and exact (it matches only itself).
+- The check refuses figures made of given pieces: "2 lucas" when only "12 lucas" is given (the match is now on a
+  number boundary), a minus or range that no source has, a percent, and digits split by a space ("12 500") unless a
+  source has them that way.
+- `checkSay` takes one `Evidence` object (numbers, words, applied, window), so the word sources are no longer an
+  optional argument. The photo download's budget is a graph option (`mediaBudgetMs`) so a hanging fetch is tested.
+  The turn-start copy of `seen` in the loop was removed: a turn that searched runs no write, and ids found in a turn
+  join `seen` only after every call is checked. `facts` and `window` are required inputs of `execute`; a message
+  answered without the model (unreadable photo, bare answer) is built in one place; the photo flag of the context
+  comes from the image being there; a `reply` with empty text is one rule, not a special case.

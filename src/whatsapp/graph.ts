@@ -102,6 +102,8 @@ export interface GraphOptions {
   phoneNumberId: string
   token: string
   fetch?: typeof fetch
+  /** One budget for a photo's lookup and download together. Default 8 s. */
+  mediaBudgetMs?: number
 }
 
 // Meta answers the first request on a new connection about 0.4 s slower than later ones (see
@@ -187,7 +189,10 @@ export function createGraph(o: GraphOptions): Graph {
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(mediaId)) throw new ImageError('unavailable', 'bad media id')
     // One budget for the lookup and the download together, inside the message's own deadline. A redirect
     // is an error: the host check below is on the URL Meta named, not on wherever it might send us.
-    const budget = AbortSignal.any([AbortSignal.timeout(8_000), ...(signal ? [signal] : [])])
+    const budget = AbortSignal.any([
+      AbortSignal.timeout(o.mediaBudgetMs ?? 8_000),
+      ...(signal ? [signal] : []),
+    ])
     const headers = { authorization: `Bearer ${o.token}` }
     const meta = await doFetch(`https://graph.facebook.com/${o.version}/${mediaId}`, {
       headers,
