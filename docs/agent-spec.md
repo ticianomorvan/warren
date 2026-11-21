@@ -15,6 +15,7 @@ The four slice 4 review rounds showed the cost of the old split. The model alrea
 regex rules in `src/resolve.ts` overrode it, and each new rule broke another phrasing.
 
 How we know it worked:
+
 - **Scenario eval** (new, multi-turn). At least 60 conversations. The source is today's real
   transcripts (`inbound_message` rows 24–42), each failure among them, and the sequences in this spec.
   Gate: ≥95% of scenarios fully right, **0 silent wrong changes** (the wrong movement changed or
@@ -61,6 +62,7 @@ How we know it worked:
 ## Design
 
 **Shape.**
+
 - A self-hosted agent loop on the Messages API.
 - Model: `claude-haiku-5-5`, effort `low`, thinking off. The benchmark (2026-11-21) found nothing
   better at its price.
@@ -68,6 +70,7 @@ How we know it worked:
   signal, a step cap (at most 3 model turns), an audit row per tool call, and the commit point.
 
 **Tools.**
+
 - **Read tools** return data to the model:
   - `find_movements({text?, from?, to?, category?, payment?, amount?, limit≤20})` searches the
     sender's full history, beyond the 10 newest. Each row returns its id, date, time, description,
@@ -88,6 +91,7 @@ How we know it worked:
   costs two: `find_movements`, then the write.
 
 **Context per call.**
+
 - A frozen system prompt and a fixed tool list under one cache breakpoint.
 - Then, volatile: today's Argentine date and time, the 10 newest live movements (with ids and
   times), and the conversation window: the sender's turns from the last 30 min, at most 6, taken from
@@ -96,6 +100,7 @@ How we know it worked:
   source of truth.
 
 **Guards (code, never the model).**
+
 - Every id must belong to the sender and be live (`lockLive`).
 - Changes pass the `log` value rules. Amounts are decimal strings.
 - The model never computes totals: `summarize` and the reply templates do.
@@ -108,6 +113,7 @@ How we know it worked:
 **Decision model (Jev, TypeSafe AI).** It scores a fixed set of options in 70–500 ms. In one
 analysis it was ~12 points overconfident, and it agreed with frontier models more than with ground
 truth.
+
 - It is not in the request path at first.
 - Slice E measures it as a second opinion at the riskiest decision: the agent's chosen movement among
   the candidates. Where it disagrees, or its confidence is low, ask instead of writing.
@@ -115,6 +121,7 @@ truth.
 - Access: option scoring is only on TypeSafe's own API or on Vercel AI Gateway (`typesafe-ai/jev`, with `experimental_evaluate`). OpenRouter only lists `typesafe/jev-router`, a model router that uses Jev internally. It can't score our own options, so it doesn't fit (checked 2026-11-21). Spanish support is not documented.
 
 **Rejected.**
+
 - **More text rules:** the failure mode this spec ends.
 - **Managed Agents:** a per-session container, session billing, beta status, and an extra hop. Our
   tools hit our own Postgres anyway, so it adds latency for nothing, against a 2–4 s budget.
