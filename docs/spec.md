@@ -4,14 +4,15 @@ Status: read by Ticiano 2026-11-20; decisions folded in. Product is **Warren** o
 
 ## Goal
 
-A person in Argentina sends a WhatsApp message such as "café 3500 y súper 12.000 con la visa, ayer 20 lucas de nafta". In about a second they get back one compact reply listing each movement it understood. Each movement is stored with the message it came from. They can correct it in plain words ("no, el café fue 3800", "borrá el último") and ask simple questions ("¿cuánto gasté este mes en super?").
+A person in Argentina sends a WhatsApp message such as "café 3500 y súper 12.000 con la visa, ayer 20 lucas de nafta". Within a second they see Warren is on it (blue ticks and "typing…"), and a moment later they get one compact reply listing each movement it understood. Warren is never silent: if the answer is slow or fails, it says so. Each movement is stored with the message it came from. They can correct it in plain words ("no, el café fue 3800", "borrá el último") and ask simple questions ("¿cuánto gasté este mes en super?").
 
 This is the input loop the rest of the product builds on: receipts, statements and the month view all reuse its pipeline, data model and latency budget.
 
 How we know it worked:
-- **Latency, server side.** Measured from webhook received to Meta's send API accepting the reply. Target p50 ≤ 1.0 s and p95 ≤ 2.0 s on logging messages, over the last 100 real messages, reported by `pnpm latency`.
-- **Typing indicator.** It goes out within 300 ms of the webhook arriving.
-- **Latency, end to end (coarse).** Inbound message `timestamp` to the `delivered` status timestamp. Both are whole seconds, so this is a rough check only; target p50 ≤ 3 s.
+- **First signal, the one that matters.** Read receipt plus typing indicator accepted by Meta within 1.0 s of the webhook arriving, at p95, over the last 100 real messages (`pnpm latency`, received → typing sent). Slice 2 measured p50 417 ms and p95 788 ms.
+- **Answer.** Webhook received to Meta's send API accepting the reply: p50 ≤ 2.0 s and p95 ≤ 4.0 s on logging messages, same report. Expect about 1.5 s: the model takes about 1 s, and Meta's send call takes 0.5–0.7 s, with no documented way to make it faster.
+- **Never silent.** Every message ends in something the user can see: the answer; an interim note when the answer is not out after 10 s; or a failure message when processing fails for good. The one exception is a send whose outcome is `unknown`: it may have arrived, so nothing follows it. An integration test covers the interim and failure paths.
+- **Latency, end to end (coarse).** Inbound message `timestamp` to the `delivered` status timestamp. Both are whole seconds, so this is a rough check only; target p50 ≤ 4 s. The slice 2 echo measured 3 s.
 - **Accuracy.** On the eval set (≥ 80 Argentine Spanish messages), at least 97% of messages come out fully correct (every amount, currency, date, count of movements and direction), and no amount is ever wrong silently. Run with `pnpm eval`.
 - **Reliability.** No message is lost or logged twice when Meta retries or the process restarts. An integration test proves it.
 
@@ -37,6 +38,7 @@ How we know it worked:
   - **Rate limits.** 80 messages per second per number, and about 1 message every 6 s per user pair.
   - **Graph version.** v27.0 in the current docs; keep it in config.
   - **Pricing changed on 2026-10-01.** Service replies are free only for the first 1,000 per business number per month. Beyond that they are charged, and without a payment method they are not delivered.
+  - **Speed and scale (researched 2026-11-21).** Meta documents no speed lever: no regional API host, no batching for messages, no latency figure or SLA. Data residency ("local storage") changes only where data is kept at rest. The On-Premises API is shut down (last client expired 2025-10-23), and nothing shows a BSP is faster. The free tier counts *delivered* service messages and resets monthly. Meta does not document its webhook timeout; we answer in well under 50 ms. Status webhooks arrive under the same `messages` field as inbound messages and cannot be filtered. Throughput is 80 messages/s per number and only upgrades at 100K+ users a day, far beyond us.
   - **Billing currency.** ARS billing exists. The currency is fixed when the account is created.
   - **Media.** URLs expire after 5 minutes; documents up to 100 MB. Relevant for later slices.
 - **AI policy (Meta Terms §4.7, "AI Providers", last modified 2026-09-23).** It bans offering AI as the *primary* functionality. Our reading is that a bot that logs expenses and answers questions about the user's own spending uses AI as a means, so it is allowed. Meta has not confirmed this, and the clause gives Meta "sole discretion". The design keeps the bot narrow on purpose.
@@ -70,6 +72,13 @@ How we know it worked:
    - It computes any totals itself. The model never does arithmetic.
 5. Code renders the reply from a template ("✓ Café $3.500 · Súper $12.000 (Visa)"), sends it, marks the message `done`, and records per-stage timings on the message row.
 6. **Recovery.** On startup and every 30 s, a sweep re-runs any message left `pending` or `processing` too long. That covers a crash after the 200 was returned.
+
+**Transparency (decided 2026-11-21).** The time that matters is time to the first signal; the user will wait for the answer if they can see work is happening.
+- **Instant signal.** The read receipt plus typing indicator: one call, about 0.4 s, not documented as billed. The indicator lasts until we reply or 25 s pass.
+- **Slow.** If the answer is not out 10 s after the webhook, send one interim note ("Sigo con esto, ya te respondo.") and show the typing indicator again. At most once per message.
+- **Failed.** When processing fails for good (the model keeps failing after its retries, or there is nothing valid to answer with), send a short failure message saying the message was not processed and to try again. A 30 s deadline per message ends in the same failure message, and work still running after it is dropped, so a late answer can never contradict it.
+- **Cost.** Interim and failure messages count toward the 1,000 free delivered service messages a month, like any reply. Both are rare by design. The per-user pair limit (1 message per 6 s, bursts of up to 45) does not bind.
+- **Reactions** (⏳, then ✅ on the user's message) were considered. Meta documents neither their billing nor replacing a reaction, so test them in dev before relying on them.
 
 **Prompt.**
 - A frozen system prompt sits first, under one cache breakpoint. It holds the Argentine money conventions:
@@ -138,8 +147,9 @@ Each slice ships on its own and comes with its proof.
      - a message from your phone, then `pnpm latency` showing the floor.
 3. **Logging live.**
    - Parser command `log`, movements stored, reply rendered from the template; multiple movements per message.
+   - The transparency rules in Design: typing in parallel with the model, the 10 s interim note, the failure message and the 30 s deadline.
    - Proof:
-     - integration test: a recorded webhook payload against a local server and Postgres produces the expected rows and reply text;
+     - integration test: a recorded webhook payload against a local server and Postgres produces the expected rows and reply text, and a slow or failing model produces exactly one interim note or one failure message;
      - live, 20 real messages from your phone, then `pnpm latency` meets the latency targets in Goal.
 4. **Corrections, delete and queries.**
    - `correct`, `delete` and `query`, with totals computed in SQL.
@@ -173,7 +183,9 @@ Each slice ships on its own and comes with its proof.
 
 ## Slice 2 result (2026-11-20)
 
-Delivered: webhook with signature check, `wamid` dedupe, inbound row persisted before the 200, read receipt plus typing indicator, reply "recibido", per-stage timings, recovery sweep (startup and every 30 s, attempts cap 5, atomic claim), `pnpm latency`. Tests (PGlite, Graph API injected) cover bad signature, duplicate `wamid`, crash then sweep replies once, status webhooks and GET verification. Deployed on Railway US East at `wa.heywarren.app`, Meta subscribed by API. Still open: the floor measured with real messages from a phone (`pnpm latency`).
+Delivered: webhook with signature check, `wamid` dedupe, inbound row persisted before the 200, read receipt plus typing indicator, reply "recibido", per-stage timings, recovery sweep (startup and every 30 s, attempts cap 5, atomic claim), `pnpm latency`. Tests (PGlite, Graph API injected) cover bad signature, duplicate `wamid`, crash then sweep replies once, status webhooks and GET verification. Deployed on Railway US East at `wa.heywarren.app`, Meta subscribed by API. Merged as PR #33 on 2026-11-21.
+
+Measured with real messages from Ticiano's phone (2026-11-21, 11 messages, two batches): received → typing sent p50 417 ms, p95 788 ms; received → reply sent p50 1,125 ms, p95 1,616 ms; message → delivered about 3 s. Our server's share is about 10 ms. Meta's read-and-typing call takes about 0.4 s and its send call 0.5–0.7 s, even on a warm keep-alive connection. That floor is why the Goal's targets were changed on 2026-11-21 to put the first signal first.
 
 Slice 3 notes (decided in the slice 2 review):
 - The user table is `account`, not the reserved word `user`. `movement` and `reply` reference `inbound_message.id`, not the wamid.
