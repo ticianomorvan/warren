@@ -2,7 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { execute } from './execute'
 import { log } from './log'
 import { type ModelKey, parseMessage } from './parse'
-import { REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
+import { REPLY_BAD_CHANGE, REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
 import type { Claim, Store } from './store'
 import { argentinaToday } from './time'
 import { type Graph, GraphError } from './whatsapp/graph'
@@ -217,7 +217,9 @@ export function createProcessor(o: ProcessorOptions) {
 
       const { accountId, result, recentMovements } = outcome.value
       const { command } = result
-      if (result.fatal.length > 0) {
+      // A correction's value that cannot be stored is the person's to rewrite: say so, change nothing.
+      const badChange = command.type === 'correct' && result.fatal.length > 0
+      if (result.fatal.length > 0 && !badChange) {
         const detail = result.fatal.map((i) => `${i.path}: ${i.message}`).join('; ')
         return await fail(c, `invalid model output: ${detail}`)
       }
@@ -229,14 +231,17 @@ export function createProcessor(o: ProcessorOptions) {
           command,
           modelMs: result.latencyMs,
           execute: (tx) =>
-            execute(tx, {
-              accountId,
-              inboundId: c.id,
-              command,
-              today,
-              recent: recentMovements,
-              render: { helpContact: o.helpContact },
-            }),
+            badChange
+              ? Promise.resolve(REPLY_BAD_CHANGE)
+              : execute(tx, {
+                  accountId,
+                  inboundId: c.id,
+                  command,
+                  today,
+                  text: c.body ?? '',
+                  recent: recentMovements,
+                  render: { helpContact: o.helpContact },
+                }),
         })
       } catch (err) {
         return await fail(c, `commit failed: ${errorText(err)}`)
@@ -282,12 +287,36 @@ export function createProcessor(o: ProcessorOptions) {
     await parseAndAnswer(c, age)
   }
 
-  async function run(c: Claim): Promise<void> {
+  async function runNow(c: Claim): Promise<void> {
     try {
+      if (shutdown.signal.aborted) {
+        // Queued behind another message of the same sender when the shutdown came: nothing started.
+        await store.settle(c, 'pending', 'shutdown before the work started')
+        log('message_released', { wamid: c.wamid })
+        return
+      }
       await work(c)
     } catch (err) {
       log('process_crash', { wamid: c.wamid, error: errorText(err) }, 'error')
     }
+  }
+
+  /** The tail of each sender's chain of work. */
+  const lanes = new Map<string, Promise<void>>()
+
+  /**
+   * One sender's messages run strictly one after the other, in the order they were handed in (kick
+   * and sweep alike). A message read its context before the parse, so a message that ran beside an
+   * earlier one would not see what that one stored ("café 3500", then "uy, era 3800" must find the
+   * café). Different senders still run in parallel. Single process, so a promise chain is enough.
+   */
+  function run(c: Claim): Promise<void> {
+    const next = (lanes.get(c.wa_id) ?? Promise.resolve()).then(() => runNow(c))
+    lanes.set(c.wa_id, next)
+    void next.finally(() => {
+      if (lanes.get(c.wa_id) === next) lanes.delete(c.wa_id)
+    })
+    return next
   }
 
   function track<T>(p: Promise<T>): Promise<T> {

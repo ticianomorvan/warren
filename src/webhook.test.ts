@@ -296,7 +296,7 @@ describe('recovery', () => {
     await seed('wamid.S')
     const a = app.processor.kick(['wamid.S'])
     await settle()
-    await app.processor.sweep() // B: the row is stale (staleMs 0), takes it over and finishes
+    await app.makeProcessor(app.store).sweep() // B, another process: the row is stale (staleMs 0), takes it over and finishes
     expect(await row('wamid.S')).toMatchObject({ status: 'done', attempts: 2 })
     release()
     await a
@@ -698,6 +698,35 @@ describe('logging', () => {
     await settle()
     expect(await movements()).toHaveLength(1)
     expect(app.calls.sent).toHaveLength(1)
+    app.close()
+  })
+
+  it('a shutdown also hands back the messages queued behind it, and the next process answers both in order', async () => {
+    const entered = gate()
+    const release = gate()
+    let first = true
+    const app = await setup({
+      model: fakeModel(async () => {
+        if (first) {
+          first = false
+          entered.open()
+          await release.promise
+        }
+        return cafe
+      }),
+    })
+    await post(app.base, messageBody('wamid.Q1'))
+    await entered.promise
+    await post(app.base, messageBody('wamid.Q2')) // same sender: queued behind Q1
+    await settle()
+    await app.processor.stop(2000)
+    expect(await row('wamid.Q1')).toMatchObject({ status: 'pending' })
+    expect(await row('wamid.Q2')).toMatchObject({ status: 'pending', failure_sent_at: null })
+    expect(app.calls.sent).toHaveLength(0)
+    const successor = app.makeProcessor(app.store, fakeModel().client)
+    await successor.sweep()
+    expect(bodies(app.calls)).toEqual(['✓ Café $3.500 (visa)', '✓ Café $3.500 (visa)'])
+    release.open()
     app.close()
   })
 
