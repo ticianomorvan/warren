@@ -52,6 +52,8 @@ export interface Graph {
   markReadAndType(wamid: string): Promise<void>
   /** Sends a text message to a webhook `wa_id` and returns its wamid. */
   sendText(waId: string, body: string): Promise<string>
+  /** Reacts to one of the person's messages. Recipient rules are the same as `sendText`. */
+  sendReaction(waId: string, wamid: string, emoji: string): Promise<void>
 }
 
 export interface GraphOptions {
@@ -102,29 +104,42 @@ export function createGraph(o: GraphOptions): Graph {
   /** wa_ids whose send needed the short form (Meta's test-number recipient list). */
   const useShort = new Set<string>()
 
-  async function send(to: string, body: string): Promise<string> {
-    const res = await post({ recipient_type: 'individual', to, type: 'text', text: { body } })
-    const id = res.messages?.[0]?.id
-    if (!id) throw new GraphError(200, 'no message id in response')
-    return id
+  /**
+   * Runs one send to the `wa_id`, or to its short form once Meta has rejected the `wa_id` with 131030.
+   * 131030 is a 4xx, so nothing was sent and a second try cannot duplicate the message.
+   */
+  async function toRecipient<T>(waId: string, call: (to: string) => Promise<T>): Promise<T> {
+    const short = shortRecipient(waId)
+    if (useShort.has(waId)) return call(short)
+    try {
+      return await call(waId)
+    } catch (err) {
+      if (!(err instanceof GraphError && err.code === 131030) || short === waId) throw err
+      const result = await call(short)
+      useShort.add(waId)
+      return result
+    }
   }
 
   return {
     async markReadAndType(wamid) {
       await post({ status: 'read', message_id: wamid, typing_indicator: { type: 'text' } })
     },
-    async sendText(waId, body) {
-      const short = shortRecipient(waId)
-      if (useShort.has(waId)) return send(short, body)
-      try {
-        return await send(waId, body)
-      } catch (err) {
-        // 131030 is a 4xx, so nothing was sent and a second try cannot duplicate the reply.
-        if (!(err instanceof GraphError && err.code === 131030) || short === waId) throw err
-        const id = await send(short, body)
-        useShort.add(waId)
+    sendText: (waId, body) =>
+      toRecipient(waId, async (to) => {
+        const res = await post({ recipient_type: 'individual', to, type: 'text', text: { body } })
+        const id = res.messages?.[0]?.id
+        if (!id) throw new GraphError(200, 'no message id in response')
         return id
-      }
-    },
+      }),
+    sendReaction: (waId, wamid, emoji) =>
+      toRecipient(waId, async (to) => {
+        await post({
+          recipient_type: 'individual',
+          to,
+          type: 'reaction',
+          reaction: { message_id: wamid, emoji },
+        })
+      }),
   }
 }

@@ -36,28 +36,33 @@ export async function parseMessage(input: {
   recentMovements: RecentMovement[]
   model: ModelKey
   client?: Anthropic
+  /** Aborts the call and the SDK's retries. */
+  signal?: AbortSignal
 }): Promise<ParseResult> {
   const config = MODELS[input.model]
   const client = input.client ?? defaultClient()
   const started = performance.now()
-  const response = await client.messages.parse({
-    model: config.id,
-    max_tokens: 2048,
-    thinking: config.thinking,
-    output_config: { effort: 'low', format: COMMAND_FORMAT },
-    // Frozen prefix under one cache breakpoint; everything per-request comes after it.
-    system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
-    messages: [
-      {
-        role: 'user',
-        content: renderVolatile({
-          text: input.text,
-          today: input.today,
-          recentMovements: input.recentMovements,
-        }),
-      },
-    ],
-  })
+  const response = await client.messages.parse(
+    {
+      model: config.id,
+      max_tokens: 2048,
+      thinking: config.thinking,
+      output_config: { effort: 'low', format: COMMAND_FORMAT },
+      // Frozen prefix under one cache breakpoint; everything per-request comes after it.
+      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+      messages: [
+        {
+          role: 'user',
+          content: renderVolatile({
+            text: input.text,
+            today: input.today,
+            recentMovements: input.recentMovements,
+          }),
+        },
+      ],
+    },
+    input.signal ? { signal: input.signal } : undefined,
+  )
   const latencyMs = performance.now() - started
   if (response.parsed_output == null) {
     throw new Error(`model returned no parsable command (stop_reason: ${response.stop_reason})`)

@@ -55,6 +55,45 @@ describe('createGraph', () => {
     expect(tos).toEqual(['34612345678'])
   })
 
+  it('reacts with the same fallback, to the wa_id first and then the short form', async () => {
+    const sent: unknown[] = []
+    const graph = createGraph({
+      version: 'v27.0',
+      phoneNumberId: '1',
+      token: 't',
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body))
+        sent.push(body)
+        if (body.to === '5493515138578')
+          return new Response(JSON.stringify({ error: { message: 'not in list', code: 131030 } }), {
+            status: 400,
+          })
+        return new Response('{}')
+      },
+    })
+    await graph.sendReaction('5493515138578', 'wamid.IN', '✅')
+    await graph.sendReaction('5493515138578', 'wamid.IN2', '✅')
+    const reaction = (to: string, id: string) => ({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'reaction',
+      reaction: { message_id: id, emoji: '✅' },
+    })
+    expect(sent).toEqual([
+      reaction('5493515138578', 'wamid.IN'),
+      reaction('543515138578', 'wamid.IN'),
+      reaction('543515138578', 'wamid.IN2'),
+    ])
+  })
+
+  it('shares what it learned about a number between texts and reactions', async () => {
+    const { graph, tos } = fakeGraph((to) => to === '543515138578')
+    await graph.sendText('5493515138578', 'a')
+    await graph.sendReaction('5493515138578', 'wamid.X', '✅')
+    expect(tos).toEqual(['5493515138578', '543515138578', '543515138578'])
+  })
+
   it('treats a recipient-list rejection as permanent', () => {
     const e = new GraphError(400, 'Recipient phone number not in allowed list', 131030)
     expect(e.notSent).toBe(true)
