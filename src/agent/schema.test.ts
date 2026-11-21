@@ -106,6 +106,7 @@ describe('TOOL_INPUTS', () => {
         direction: 'out',
         category: null,
         payment: null,
+        description: 'café',
         text: null,
       }).success,
     ).toBe(true)
@@ -114,7 +115,6 @@ describe('TOOL_INPUTS', () => {
         question: 'Cuál',
         movement_ids: [1, 2],
         after_answer: 'delete',
-        text: null,
       }).success,
     ).toBe(true)
     expect(TOOL_INPUTS.reply().safeParse({ text: 'Sí, lo borré.' }).success).toBe(true)
@@ -124,6 +124,18 @@ describe('TOOL_INPUTS', () => {
   it('always carries the text key of the write tools (strict tools send every required key)', () => {
     expect(TOOL_INPUTS.delete_movement().safeParse({ id: 4 }).success).toBe(false)
     expect(TOOL_INPUTS.log_movements().safeParse({ movements: [movement] }).success).toBe(false)
+  })
+
+  it('has no text on ask_user: code asks the question once, so the model has nothing to add to it', () => {
+    const parsed = TOOL_INPUTS.ask_user().parse({
+      question: 'Cuál',
+      movement_ids: [1, 2],
+      after_answer: 'none',
+      text: '¿Cuál café y qué cambio?',
+    })
+    expect(parsed).not.toHaveProperty('text')
+    const ask = TOOLS.find((t) => t.name === 'ask_user')
+    expect(JSON.stringify(ask?.input_schema)).not.toContain('"text"')
   })
 
   it('rejects unknown enums, non-integer ids and a period that does not exist', () => {
@@ -142,6 +154,7 @@ describe('TOOL_INPUTS', () => {
         direction: null,
         category: null,
         payment: null,
+        description: null,
         text: null,
       }).success,
     ).toBe(false)

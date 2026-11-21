@@ -497,3 +497,44 @@ and keeps every guard. `AGENTS.md` (rule 2, layout, message flow) describes the 
   join `seen` only after every call is checked. `facts` and `window` are required inputs of `execute`; a message
   answered without the model (unreadable photo, bare answer) is built in one place; the photo flag of the context
   comes from the image being there; a `reply` with empty text is one rule, not a special case.
+
+### Live test round (inbound_message #55–#65) and its fixes
+
+What worked: #57 (held, then the delete and the correction on turn 2), #59, #62 (a transfer screenshot logged right:
+the photo path works against real Meta), #65. What did not, and what changed:
+
+- **A refused text was replaced by the fallback (#60, #61).** The model's answers listed four cafés, and "cuatro" is a
+  number code did not give. Now the loop runs the numbers check on the texts of the turn it is about to accept
+  (against what the model was shown, plus the amounts and dates the actions carry; the lines code renders do not
+  exist yet) and, if one fails, answers every call with the reason and lets the model send them again inside the
+  3-turn cap. The final check at the commit point stays (it knows the lines); on the last turn a bad text goes
+  through and is dropped there. `REPLY_SAY_FALLBACK` now reads "Eso no te lo sé decir bien…", not like an error. The
+  numbers rule is unchanged: counting is code's.
+- **Counts through tools.** `summarize` has a `description` filter (the words of the description, accents and case
+  ignored, every word must be in it; one more nullable, 10 of 16 unions), so "cuántos cafés anoté" is code's line:
+  `Hoy gastaste $6.400 en café (2 movimientos).` The prompt says counts and totals are code's and that a list of
+  movements ("me cobraste dos veces el café?") is a `find_movements` answered without counting. Like a payment,
+  the description is copied into the line, so a figure of 4 or more digits there is refused.
+- **Echo (#58).** The model had put "cuanto voy este mes" in `summarize.text`. `text` is null unless it adds
+  something (prompt), and `checkSay` now drops a text that is, in effect, the person's own message (the same words,
+  or the message with at most 16 characters around it; a message of two words or fewer never counts). It is recorded
+  as `echoes the person's message`, and it is not sent back for repair: there is nothing to fix.
+- **Ask once (#63, #64).** Simplest: `ask_user` has no `text`. Code writes the question and lists the options, once. The
+  model's text beside a question only repeated it; a "No encontré el almuerzo" for a part the question does not
+  cover goes in the `text` of another action of the same turn. After the person picks an option of a question
+  with no action behind it, code (not the model) asks "¿Qué querés cambiar? Café $2.500 · 15:22" about that movement
+  alone and keeps it as the pending option; a one-option question shows the time logged, and the pick of a
+  one-option question is not narrowed again (it would loop).
+- **Scenarios** s113 (no echo), s114 (#60), s115 (#61, test split), s116 (#63 then #64 then the answer) and s117
+  (#57: the súper older than the 10 newest, so search, hold, then delete and correct).
+
+Results of this round (Haiku 5.5, final code): scenario eval `--split all`, 117 scenarios: **116/117 fully right (99.1%)**,
+dev 92/92, test 24/25 (held out), 0 silent wrong changes, 0 invented numbers, 0 unnecessary questions; per turn p50
+1,589 ms, p95 3,289 ms. `pnpm eval --split all`: **149/152** (slice B: 152/152), 0 silent amounts, 0 silent targets,
+p50 1,475 ms, p95 2,632 ms. The two dev misses (c085, c101) were not reproduced: eight probe runs of each gave the
+right action every time, so they are model variance, not a change in behaviour; the third miss is in the held-out
+split. 389 tests (round 2: 362). The new guards were broken one at a time (no repair turn, a repair on the last turn,
+an echo repaired or sent, the actions' own amounts not given, only some actions sent back, the reason not told, a
+two-word echo, no narrowing, narrowing a one-option question, the summarize description ignored or matched by
+any word, a figure in the description): all killed. Spend of this round about US$0.13 (tracked US$0.12 plus probes);
+the whole slice is about US$1.05 over its US$1.00, by the extra US$0.30 granted for this round.

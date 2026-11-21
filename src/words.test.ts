@@ -5,6 +5,7 @@ import {
   day,
   find,
   history,
+  insist,
   lastWamid,
   live,
   logOf,
@@ -33,13 +34,16 @@ import {
 useDatabase()
 
 /** What the last message stored about each tool call. */
+/** What the last message stored about each tool call, without the turns that were sent back for a repair. */
 const audit = async () =>
-  ((await row(lastWamid))?.tool_calls ?? []) as {
-    tool: string
-    status: string
-    text?: string
-    textReason?: string
-  }[]
+  (
+    ((await row(lastWamid))?.tool_calls ?? []) as {
+      tool: string
+      status: string
+      text?: string
+      textReason?: string
+    }[]
+  ).filter((e) => e.status !== 'repair')
 
 describe('the model’s own words', () => {
   it('go after the record of what changed, never instead of it', async () => {
@@ -90,7 +94,7 @@ describe('the model’s own words', () => {
   it('are dropped when they hold a number code did not give: the record is sent alone, and the audit says why', async () => {
     await day()
     const app = await setup({
-      model: script(saying(remove(1), 'Borré el súper de $13.000 y ya llevás $15.800 gastados.')),
+      model: insist(saying(remove(1), 'Borré el súper de $13.000 y ya llevás $15.800 gastados.')),
     })
     const reply = await say(app, { text: 'borra el super' })
     expect(reply).toBe('✓ Borré: Súper $12.000 (crédito visa) · 09:12')
@@ -107,7 +111,7 @@ describe('the model’s own words', () => {
   it('are dropped when written in words, or shaped like a record', async () => {
     await day()
     const app = await setup({
-      model: script(
+      model: insist(
         saying(remove(5), 'Borré doce mil pesos de taxi.'),
         saying(remove(4), '✓ Borré: Café $2.900'),
       ),
@@ -122,7 +126,7 @@ describe('the model’s own words', () => {
   it('do not replace the totals: a total the model computed is dropped, the one summarize gives stays', async () => {
     await day()
     const app = await setup({
-      model: script(saying(summarize('today'), 'En total $43.300 entre todo.')),
+      model: insist(saying(summarize('today'), 'En total $43.300 entre todo.')),
     })
     const reply = await say(app, { text: 'cuanto gaste hoy' })
     expect(reply).toBe('Hoy gastaste $43.800 (5 movimientos).')
@@ -162,7 +166,7 @@ describe('the model’s own words', () => {
   it('a reply with a number code did not give, or with nothing in it, gets the fallback', async () => {
     await day()
     const app = await setup({
-      model: script(replyCall('Borré el súper a las 10:12.'), replyCall('  '), replyCall('Hola')),
+      model: insist(replyCall('Borré el súper a las 10:12.'), replyCall('  '), replyCall('Hola')),
     })
     expect(await say(app, { text: 'borraste el super?' })).toBe(REPLY_SAY_FALLBACK)
     expect((await audit())[0]).toMatchObject({ tool: 'reply', text: 'dropped' })
@@ -182,7 +186,7 @@ describe('the model’s own words', () => {
       model: script(
         remove(1),
         replyCall('Sí, el súper de las 09:12.'),
-        replyCall('Sí, el súper de las 09:13.'),
+        ...Array(3).fill(replyCall('Sí, el súper de las 09:13.')),
       ),
     })
     await say(app, { text: 'borra el super' })
@@ -211,7 +215,7 @@ describe('a claim of a change must be this message’s own (live message 48 agai
   it('drops "Borré la nafta y corregí el café" when only one correction ran, even if the person said "borre"', async () => {
     await day()
     const app = await setup({
-      model: script(saying(correct(2, { amount: '4000' }), 'Borré la nafta y corregí el café.')),
+      model: insist(saying(correct(2, { amount: '4000' }), 'Borré la nafta y corregí el café.')),
     })
     const reply = await say(app, { text: 'borre la nafta y el cafe fue 4000' })
     expect(reply).toBe('✓ Corregido: Café $4.000 (antes $3.500) · 10:10')
@@ -224,7 +228,7 @@ describe('a claim of a change must be this message’s own (live message 48 agai
   it('drops a claim that an earlier "✓ Anoté" in the window would have seemed to prove, beside a write', async () => {
     await day()
     const app = await setup({
-      model: script(
+      model: insist(
         saying(logOf(movement()), 'Corregí el café.'),
         saying(remove(1), 'Listo, ya está.'),
       ),
@@ -242,8 +246,8 @@ describe('a claim of a change must be this message’s own (live message 48 agai
       model: script(
         remove(1),
         replyCall('Sí, lo borré.'),
-        replyCall('Sí, lo corregí.'),
-        replyCall('Sí, lo anoté.'),
+        ...Array(3).fill(replyCall('Sí, lo corregí.')),
+        ...Array(3).fill(replyCall('Sí, lo anoté.')),
       ),
     })
     await say(app, { text: 'borra el super' })
@@ -397,6 +401,105 @@ describe('a question that expired', () => {
     const context = String(app.requests[1]?.messages[0]?.content)
     expect(context).not.toContain('pregunta vencida')
     expect(context).toContain('Pregunta pendiente')
+    app.close()
+  })
+})
+
+describe('a text that is refused is repaired, not replaced by the fallback (live messages 60 and 61)', () => {
+  it('the model gets the reason, tries again, and its second text is sent', async () => {
+    await day()
+    const app = await setup({
+      model: script(
+        replyCall('Tenés cuatro cafés anotados hoy.'),
+        replyCall('Anotaste el café de $3.500 a las 10:10 y el de $2.900 a las 11:54.'),
+      ),
+    })
+    const reply = await say(app, { text: 'me cobraste dos veces el cafe?' })
+    expect(reply).toBe('Anotaste el café de $3.500 a las 10:10 y el de $2.900 a las 11:54.')
+    expect(reply).not.toBe(REPLY_SAY_FALLBACK)
+    expect(app.model.n).toBe(2)
+    const stored = await row(lastWamid)
+    expect(stored).toMatchObject({ model_turns: 2, status: 'done' })
+    expect(
+      ((stored?.tool_calls ?? []) as { status: string; detail?: string }[]).map((c) => [
+        c.status,
+        c.detail ?? null,
+      ]),
+    ).toEqual([
+      ['repair', expect.stringContaining('cuatro')],
+      ['applied', null],
+    ])
+    expect(JSON.stringify(app.requests[1]?.messages.at(-1))).toContain('summarize')
+    app.close()
+  })
+
+  it('a model that insists on a bad text gets the softer fallback only after the cap', async () => {
+    await day()
+    const app = await setup({ model: insist(replyCall('Tenés cuatro cafés anotados hoy.')) })
+    expect(await say(app, { text: 'cuantos cafe anoté?' })).toBe(REPLY_SAY_FALLBACK)
+    expect(app.model.n).toBe(3)
+    expect(REPLY_SAY_FALLBACK).not.toMatch(/No pude|error/i)
+    app.close()
+  })
+
+  it('a count comes from summarize, and its line is the answer', async () => {
+    await day()
+    const app = await setup({
+      model: script(
+        saying(summarize('today', { description: 'café' }), 'Tenés cuatro cafés.'),
+        summarize('today', { description: 'café' }),
+      ),
+    })
+    expect(await say(app, { text: 'cuantos cafe anoté hoy?' })).toBe(
+      'Hoy gastaste $6.400 en café (2 movimientos).',
+    )
+    app.close()
+  })
+})
+
+describe('a text that only repeats the person (live message 58)', () => {
+  it('is dropped and recorded as an echo, with no repair turn', async () => {
+    await day()
+    const app = await setup({
+      model: script(saying(summarize('this_month'), 'cuanto voy este mes')),
+    })
+    const reply = await say(app, { text: 'cuanto voy este mes?' })
+    expect(reply).toBe('Este mes gastaste $43.800 (5 movimientos).')
+    expect(app.model.n).toBe(1)
+    expect((await audit())[0]).toMatchObject({
+      text: 'dropped',
+      textReason: "echoes the person's message",
+    })
+    app.close()
+  })
+})
+
+describe('one question, then one about the movement picked (live messages 63 and 64)', () => {
+  it('asks once even when the model also wrote text, and narrows the answer to the movement picked', async () => {
+    await day()
+    const app = await setup({
+      model: script(
+        // the model's own extra "text" on ask_user is not a field: code asks, once
+        saying(ask([4, 2]), '¿Cuál café y qué cambio?'),
+        correct(2, { amount: '3100' }),
+      ),
+    })
+    const first = await say(app, { text: 'cambiemos el gasto de cafe' })
+    expect(first.match(/¿/g)).toHaveLength(1)
+    expect(first).toBe(
+      '¿Cuál? 1. Café $2.900 · 2. Café $3.500\nRespondé con el número y el cambio, por ejemplo "el 1 fue 4100".',
+    )
+    // "2" picks the café of 3500: code asks about that one alone, and the model is not called
+    const second = await say(app, { text: '2' })
+    expect(second).toBe('¿Qué querés cambiar? Café $3.500 · 10:10')
+    expect(second).not.toMatch(/Respondé|2\.900/)
+    expect(app.model.n).toBe(1)
+    expect(await row(lastWamid)).toMatchObject({ action: 'ask', model_turns: 0 })
+    // the answer to that question is about that movement: the model sees it as the pending option
+    expect(await say(app, { text: 'fue 3100' })).toBe(
+      '✓ Corregido: Café $3.100 (antes $3.500) · 10:10',
+    )
+    expect(String(app.requests[1]?.messages[0]?.content)).toContain('Pregunta pendiente: 1 = id 2')
     app.close()
   })
 })

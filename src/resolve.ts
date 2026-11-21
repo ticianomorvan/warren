@@ -60,13 +60,23 @@ export interface PendingQuestion {
  * cannot be read as something else.
  */
 export function answerAction(text: string, question: PendingQuestion | null): Action | null {
-  if (!question?.pending) return null
+  if (!question) return null
   const n = answerNumber(
     text,
     question.asked.map((a) => a.number),
   )
   const id = question.asked.find((a) => a.number === n)?.id
   if (id === undefined) return null
+  // A question with nothing behind it ("¿Qué querés cambiar?" over several options): the number picks one,
+  // and the follow-up is about that movement alone. (Code asks it, so the options are not listed again.)
+  if (!question.pending) {
+    return question.asked.length > 1
+      ? {
+          tool: 'ask_user',
+          input: { question: 'Qué querés cambiar', movement_ids: [id], after_answer: 'none' },
+        }
+      : null
+  }
   return question.pending.action === 'delete'
     ? { tool: 'delete_movement', input: { id, text: null } }
     : { tool: 'correct_movement', input: { id, changes: question.pending.changes, text: null } }

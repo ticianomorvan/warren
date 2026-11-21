@@ -22,6 +22,8 @@ export interface QueryFilter {
   category: Movement['category'] | null
   /** Matched loosely: case- and accent-insensitive, contained in the stored payment. */
   payment: string | null
+  /** Words of the description, every one contained in it (accents and case ignored). */
+  description: string | null
   range: DateRange
 }
 
@@ -176,6 +178,10 @@ export async function queryTotals(
   f: QueryFilter,
 ): Promise<QueryTotal[]> {
   const needle = f.payment ? normalizeText(f.payment) : ''
+  const words = normalizeText(f.description ?? '')
+    .split(/\s+/)
+    .filter((w) => w.length >= 2)
+  const like = (w: string) => `%${w.replace(/[\\%_]/g, '\\$&')}%`
   return sql<QueryTotal[]>`
     SELECT direction, currency, sum(amount)::text AS total, count(*)::int AS count
     FROM movement
@@ -183,6 +189,11 @@ export async function queryTotals(
       AND occurred_on BETWEEN ${f.range.from}::date AND ${f.range.to}::date
       ${f.direction ? sql`AND direction = ${f.direction}` : sql``}
       ${f.category ? sql`AND category = ${f.category}` : sql``}
+      ${
+        words.length > 0
+          ? sql`AND ${sql.unsafe(folded('description'))} LIKE ALL (${words.map(like)}::text[])`
+          : sql``
+      }
       ${
         needle
           ? sql`AND position(${needle}::text IN lower(translate(coalesce(payment, ''),

@@ -41,6 +41,8 @@ export interface ExecuteInput {
    * What the model's own words may take numbers from, besides the lines this run renders: the person's
    * message, the context and the search results of this message (`contextFacts`).
    */
+  /** The person's message, to drop a text that only echoes it. */
+  message: string
   facts: string[]
   /** What Warren answered earlier in the conversation: the one proof a `reply` may lean on. */
   window: string[]
@@ -85,7 +87,12 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
 
   for (const [index, action] of i.actions.entries()) {
     // A `reply` is all text: an empty one is still refused (and answered), never skipped.
-    if (action.tool !== 'notice' && (action.input.text?.trim() || action.tool === 'reply')) {
+    // (`ask_user` has no text: code asks, once.)
+    if (
+      action.tool !== 'notice' &&
+      'text' in action.input &&
+      (action.input.text?.trim() || action.tool === 'reply')
+    ) {
       says.push({ action: index, text: action.input.text ?? '' })
     }
     switch (action.tool) {
@@ -140,14 +147,15 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         break
       }
       case 'summarize': {
-        const { period, direction, category, payment } = action.input
+        const { period, direction, category, payment, description } = action.input
         const totals = await queryTotals(tx, i.accountId, {
           direction,
           category,
           payment,
+          description,
           range: periodRange(period, today),
         })
-        lines.push(renderQuery({ period, direction, category, payment }, totals))
+        lines.push(renderQuery({ period, direction, category, payment, description }, totals))
         steps.push({ tool: action.tool, outcome: 'applied' })
         break
       }
@@ -186,6 +194,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
     lines,
     says,
     steps,
+    message: i.message,
     facts: i.facts,
     window: i.window,
     fallback: REPLY_SAY_FALLBACK,

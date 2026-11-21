@@ -3,6 +3,7 @@ import {
   checkSay,
   composeReply,
   type Evidence,
+  echoes,
   hasForeignDigit,
   hasLongNumber,
   hasNumberWord,
@@ -348,7 +349,12 @@ describe('checkSay: a text cannot say a change happened that this message did no
 
 describe('composeReply', () => {
   const step = (tool: string, outcome = 'applied') => ({ tool, outcome })
-  const base = { facts: ['borra el super'], window: [] as string[], fallback: 'FALLBACK' }
+  const base = {
+    message: 'borra el super',
+    facts: ['borra el super'],
+    window: [] as string[],
+    fallback: 'FALLBACK',
+  }
 
   it('puts the lines first, then the texts that pass, once each', () => {
     const r = composeReply({
@@ -485,5 +491,54 @@ describe('checkSay: pieces that are each given', () => {
     expect(ok('Son 12 500.', ['12', '500'])).toBe(false)
     expect(ok('Son 12 500.', ['pagué 12 500'])).toBe(true) // exactly as given
     expect(ok('Son 2 900.', ['hace 2', '900'])).toBe(false)
+  })
+})
+
+describe('echoes and checkSay: a text that only repeats the person adds nothing', () => {
+  it.each([
+    ['cuanto voy este mes', 'cuanto voy este mes'],
+    ['cuanto voy este mes', '¿Cuánto voy este mes?'],
+    ['cuanto voy este mes', 'Cuánto voy este mes?!'],
+    ['cuanto voy este mes', 'Me preguntás cuanto voy este mes'],
+    ['borraste el super', 'borraste el súper?'],
+  ])('"%s" ← "%s"', (message, text) => {
+    expect(echoes(text, message)).toBe(true)
+  })
+
+  it.each([
+    ['cuanto voy este mes', 'Este mes vas $43.300'],
+    ['cuanto voy este mes', 'No encontré gastos este mes, ¿querés que mire otro período?'],
+    ['borraste el super', 'Sí, lo borré.'],
+    ['ok', 'ok'], // two words or fewer are never an echo: "gracias" → "gracias" is a courtesy
+    ['hola que tal', ''],
+  ])('"%s" ← "%s" is its own text', (message, text) => {
+    expect(echoes(text, message)).toBe(false)
+  })
+
+  it('checkSay refuses an echo and marks it, so the caller can drop it without a repair', () => {
+    const r = checkSay('Cuánto voy este mes', {
+      ...evidence(),
+      message: 'cuanto voy este mes',
+    })
+    expect(r).toEqual({ ok: false, reason: "echoes the person's message", echo: true })
+    // the same text is fine when it is not the message
+    expect(checkSay('Cuánto voy este mes', { ...evidence(), message: 'hola' }).ok).toBe(true)
+  })
+
+  it('composeReply drops an echo, with its reason in the verdict', () => {
+    const r = composeReply({
+      lines: ['Este mes gastaste $43.800 (5 movimientos).'],
+      says: [{ action: 0, text: 'cuanto voy este mes' }],
+      steps: [{ tool: 'summarize', outcome: 'applied' }],
+      message: 'cuanto voy este mes?',
+      facts: ['cuanto voy este mes?'],
+      window: [],
+      fallback: 'FALLBACK',
+    })
+    expect(r.reply).toBe('Este mes gastaste $43.800 (5 movimientos).')
+    expect(r.verdicts.get(0)).toEqual({
+      text: 'dropped',
+      textReason: "echoes the person's message",
+    })
   })
 })

@@ -119,6 +119,8 @@ export const TOOL_INPUTS = {
       direction: Direction().nullable(),
       category: Category().nullable(),
       payment: z.string().nullable(),
+      /** Words of the description to count or total: "cuántos cafés" is `café`. */
+      description: z.string().nullable(),
       text: Say(),
     }),
   ask_user: () =>
@@ -127,7 +129,6 @@ export const TOOL_INPUTS = {
       movement_ids: z.array(z.number().int()),
       after_answer: z.enum(PENDING_ACTIONS),
       changes: ChangesSchema().optional(),
-      text: Say(),
     }),
   reply: () => z.object({ text: z.string() }),
   help: () => z.object({}),

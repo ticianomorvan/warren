@@ -1,11 +1,14 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import {
   type Action,
+  type ContextInput,
+  contextFacts,
   type ModelKey,
   type RecentMovement,
   renderContext,
   runAgent,
   type Usage,
+  windowReplies,
 } from '../src/agent'
 import { MAX_FOUND } from '../src/agent/schema'
 import type { FindFilter, MovementRow } from '../src/ledger'
@@ -124,17 +127,21 @@ export async function runCase(
 ): Promise<AgentCaseResult> {
   const list = rows(c.recent)
   const asked = c.previous ? optionsOf(c.previous.reply, list) : []
+  const context: ContextInput = {
+    text: c.text,
+    today: c.today,
+    time: argentinaTime(new Date(`${c.today}T15:00:00Z`)),
+    movements: list,
+    conversation: c.previous ? [{ ...c.previous, minutesAgo: 1 }] : [],
+    pending: asked.length > 0 ? { asked, action: 'none' } : null,
+  }
   const result = await runAgent({
     client: o.client,
     model: o.model,
-    context: renderContext({
-      text: c.text,
-      today: c.today,
-      time: argentinaTime(new Date(`${c.today}T15:00:00Z`)),
-      movements: list,
-      conversation: c.previous ? [{ ...c.previous, minutesAgo: 1 }] : [],
-      pending: asked.length > 0 ? { asked, action: 'none' } : null,
-    }),
+    context: renderContext(context),
+    facts: contextFacts(context),
+    window: windowReplies(context),
+    message: c.text,
     today: c.today,
     env: { find: async (f) => find(list, f) },
     seen: new Set([...list.map((m) => m.id), ...asked.map((a) => a.id)]),

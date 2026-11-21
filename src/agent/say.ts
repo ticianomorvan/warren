@@ -193,10 +193,37 @@ function tokens(text: string): Token[] {
   return out
 }
 
-export type SayCheck = { ok: true; text: string } | { ok: false; reason: string }
+export type SayCheck =
+  | { ok: true; text: string }
+  | {
+      ok: false
+      reason: string /** The text only repeats the person: nothing to repair. */
+      echo?: true
+    }
 
 /** One line, single spaces. */
 export const squash = (text: string) => text.replace(/\s+/g, ' ').trim()
+
+/** Letters and digits only, accents and case aside. */
+const flat = (text: string) =>
+  fold(text.normalize('NFKC'))
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+
+/**
+ * Whether `text` is, in effect, the person's own message said back: the same words, or the message with a
+ * few words around it ("cuanto voy este mes" / "¿Cuánto voy este mes?"). Two words or fewer are never an echo.
+ */
+export function echoes(text: string, message: string): boolean {
+  const a = flat(text)
+  const b = flat(message)
+  if (b.split(' ').length < 3 || a === '') return false
+  return (
+    a === b ||
+    (a.includes(b) && a.length <= b.length + 16) ||
+    (b.includes(a) && a.length >= b.length * 0.8)
+  )
+}
 
 /** What a text may lean on. */
 export interface Evidence {
@@ -204,6 +231,8 @@ export interface Evidence {
   numbers: readonly string[]
   /** Where number words may come from: the person's side only (never the model's own descriptions). */
   words: readonly string[]
+  /** The person's message: a text that only repeats it adds nothing. */
+  message?: string
   /** The changes this message made. A claim of a change needs it here... */
   applied: Applied
   /** ...or, for a `reply` that answers about earlier work, in what Warren answered before. */
@@ -247,6 +276,9 @@ export function checkSay(text: string, e: Evidence): SayCheck {
   if (one.length > MAX_SAY_LENGTH)
     return { ok: false, reason: `longer than ${MAX_SAY_LENGTH} characters` }
   if (one.includes('✓')) return { ok: false, reason: 'imitates a code-rendered line (✓)' }
+  if (e.message !== undefined && echoes(one, e.message)) {
+    return { ok: false, reason: "echoes the person's message", echo: true }
+  }
 
   const known = new Set(e.numbers.flatMap((s) => tokens(s).flatMap((t) => t.provides)))
   const unknown = tokens(one).filter((t) => !known.has(t.needs))
@@ -331,6 +363,7 @@ export function composeReply(i: {
   lines: string[]
   says: Say[]
   steps: Step[]
+  message: string
   facts: readonly string[]
   window: readonly string[]
   fallback: string
@@ -352,6 +385,7 @@ export function composeReply(i: {
     const check = checkSay(say.text, {
       numbers,
       words: i.facts,
+      message: i.message,
       applied,
       ...(step.tool === 'reply' ? { window: i.window } : {}),
     })

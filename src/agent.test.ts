@@ -199,7 +199,9 @@ describe('several actions in one message', () => {
     const app = await setup({
       model: script([remove(4), ask([5], { question: 'Qué querés cambiar' })]),
     })
-    expect(await say(app)).toBe('✓ Borré: Café $2.900 · 11:54\n¿Qué querés cambiar? Taxi $5.400')
+    expect(await say(app)).toBe(
+      '✓ Borré: Café $2.900 · 11:54\n¿Qué querés cambiar? Taxi $5.400 · 11:59',
+    )
     app.close()
   })
 })
@@ -357,6 +359,7 @@ describe('guards at the commit point', () => {
         actions,
         audit: [],
         today: TODAY,
+        message: '',
         facts: [],
         window: [],
       }),
@@ -397,17 +400,17 @@ describe('guards at the commit point', () => {
               question: 'Cuál',
               movement_ids: [theirs?.id ?? 0, gone ?? 0, mine ?? 0],
               after_answer: 'delete',
-              text: null,
             },
           },
         ],
         audit: [],
         today: TODAY,
+        message: '',
         facts: [],
         window: [],
       }),
     )
-    expect(done.reply).toBe('¿Cuál? Mío $1.000')
+    expect(done.reply).toMatch(/^¿Cuál\? Mío \$1\.000 · \d\d:\d\d$/)
     expect(done.asked).toEqual([{ number: 1, id: mine }])
   })
 
@@ -625,7 +628,9 @@ describe('ask, then answer', () => {
     const app = await setup({
       model: script(ask([5], { after: 'delete', question: 'Querés borrar este' })),
     })
-    expect(await say(app, { text: 'borrá lo del remís' })).toBe('¿Querés borrar este? Taxi $5.400')
+    expect(await say(app, { text: 'borrá lo del remís' })).toBe(
+      '¿Querés borrar este? Taxi $5.400 · 11:59',
+    )
     expect(await say(app, { text: 'dale' })).toBe('✓ Borré: Taxi $5.400')
     expect(app.model.n).toBe(1)
     app.close()
@@ -675,6 +680,26 @@ describe('ask, then answer', () => {
 
 describe('summarize', () => {
   const OCT = { on: '2025-10-03' }
+
+  it('counts and totals by words of the description, accents and case aside: the count is code’s', async () => {
+    await day() // two cafés (3500, 2900), the nafta, the súper and the taxi, all today
+    await seed([{ on: TODAY, amount: '1000', description: 'Café con leche' }])
+    const app = await setup({
+      model: script(
+        summarize('today', { description: 'CAFÉ' }),
+        summarize('today', { description: 'nafta' }),
+        summarize('today', { description: 'cafe leche' }),
+        summarize('today', { description: 'café', category: 'supermercado' }),
+      ),
+    })
+    expect(await say(app, { text: 'cuantos cafes anote hoy' })).toBe(
+      'Hoy gastaste $7.400 en café (3 movimientos).',
+    )
+    expect(await say(app)).toBe('Hoy gastaste $20.000 en nafta (1 movimiento).')
+    expect(await say(app)).toBe('Hoy gastaste $1.000 en cafe leche (1 movimiento).')
+    expect(await say(app)).toBe('No encontré gastos hoy en Súper, café.')
+    app.close()
+  })
 
   it('equals an independent SQL sum, with every filter applied', async () => {
     await seed([

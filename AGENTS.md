@@ -160,13 +160,13 @@ wrong changes. Its test split is held out like the other: never print or tune on
   - `find_movements` (read): the sender's whole history, by text, dates, category, payment, amount; at most 20
     rows with ids. Its results go back in one user message (parallel calls included).
   - Terminal, run by code at the commit point in the order given, in one transaction, one combined reply:
-    `log_movements`, `correct_movement`, `delete_movement`, `summarize` (today's periods and filters),
+    `log_movements`, `correct_movement`, `delete_movement`, `summarize` (today's periods and filters, including `description`: the words of a description, so a count such as "cuántos cafés" is code's line),
     `ask_user` (a short phrase plus the movements to offer, newest first, numbered 1..k by code; it stores
-    `asked_numbers`, `asked_ids` and `pending`, what choosing an option will do), `reply({text})` (the model's
+    `asked_numbers`, `asked_ids` and `pending`, what choosing an option will do; it has no `text`: code asks once), `reply({text})` (the model's
     own words, for what is not a change: a question about what Warren did, thanks, something off topic) and
     `help` (the one canned text, for "ayuda" and greetings).
-  - **The model's own words (B2).** Every write tool, `summarize` and `ask_user` carry a `text` (a nullable, always
-    present). Code sends the record of what changed (and the totals, and the question) first, then the texts, in
+  - **The model's own words (B2).** Every write tool and `summarize` carry a `text` (a nullable, always present). `text` is null unless it adds
+    something; one that only repeats the person's message is dropped (an echo, not an error). Code sends the record of what changed (and the totals, and the question) first, then the texts, in
     order. A text goes out only if `checkSay` passes: at most 280 characters, no `✓`, no number in digits or
     in words that was not given by code, no figure made of given pieces ("2 lucas", "12 500", a minus, a
     percent) and no claim of a change ("borré", "corregí", "anoté", "listo") that this message's own outcomes
@@ -178,6 +178,11 @@ wrong changes. Its test split is held out like the other: never print or tune on
     entry says `text: dropped` and why; a `reply` that is dropped sends `REPLY_SAY_FALLBACK`), as is a text beside
     an action that did not apply. A description or payment with 4 or more digits in a row is refused like any
     other bad value.
+  - **A refused text gets a repair turn (B2).** Before it accepts a turn's actions the loop runs the numbers
+    check on their texts, with what the model was shown (not yet the lines code renders; the amounts and dates
+    the actions carry count). If one fails (and it is not an echo), none of the turn's actions runs (audit
+    `repair`): every call is answered with the reason, and the model sends them again inside the cap. On the
+    last turn it goes on and the commit point drops the text. `REPLY_SAY_FALLBACK` is only for that case.
   - **A turn that searches and writes does not end the loop (B2).** Code runs the reads, holds the writes
     (audit status `held`) and answers them with "your changes were not run; send every change again". The model
     then sends every change with the results in view, inside the same cap of 3 turns. A plain log or summary is
@@ -192,6 +197,10 @@ wrong changes. Its test split is held out like the other: never print or tune on
   - **An expired question is marked (B2).** A question older than 10 minutes, or one that a newer message
     replaced, still shows in the conversation window, now with "pregunta vencida" under it, so that "borrá el 2"
     reads as a position of the list and not as its option 2.
+  - **One question, then one about the movement picked (B2).** A question with no action behind it
+    (`after_answer` none, several options) answered with a number is not sent to the model: `answerAction`
+    asks "¿Qué querés cambiar?" about that one movement (without listing the others) and keeps it as the pending
+    option, so the next message is read against it.
   - **A bare answer to our question is code's job.** If the previous message got an `ask_user` with a pending
     action, at most 10 minutes ago, and the new message is only an answer (`answerNumber`: "2", "el primero",
     "sí" after one option), `answerAction` runs the pending correction or delete on the id that option offered

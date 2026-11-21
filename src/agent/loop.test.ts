@@ -75,12 +75,22 @@ function client(...turns: (Call[] | string)[]) {
 
 const run = (
   c: Anthropic,
-  o: { seen?: number[]; find?: (id: number) => MovementRow[]; signal?: AbortSignal } = {},
+  o: {
+    seen?: number[]
+    find?: (id: number) => MovementRow[]
+    signal?: AbortSignal
+    facts?: string[]
+    window?: string[]
+    message?: string
+  } = {},
 ) =>
   runAgent({
     client: c,
     model: 'haiku',
     context: 'ctx',
+    facts: o.facts ?? [],
+    window: o.window ?? [],
+    message: o.message ?? '',
     today: '2026-11-21',
     env: { find: async () => o.find?.(0) ?? [] },
     seen: new Set(o.seen ?? [1, 2, 3]),
@@ -347,6 +357,106 @@ describe('runAgent: a turn that searches and changes in one', () => {
   })
 })
 
+describe('runAgent: a text that would be dropped is sent back', () => {
+  const saying = (call: Call, text: string | null): Call => ({
+    ...call,
+    input: { ...(call.input as object), text },
+  })
+  const reasonSeen = (requests: Anthropic.MessageCreateParamsNonStreaming[], k: number) =>
+    JSON.stringify(requests[k]?.messages.at(-1)?.content)
+
+  it('gives the model another turn with the reason, and runs the repaired actions', async () => {
+    const { c, requests } = client(
+      [saying(del(2), 'Tenés cuatro cafés anotados.')],
+      [saying(del(2), 'Borré el café.')],
+    )
+    const result = await run(c, { facts: ['cuantos cafes tengo'], message: 'borra el cafe' })
+    expect(result.turns).toBe(2)
+    expect(result.audit.map((e) => [e.status, e.detail ?? null])).toEqual([
+      ['repair', expect.stringContaining('cuatro')],
+      ['accepted', null],
+    ])
+    const told = reasonSeen(requests, 1)
+    expect(told).toContain('would not be sent')
+    expect(told).toContain('cuatro')
+    expect(told).toContain('summarize')
+    expect(result.actions).toMatchObject([{ input: { text: 'Borré el café.' } }])
+  })
+
+  it('sends back every action of the turn, not just the one with the bad text', async () => {
+    const { c, requests } = client([saying(del(2), 'Son $9.999.'), log()], [del(2), log()])
+    const result = await run(c, { facts: ['x'], message: 'x' })
+    expect(result.audit.map((e) => e.status)).toEqual(['repair', 'repair', 'accepted', 'accepted'])
+    const results = requests[1]?.messages.at(-1)?.content as Anthropic.ToolResultBlockParam[]
+    expect(results.every((r) => r.is_error)).toBe(true)
+    expect(String(results[1]?.content)).toContain('another call of this turn')
+  })
+
+  it('lets a text through on the last turn: the commit point drops it, the message does not fail', async () => {
+    const bad = saying(del(2), 'Son $9.999.')
+    const { c, requests } = client([bad], [bad], [bad])
+    const result = await run(c, { facts: ['x'], message: 'x' })
+    expect(requests).toHaveLength(3)
+    expect(result.actions).toHaveLength(1)
+    expect(result.audit.map((e) => e.status)).toEqual(['repair', 'repair', 'accepted'])
+  })
+
+  it('does not send back an echo of the person, nor numbers the actions themselves carry', async () => {
+    const { c, requests } = client([saying(del(2), 'borra el super de ayer')])
+    await run(c, { message: 'borra el super de ayer' })
+    expect(requests).toHaveLength(1)
+    const m = movement({ amount: '25000' })
+    const { c: c2, requests: r2 } = client([
+      {
+        name: 'log_movements',
+        input: { movements: [m], text: 'Anoté $25.000 de hoy 2026-11-21.' },
+      },
+    ])
+    await run(c2, { facts: ['cafe 25 lucas'], message: 'cafe 25 lucas' })
+    expect(r2).toHaveLength(1)
+  })
+
+  it('judges a claim by the actions of the turn: a text that says it deleted, beside a log, is sent back', async () => {
+    const { c, requests } = client([saying(log(), 'Ya borré la nafta.')], [log()])
+    await run(c, { facts: ['x'], message: 'x' })
+    expect(requests).toHaveLength(2)
+    expect(reasonSeen(requests, 1)).toContain('claims a deletion')
+  })
+
+  it('lets only a reply lean on what Warren answered before', async () => {
+    const reply = (text: string): Call => ({ name: 'reply', input: { text } })
+    const { c, requests } = client([reply('Sí, lo borré.')])
+    await run(c, { window: ['✓ Borré: Súper $12.000'], message: 'borraste el super?' })
+    expect(requests).toHaveLength(1)
+    const { c: c2, requests: r2 } = client([reply('Sí, lo borré.')], [reply('No sé.')])
+    await run(c2, { message: 'borraste el super?' })
+    expect(r2).toHaveLength(2)
+  })
+})
+
+describe('runAgent: summarize filters are copied into a line', () => {
+  it('refuses a description or a payment with a figure in it', async () => {
+    const summarize = (o: object): Call => ({
+      name: 'summarize',
+      input: {
+        period: 'today',
+        direction: 'out',
+        category: null,
+        payment: null,
+        description: null,
+        text: null,
+        ...o,
+      },
+    })
+    for (const bad of [{ description: 'café 12000' }, { payment: 'visa 4509' }]) {
+      const { c } = client([summarize(bad)], [summarize({ description: 'café' })])
+      const result = await run(c)
+      expect(result.turns, JSON.stringify(bad)).toBe(2)
+      expect(result.audit[0]).toMatchObject({ status: 'rejected' })
+    }
+  })
+})
+
 describe('runAgent: the last turn', () => {
   it('tells the model before its last turn that it is the last, so it does not search again', async () => {
     const { c, requests } = client([find()], [find(), del(1)], [del(1)])
@@ -370,6 +480,9 @@ describe('runAgent: a photo', () => {
       model: 'haiku',
       context: 'ctx',
       photo: { mediaType: 'image/png', data: 'AAAA' },
+      facts: [],
+      window: [],
+      message: '',
       today: '2026-11-21',
       env: { find: async () => [] },
       seen: new Set(),

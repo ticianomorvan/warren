@@ -37,10 +37,23 @@ export const saying = (call: ToolCall, text: string): ToolCall => ({
 })
 export const summarize = (
   period: string,
-  o: { direction?: 'in' | 'out' | null; category?: string | null; payment?: string | null } = {},
+  o: {
+    direction?: 'in' | 'out' | null
+    category?: string | null
+    payment?: string | null
+    description?: string | null
+  } = {},
 ): ToolCall => ({
   name: 'summarize',
-  input: { period, direction: 'out', category: null, payment: null, text: null, ...o },
+  input: {
+    period,
+    direction: 'out',
+    category: null,
+    payment: null,
+    description: null,
+    text: null,
+    ...o,
+  },
 })
 export const find = (o: Record<string, unknown> = {}): ToolCall => ({
   name: 'find_movements',
@@ -55,7 +68,6 @@ export const ask = (
     question: o.question ?? 'Cuál',
     movement_ids: ids,
     after_answer: o.after ?? 'none',
-    text: null,
     ...(o.after === 'correct' ? { changes: o.changes } : {}),
   },
 })
@@ -78,6 +90,14 @@ export async function say(app: App, o: { at?: string; text?: string } = {}): Pro
   await until(async () => (await row(wamid))?.status === 'done')
   return bodies(app.calls)[before] ?? ''
 }
+
+/**
+ * A model that sends each given turn as it is, three times in a row: a text the numbers check refuses
+ * is sent back for a repair (inside the cap), so a test of what the commit point drops needs a model that
+ * insists. A bare call is a turn of one.
+ */
+export const insist = (...turns: (ToolCall | ToolCall[])[]) =>
+  script(...turns.flatMap((t) => [t, t, t]))
 
 /** A model that answers each call with the next turn: a list of tool calls. A bare call is a turn of one. */
 export const script = (...turns: (ToolCall | ToolCall[])[]) => {

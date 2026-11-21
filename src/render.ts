@@ -15,7 +15,7 @@ export const REPLY_IMAGE: Record<ImageProblem, string> = {
 }
 /** Sent when the model's own words were thrown away (a number code did not give) and nothing else was to say. */
 export const REPLY_SAY_FALLBACK =
-  'No pude responder eso con seguridad. Mandame un gasto o un ingreso y lo anoto, o preguntame cuánto gastaste.'
+  'Eso no te lo sé decir bien. Preguntame cuánto gastaste, o mandame un gasto o un ingreso y lo anoto.'
 export const REPLY_INTERIM = 'Sigo con esto, ya te respondo.'
 export const REPLY_FAILED = 'No pude procesar tu mensaje. Probá de nuevo en un rato.'
 export const REPLY_GONE =
@@ -136,7 +136,8 @@ export function renderAsk(
   if (options.length === 0) return `¿${question}?`
   if (options.length === 1) {
     const [only] = options
-    return `¿${question}? ${movementText(only as MovementRow)}${when((only as MovementRow).date, today)}`
+    const m = only as MovementRow
+    return `¿${question}? ${movementText(m)}${when(m.date, today)}${m.time ? ` · ${m.time}` : ''}`
   }
   const numbered = options.map((movement, k) => ({ number: k + 1, movement }))
   const how =
@@ -176,6 +177,8 @@ export interface QueryScope {
   direction: Movement['direction'] | null
   category: Movement['category'] | null
   payment: string | null
+  /** Words of the description the totals are about ("café"). */
+  description?: string | null
 }
 
 const movements = (n: number) => `${n} ${n === 1 ? 'movimiento' : 'movimientos'}`
@@ -187,7 +190,11 @@ const movements = (n: number) => `${n} ${n === 1 ? 'movimiento' : 'movimientos'}
 export function renderQuery(q: QueryScope, totals: QueryTotal[]): string {
   const period = PERIOD_TEXT[q.period]
   const payment = q.payment?.trim()
-  const scope = `${q.category ? ` en ${CATEGORY_LABEL[q.category]}` : ''}${payment ? ` con ${payment}` : ''}`
+  const about = [
+    q.category ? CATEGORY_LABEL[q.category] : '',
+    q.description?.trim().toLowerCase() ?? '',
+  ].filter(Boolean)
+  const scope = `${about.length > 0 ? ` en ${about.join(', ')}` : ''}${payment ? ` con ${payment}` : ''}`
   if (totals.length === 0) {
     const what =
       q.direction === 'out' ? 'gastos' : q.direction === 'in' ? 'ingresos' : 'movimientos'

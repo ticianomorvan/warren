@@ -1,6 +1,6 @@
 import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
-import { hasNumberWord } from './say'
+import { hasLongNumber, hasNumberWord } from './say'
 import { MAX_FOUND, type ModelAction, TOOL_INPUTS, type ToolInput, type ToolName } from './schema'
 import {
   checkChanges,
@@ -136,12 +136,19 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
             movement_ids: ids,
             after_answer: ids.length > 0 ? a.after_answer : 'none',
             changes: a.after_answer === 'correct' && ids.length > 0 ? a.changes : undefined,
-            text: a.text,
           },
         },
       }
     }
-    default: // summarize, reply, help: any input of the right shape is fine
+    case 'summarize': {
+      // The description and the payment are copied into the line code renders, as written.
+      const q = parsed.data as ToolInput<'summarize'>
+      const bad = [q.description, q.payment].some((w) => w != null && hasLongNumber(w))
+      return bad
+        ? rejected('description and payment may not hold a number of 4 or more digits')
+        : { kind: 'action', action: { tool, input: q } }
+    }
+    default: // reply, help: any input of the right shape is fine
       return { kind: 'action', action: { tool, input: parsed.data } as ModelAction }
   }
 }
