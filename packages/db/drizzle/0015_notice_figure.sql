@@ -1,1 +1,0 @@
-ALTER TABLE "notice" ADD COLUMN "figure" "bytea";

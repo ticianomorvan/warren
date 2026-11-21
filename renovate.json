@@ -26,11 +26,6 @@
       "description": "Major updates stay separate and need a person to look",
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
-    },
-    {
-      "description": "The deploy job's Vercel CLI (tools/vercel); its hash is checked against Vercel's in CI",
-      "matchFileNames": ["tools/vercel/package.json"],
-      "groupName": "vercel cli"
     }
   ]
 }
