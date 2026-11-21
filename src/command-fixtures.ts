@@ -85,8 +85,8 @@ export async function seed(rows: Seed[]): Promise<void> {
     INSERT INTO account (wa_id) VALUES (${WA})
     ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id RETURNING id`
   const [inbound] = await sql`
-    INSERT INTO inbound_message (wamid, wa_id, kind, body, payload)
-    VALUES (${`seed.${++seeds}`}, ${WA}, 'text', 'seed', '{}'::jsonb) RETURNING id`
+    INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status)
+    VALUES (${`seed.${++seeds}`}, ${WA}, 'text', 'seed', '{}'::jsonb, 'done') RETURNING id`
   const values = rows.map((r, position) => ({
     account_id: account?.id,
     inbound_message_id: inbound?.id,

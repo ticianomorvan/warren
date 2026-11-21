@@ -217,3 +217,28 @@ export function resolveTarget(
   const [winner = first] = narrowed.length > 0 ? narrowed : named
   return { kind: 'found', movement: winner.movement }
 }
+
+const SHAPE =
+  /^(?:(?:dale|bueno|ok|si)[,\s]+)?(?:(?:el|la|lo|numero|nro)\s*|#\s*)?(\d{1,2}|[a-z]+)\s*[.!]?$/
+
+/**
+ * Which of the options of a `¿Cuál?` question (`asked`: the list numbers it showed, in order) a
+ * message picks, when the message is only that answer: "2", "el 2", "la tres", "el primero" (the
+ * first option shown, not list row 1), "el último" (row 1), or "sí"/"dale" after a one-option
+ * question. Anything with more in it (a change, a description) is not an answer.
+ */
+export function answerNumber(text: string, asked: number[]): number | null {
+  const norm = normalizeText(text)
+  if (/^(?:si|dale|ok|bueno|si dale)\s*[.!]?$/.test(norm))
+    return asked.length === 1 ? (asked[0] ?? null) : null
+  const token = SHAPE.exec(norm)?.[1]
+  if (token === undefined) return null
+  const n = /^\d+$/.test(token)
+    ? Number(token)
+    : /^primer[oa]?$/.test(token)
+      ? asked[0]
+      : /^ultim[oa]$/.test(token)
+        ? 1
+        : NUMBER_WORDS[token]
+  return n !== undefined && asked.includes(n) ? n : null
+}

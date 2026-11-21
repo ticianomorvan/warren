@@ -136,7 +136,7 @@ model at the end. CI never calls the Anthropic API.
   candidates, the message's details (payment, old amount, hoy/ayer, dd/mm, but not the value being set) narrow
   them, and the newest left wins; the reply shows the old values and, if not from today, the date. Nothing named asks `¿Cuál? 1. … · 2. …` plus how to
   answer and changes nothing. The parser also gets the sender's previous exchange (last message and its
-  committed reply, at most 10 minutes old) so a bare "2" after a question works. Inside the transaction the live
+  committed reply, at most 10 minutes old) so a bare "2" after a question reads right. Answering a question is code's job: a `¿Cuál?` reply stores the numbers it showed (`asked_numbers`), and a message that is only an answer to it ("2", "el primero" = first shown) within 10 minutes runs the previous correct/delete on that row whatever the model returned, unless the model gave a confident correction with its own changes. Inside the transaction the live
   list is read again: if it differs from the one the model saw, the same question is asked. The target row is
   locked (`FOR UPDATE`) and must still be live, else the reply says it was already corrected or deleted. A
   corrected movement is a new row, so it counts as the newest. A `correct` whose new value cannot be stored

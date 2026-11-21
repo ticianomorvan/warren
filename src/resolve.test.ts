@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { MovementRow } from './ledger'
 import type { Command } from './parse'
-import { positionsIn, resolveTarget, saysLast } from './resolve'
+import { answerNumber, positionsIn, resolveTarget, saysLast } from './resolve'
 
 const TODAY = '2026-11-20'
 const row = (id: number, description: string, o: Partial<MovementRow> = {}): MovementRow => ({
@@ -319,5 +319,37 @@ describe('resolveTarget: low confidence', () => {
     expect(found(del({ target: 'nafta', confidence: 'low' }))).toBe(6)
     expect(asked(del({ target: 'alquiler', confidence: 'low' }))).toEqual([1, 2, 3])
     expect(asked(del({ target: '', target_index: 2, confidence: 'low' }))).toEqual([1, 2, 3])
+  })
+})
+
+describe('answerNumber', () => {
+  it('reads a message that is only the pick of one of the options shown', () => {
+    const asked = [2, 3, 5]
+    expect(answerNumber('2', asked)).toBe(2)
+    expect(answerNumber('el 3', asked)).toBe(3)
+    expect(answerNumber('la 5.', asked)).toBe(5)
+    expect(answerNumber('dale el 2', asked)).toBe(2)
+    expect(answerNumber('el tres', asked)).toBe(3)
+    expect(answerNumber('el primero', asked)).toBe(2) // the first option shown
+    expect(answerNumber('la primera', [4, 1])).toBe(4)
+  })
+
+  it('"el último" is list row 1, only if the question showed it', () => {
+    expect(answerNumber('el último', [1, 2, 3])).toBe(1)
+    expect(answerNumber('el último', [2, 3])).toBeNull()
+  })
+
+  it('"sí" and "dale" answer only a one-option question', () => {
+    expect(answerNumber('sí', [4])).toBe(4)
+    expect(answerNumber('dale', [4])).toBe(4)
+    expect(answerNumber('sí', [4, 5])).toBeNull()
+  })
+
+  it('is not an answer when the message says more, or picks a row not shown', () => {
+    expect(answerNumber('el 4', [1, 2, 3])).toBeNull()
+    expect(answerNumber('el 2 fue 4500', [1, 2, 3])).toBeNull()
+    expect(answerNumber('café 3500', [1, 2, 3])).toBeNull()
+    expect(answerNumber('4500', [1, 2, 3])).toBeNull()
+    expect(answerNumber('el anterior', [1, 2, 3])).toBeNull()
   })
 })

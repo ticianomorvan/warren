@@ -201,7 +201,7 @@ export function createProcessor(o: ProcessorOptions) {
         client: o.client,
         signal,
       })
-      return { accountId, result, recentMovements }
+      return { accountId, result, recentMovements, previous }
     })().then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
@@ -219,7 +219,7 @@ export function createProcessor(o: ProcessorOptions) {
       if (outcome === 'aborted') return
       if ('error' in outcome) return await fail(c, `parse failed: ${errorText(outcome.error)}`)
 
-      const { accountId, result, recentMovements } = outcome.value
+      const { accountId, result, recentMovements, previous } = outcome.value
       const { command } = result
       // A correction's value that cannot be stored is the person's to rewrite: say so, change nothing.
       const badChange = command.type === 'correct' && result.fatal.length > 0
@@ -236,7 +236,7 @@ export function createProcessor(o: ProcessorOptions) {
           modelMs: result.latencyMs,
           execute: (tx) =>
             badChange
-              ? Promise.resolve(REPLY_BAD_CHANGE)
+              ? Promise.resolve({ reply: REPLY_BAD_CHANGE })
               : execute(tx, {
                   accountId,
                   inboundId: c.id,
@@ -244,6 +244,7 @@ export function createProcessor(o: ProcessorOptions) {
                   today,
                   text: c.body ?? '',
                   recent: recentMovements,
+                  previous,
                   render: { helpContact: o.helpContact },
                 }),
         })

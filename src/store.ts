@@ -29,7 +29,22 @@ export interface Commit {
    * Applies the command to the ledger inside the commit transaction and returns the reply to
    * store. It only runs once the guard has passed, so it can never run twice for a message.
    */
-  execute: (tx: Sql) => Promise<string>
+  execute: (tx: Sql) => Promise<Executed>
+}
+
+/** What running a command gives back: the reply, and what to store with it. */
+export interface Executed {
+  reply: string
+  /** The list numbers a `¿Cuál?` reply showed; stored so the next message can answer it. */
+  asked?: number[]
+  /** The command that was really run, when it is not the model's (an answer to a question). */
+  command?: Command
+}
+
+/** The sender's previous exchange, with what code needs to answer a question it asked. */
+export interface Previous extends PreviousExchange {
+  command: Command | null
+  askedNumbers: number[] | null
 }
 
 export type Settled = 'done' | 'failed' | 'pending' | 'unknown' | 'ignored'
@@ -144,17 +159,27 @@ export function createStore(sql: Sql, o: StoreOptions) {
      * committed and the message arrived at most `windowMs` before this one. Short-term memory for
      * answers like "2" after a question; nothing older, and nothing from a message that failed.
      */
-    async previousExchange(c: Claim, windowMs = 10 * 60_000): Promise<PreviousExchange | null> {
-      const [row] = await sql<{ text: string | null; reply: string | null }[]>`
-        SELECT p.body AS text, p.reply_text AS reply
+    async previousExchange(c: Claim, windowMs = 10 * 60_000): Promise<Previous | null> {
+      const [row] = await sql<
+        {
+          text: string | null
+          reply: string | null
+          command: Command | null
+          askedNumbers: number[] | null
+        }[]
+      >`
+        SELECT p.body AS text, p.reply_text AS reply, p.command,
+          p.asked_numbers AS "askedNumbers"
         FROM inbound_message cur
         JOIN LATERAL (
-          SELECT body, reply_text, received_at, kind FROM inbound_message
+          SELECT body, reply_text, received_at, kind, command, asked_numbers FROM inbound_message
           WHERE wa_id = cur.wa_id AND id < cur.id
           ORDER BY id DESC LIMIT 1) p ON true
         WHERE cur.id = ${c.id} AND p.kind = 'text'
           AND p.received_at > cur.received_at - make_interval(secs => ${windowMs / 1000})`
-      return row?.text && row.reply ? { text: row.text, reply: row.reply } : null
+      return row?.text && row.reply
+        ? { text: row.text, reply: row.reply, command: row.command, askedNumbers: row.askedNumbers }
+        : null
     },
 
     /**
@@ -170,13 +195,15 @@ export function createStore(sql: Sql, o: StoreOptions) {
           WHERE ${owned(c)} AND reply_text IS NULL AND failure_sent_at IS NULL
           FOR UPDATE`
         if (held.length === 0) return null
-        const reply = await m.execute(tx as unknown as Sql)
+        const done = await m.execute(tx as unknown as Sql)
         await tx`
           UPDATE inbound_message
-          SET command = ${tx.json(m.command as never)}, model_ms = ${Math.round(m.modelMs)},
-              reply_text = ${reply}, updated_at = now()
+          SET command = ${tx.json((done.command ?? m.command) as never)},
+              model_ms = ${Math.round(m.modelMs)}, reply_text = ${done.reply},
+              asked_numbers = ${done.asked && done.asked.length > 0 ? done.asked : null}::int[],
+              updated_at = now()
           WHERE id = ${c.id}`
-        return reply
+        return done.reply
       })
     },
 

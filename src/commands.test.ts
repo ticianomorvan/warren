@@ -433,7 +433,7 @@ describe('concurrent and replayed messages', () => {
         recent: snapshot,
       }),
     )
-    expect(reply).toBe(`¿Cuál? 1. Nuevo $2.000 · 2. Viejo $1.000${HOW(1)}`)
+    expect(reply.reply).toBe(`¿Cuál? 1. Nuevo $2.000 · 2. Viejo $1.000${HOW(1)}`)
     expect(await sum('superseded_by IS NULL')).toBe('3000')
   })
 
@@ -487,7 +487,7 @@ describe('concurrent and replayed messages', () => {
         modelMs: 1,
         execute: async () => {
           ran = true
-          return 'x'
+          return { reply: 'x' }
         },
       },
     )
@@ -739,6 +739,118 @@ describe('periods in Argentine time', () => {
   })
 })
 
+describe('answering a question', () => {
+  const rows = [
+    { on: TODAY, amount: '2300', description: 'kiosco' },
+    { on: TODAY, amount: '7400', description: 'verdulería' },
+    { on: TODAY, amount: '18000', description: 'gimnasio' },
+  ]
+  const ask5000 = correct({ target: 'almuerzo', index: null, changes: { amount: '5000' } })
+  const help: Command = { type: 'help' }
+
+  it('"2" after a ¿Cuál? question corrects row 2 with the earlier change, whatever the model returned', async () => {
+    await seed(rows)
+    const app = await setup({ model: script(ask5000, help) })
+    expect(await say(app, { text: 'cambiame el almuerzo a 5000' })).toContain('¿Cuál? 1. Gimnasio')
+    expect(await say(app, { text: '2' })).toBe('✓ Corregido: Verdulería $5.000 (antes $7.400)')
+    expect(await sum('superseded_by IS NULL')).toBe('25300')
+    // What ran is stored as the command of the answer.
+    expect((await row(lastWamid))?.command).toMatchObject({
+      type: 'correct',
+      changes: { amount: '5000' },
+    })
+    app.close()
+  })
+
+  it('"el 2" and "dale el 2" work the same, even when the model returns off_topic or a correction with no changes', async () => {
+    await seed(rows)
+    const app = await setup({
+      model: script(ask5000, { type: 'off_topic' }, ask5000, correct({ index: 2, low: true })),
+    })
+    await say(app, { text: 'cambiame el almuerzo a 5000' })
+    expect(await say(app, { text: 'el 2' })).toBe('✓ Corregido: Verdulería $5.000 (antes $7.400)')
+    // The list is [verdulería, gimnasio, kiosco] now: the question again, then another answer.
+    expect(await say(app, { text: 'cambiame el almuerzo a 5000' })).toContain(
+      '¿Cuál? 1. Verdulería',
+    )
+    expect(await say(app, { text: 'dale el 3' })).toBe('✓ Corregido: Kiosco $5.000 (antes $2.300)')
+    app.close()
+  })
+
+  it('"el primero" is the first option shown in the question, not list row 1', async () => {
+    await seed(rows)
+    const app = await setup({ model: script(ask5000, help) })
+    await say(app, { text: 'cambiame el almuerzo a 5000' })
+    // A question that listed rows 2 and 3 only.
+    await sql`UPDATE inbound_message SET asked_numbers = '{2,3}' WHERE wamid = ${lastWamid}`
+    expect(await say(app, { text: 'el primero' })).toBe(
+      '✓ Corregido: Verdulería $5.000 (antes $7.400)',
+    )
+    app.close()
+  })
+
+  it('answers a delete question: "el 3" deletes row 3', async () => {
+    await seed(rows)
+    const app = await setup({ model: script(remove('almuerzo', null), { type: 'off_topic' }) })
+    expect(await say(app, { text: 'borrá lo del almuerzo' })).toContain('¿Cuál?')
+    expect(await say(app, { text: 'el 3' })).toBe('✓ Borré: Kiosco $2.300')
+    expect((await history()).filter((r) => r.deleted)).toHaveLength(1)
+    app.close()
+  })
+
+  it('"2" after a reply that was not a question changes nothing', async () => {
+    await seed(rows)
+    const app = await setup({ model: script(logOf(movement({ description: 'taxi' })), help) })
+    await say(app, { text: 'taxi 3500' })
+    expect(await say(app, { text: '2' })).toContain('Mandame un gasto')
+    expect((await history()).every((r) => r.superseded_by === null && !r.deleted)).toBe(true)
+    app.close()
+  })
+
+  it('does not answer a question that is older than 10 minutes', async () => {
+    await seed(rows)
+    const app = await setup({ model: script(ask5000, help) })
+    await say(app, { text: 'cambiame el almuerzo a 5000' })
+    await sql`UPDATE inbound_message SET received_at = now() - interval '11 minutes' WHERE wamid = ${lastWamid}`
+    expect(await say(app, { text: '2' })).toContain('Mandame un gasto')
+    expect(await sum('superseded_by IS NULL')).toBe('27700')
+    app.close()
+  })
+
+  it('a confident correction with changes of its own wins over the question', async () => {
+    await seed(rows)
+    const app = await setup({
+      model: script(
+        ask5000,
+        correct({ target: 'verdulería', index: 2, changes: { amount: '7000' } }),
+      ),
+    })
+    await say(app, { text: 'cambiame el almuerzo a 5000' })
+    expect(await say(app, { text: '2' })).toBe('✓ Corregido: Verdulería $7.000 (antes $7.400)')
+    app.close()
+  })
+
+  it('a replayed answer applies once: webhook retry, then the sweep re-claiming it', async () => {
+    await seed(rows)
+    const app = await setup({ model: script(ask5000, help, help, help) })
+    await say(app, { text: 'cambiame el almuerzo a 5000' })
+    const body = messageBody('wamid.ANSWER', WA, { text: { body: '2' } })
+    await post(app.base, body)
+    await until(async () => (await row('wamid.ANSWER'))?.status === 'done')
+    await post(app.base, body)
+    await post(app.base, body)
+    await new Promise((r) => setTimeout(r, 150))
+    await sql`UPDATE inbound_message SET status = 'pending', send_started_at = NULL, reply_sent_at = NULL
+      WHERE wamid = 'wamid.ANSWER'`
+    await app.processor.sweep()
+    expect(app.model.n).toBe(2) // no model call for the replays
+    const corrected = await sql`SELECT 1 FROM movement WHERE amount = 5000`
+    expect(corrected).toHaveLength(1)
+    expect(await history()).toHaveLength(4)
+    app.close()
+  })
+})
+
 describe('previous exchange', () => {
   const store = () => createStore(sql, { staleMs: 60_000, maxAttempts: 3 })
   const message = async (o: {
@@ -762,7 +874,7 @@ describe('previous exchange', () => {
     await message({ wamid: 'p.other', ago: '1 minute', waId: '5491100000099', body: 'de otro' })
     await message({ wamid: 'p.prev', ago: '2 minutes', body: 'café 3500', reply: '✓ Café $3.500' })
     const current = await message({ wamid: 'p.cur', ago: '0 seconds', reply: null })
-    expect(await store().previousExchange(current)).toEqual({
+    expect(await store().previousExchange(current)).toMatchObject({
       text: 'café 3500',
       reply: '✓ Café $3.500',
     })
