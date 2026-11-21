@@ -151,6 +151,14 @@ Recent: 1. out 2800 ARS <today> café [restaurantes] (sin medio) / 2. out 9000 A
 Message: no, el cafe fue 4000
 {"type":"correct","target":"café","target_index":null,"changes":{"direction":null,"amount":"4000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"low"}
 
+Recent: 1. out 12000 ARS <today> súper [supermercado] (crédito visa) / 2. out 9000 ARS <today> cena [restaurantes] (débito) / 3. out 8000 ARS <2 days ago> súper [supermercado] (efectivo)
+Message: el super fueron 9500
+{"type":"correct","target":"súper","target_index":null,"changes":{"direction":null,"amount":"9500","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"low"}
+
+Recent: 1. out 12000 ARS <today> súper [supermercado] (crédito visa) / 2. out 9000 ARS <today> cena [restaurantes] (débito) / 3. out 8000 ARS <2 days ago> súper [supermercado] (efectivo)
+Message: el super que pague en efectivo era 8500
+{"type":"correct","target":"súper","target_index":3,"changes":{"direction":null,"amount":"8500","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
+
 Recent: 1. out 3500 ARS <today> café [restaurantes] (sin medio) / 2. out 12000 ARS <yesterday> súper [supermercado] (crédito visa)
 Message: borra lo ultimo que puse
 {"type":"delete","target":"last","target_index":1,"confidence":"high"}
