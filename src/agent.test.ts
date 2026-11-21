@@ -3,13 +3,15 @@ import type { Action } from './agent'
 import {
   ask,
   correct,
+  day,
   find,
+  helpCall,
   history,
   lastWamid,
+  live,
   logOf,
   movement,
   remove,
-  replyCall,
   say,
   script,
   seed,
@@ -38,36 +40,6 @@ import {
 } from './test-harness'
 
 useDatabase()
-
-/** Five movements of today, logged at 09:00, 10:10, 10:45, 11:54 and 11:59; ids 1 to 5, the taxi is the newest. */
-const day = async () =>
-  seed([
-    {
-      on: TODAY,
-      amount: '12000',
-      description: 'súper',
-      category: 'supermercado',
-      payment: 'crédito visa',
-      at: '09:12',
-    },
-    { on: TODAY, amount: '3500', description: 'café', category: 'restaurantes', at: '10:10' },
-    {
-      on: TODAY,
-      amount: '20000',
-      description: 'nafta',
-      category: 'combustible',
-      payment: 'efectivo',
-      at: '10:45',
-    },
-    { on: TODAY, amount: '2900', description: 'café', category: 'restaurantes', at: '11:54' },
-    { on: TODAY, amount: '5400', description: 'taxi', category: 'transporte', at: '11:59' },
-  ])
-
-const live = async () =>
-  (
-    await sql`SELECT id::int AS id, description, amount::text AS amount FROM movement
-      WHERE superseded_by IS NULL AND deleted_at IS NULL ORDER BY id`
-  ).map((r) => `${r.description} ${r.amount}`)
 
 describe('correct', () => {
   it('inserts a new row linked to the correcting message and keeps the old one, superseded', async () => {
@@ -227,7 +199,9 @@ describe('several actions in one message', () => {
     const app = await setup({
       model: script([remove(4), ask([5], { question: 'Qué querés cambiar' })]),
     })
-    expect(await say(app)).toBe('✓ Borré: Café $2.900 · 11:54\n¿Qué querés cambiar? Taxi $5.400')
+    expect(await say(app)).toBe(
+      '✓ Borré: Café $2.900 · 11:54\n¿Qué querés cambiar? Taxi $5.400 · 11:59',
+    )
     app.close()
   })
 })
@@ -369,11 +343,14 @@ describe('guards at the commit point', () => {
       VALUES (${other?.id}, ${inbound?.id}, 5, 'out', 77, 'ARS', ${TODAY}, 'ajeno', 'otros', 'high') RETURNING id::int AS id`
     await sql`UPDATE movement SET deleted_at = now(), deleted_by = ${inbound?.id} WHERE id = ${gone ?? 0}`
     const actions: Action[] = [
-      { tool: 'delete_movement', input: { id: theirs?.id ?? 0 } },
-      { tool: 'delete_movement', input: { id: gone ?? 0 } },
-      { tool: 'correct_movement', input: { id: theirs?.id ?? 0, changes: { amount: '1' } } },
-      { tool: 'correct_movement', input: { id: 999, changes: { amount: '1' } } },
-      { tool: 'delete_movement', input: { id: mine ?? 0 } },
+      { tool: 'delete_movement', input: { id: theirs?.id ?? 0, text: null } },
+      { tool: 'delete_movement', input: { id: gone ?? 0, text: null } },
+      {
+        tool: 'correct_movement',
+        input: { id: theirs?.id ?? 0, changes: { amount: '1' }, text: null },
+      },
+      { tool: 'correct_movement', input: { id: 999, changes: { amount: '1' }, text: null } },
+      { tool: 'delete_movement', input: { id: mine ?? 0, text: null } },
     ]
     const done = await sql.begin((tx) =>
       execute(tx as unknown as Sql, {
@@ -382,6 +359,9 @@ describe('guards at the commit point', () => {
         actions,
         audit: [],
         today: TODAY,
+        message: '',
+        facts: [],
+        window: [],
       }),
     )
     expect(done.reply.split('\n')).toEqual([
@@ -425,9 +405,12 @@ describe('guards at the commit point', () => {
         ],
         audit: [],
         today: TODAY,
+        message: '',
+        facts: [],
+        window: [],
       }),
     )
-    expect(done.reply).toBe('¿Cuál? Mío $1.000')
+    expect(done.reply).toMatch(/^¿Cuál\? Mío \$1\.000 · \d\d:\d\d$/)
     expect(done.asked).toEqual([{ number: 1, id: mine }])
   })
 
@@ -570,7 +553,7 @@ describe('ask, then answer', () => {
     const answered = await row(lastWamid)
     expect(answered).toMatchObject({ action: 'correct', model_turns: 0, parsed: null })
     expect(answered?.command).toEqual([
-      { tool: 'correct_movement', input: { id: 4, changes: { amount: '5000' } } },
+      { tool: 'correct_movement', input: { id: 4, changes: { amount: '5000' }, text: null } },
     ])
     expect(answered?.tool_calls).toMatchObject([
       { tool: 'correct_movement', status: 'applied', turn: 0 },
@@ -606,7 +589,7 @@ describe('ask, then answer', () => {
 
   it('a bare number after a reply that was not a question goes to the model, which writes nothing', async () => {
     await day()
-    const app = await setup({ model: script(replyCall('help'), replyCall('help')) })
+    const app = await setup({ model: script(helpCall, helpCall) })
     await say(app, { text: 'hola' })
     await say(app, { text: '2' })
     expect(app.model.n).toBe(2)
@@ -616,7 +599,7 @@ describe('ask, then answer', () => {
 
   it('does not answer a question that is older than 10 minutes', async () => {
     await day()
-    const app = await setup({ model: script(ask([5, 4], { after: 'delete' }), replyCall('help')) })
+    const app = await setup({ model: script(ask([5, 4], { after: 'delete' }), helpCall) })
     await say(app, { text: 'borrá lo del almuerzo' })
     await sql`UPDATE inbound_message SET received_at = now() - interval '11 minutes' WHERE wamid = ${lastWamid}`
     expect(await say(app, { text: '2' })).toContain('Mandame un gasto')
@@ -645,7 +628,9 @@ describe('ask, then answer', () => {
     const app = await setup({
       model: script(ask([5], { after: 'delete', question: 'Querés borrar este' })),
     })
-    expect(await say(app, { text: 'borrá lo del remís' })).toBe('¿Querés borrar este? Taxi $5.400')
+    expect(await say(app, { text: 'borrá lo del remís' })).toBe(
+      '¿Querés borrar este? Taxi $5.400 · 11:59',
+    )
     expect(await say(app, { text: 'dale' })).toBe('✓ Borré: Taxi $5.400')
     expect(app.model.n).toBe(1)
     app.close()
@@ -695,6 +680,26 @@ describe('ask, then answer', () => {
 
 describe('summarize', () => {
   const OCT = { on: '2025-10-03' }
+
+  it('counts and totals by words of the description, accents and case aside: the count is code’s', async () => {
+    await day() // two cafés (3500, 2900), the nafta, the súper and the taxi, all today
+    await seed([{ on: TODAY, amount: '1000', description: 'Café con leche' }])
+    const app = await setup({
+      model: script(
+        summarize('today', { description: 'CAFÉ' }),
+        summarize('today', { description: 'nafta' }),
+        summarize('today', { description: 'cafe leche' }),
+        summarize('today', { description: 'café', category: 'supermercado' }),
+      ),
+    })
+    expect(await say(app, { text: 'cuantos cafes anote hoy' })).toBe(
+      'Hoy gastaste $7.400 en café (3 movimientos).',
+    )
+    expect(await say(app)).toBe('Hoy gastaste $20.000 en nafta (1 movimiento).')
+    expect(await say(app)).toBe('Hoy gastaste $1.000 en cafe leche (1 movimiento).')
+    expect(await say(app)).toBe('No encontré gastos hoy en Súper, café.')
+    app.close()
+  })
 
   it('equals an independent SQL sum, with every filter applied', async () => {
     await seed([
@@ -939,7 +944,7 @@ describe('the lane and the context', () => {
       })),
     )
     const app = await setup({
-      model: script(replyCall('help'), correct(12, { amount: '999' }), replyCall('help')),
+      model: script(helpCall, correct(12, { amount: '999' }), helpCall),
     })
     await say(app)
     const list = (i: number) =>
@@ -957,7 +962,7 @@ describe('the lane and the context', () => {
   })
 
   it('puts the conversation window in the context: the last 6 turns of the last 30 minutes, answered ones only', async () => {
-    const app = await setup({ model: fakeModel(() => [replyCall('help')]) })
+    const app = await setup({ model: fakeModel(() => [helpCall]) })
     for (const k of [1, 2, 3, 4, 5, 6, 7]) await say(app, { text: `mensaje ${k}` })
     await sql`UPDATE inbound_message SET received_at = now() - interval '40 minutes' WHERE body = 'mensaje 1'`
     await sql`UPDATE inbound_message SET received_at = now() - interval '5 minutes' WHERE body = 'mensaje 6'`

@@ -43,23 +43,42 @@ describe('answerAction', () => {
   it('runs the pending correction on the option that was picked, by id', () => {
     expect(answerAction('2', { asked, pending: { action: 'correct', changes } })).toEqual({
       tool: 'correct_movement',
-      input: { id: 37, changes },
+      input: { id: 37, changes, text: null },
     })
     expect(answerAction('la primera', { asked, pending: { action: 'correct', changes } })).toEqual({
       tool: 'correct_movement',
-      input: { id: 41, changes },
+      input: { id: 41, changes, text: null },
     })
   })
 
   it('runs the pending deletion', () => {
     expect(answerAction('dale el 1', { asked, pending: { action: 'delete' } })).toEqual({
       tool: 'delete_movement',
-      input: { id: 41 },
+      input: { id: 41, text: null },
     })
   })
 
+  it('narrows a question with no action behind it to the one movement picked, and asks about it alone', () => {
+    expect(answerAction('2', { asked, pending: null })).toEqual({
+      tool: 'ask_user',
+      input: { question: 'Qué querés cambiar', movement_ids: [37], after_answer: 'none' },
+    })
+    expect(answerAction('la primera', { asked, pending: null })).toMatchObject({
+      input: { movement_ids: [41] },
+    })
+    // not a pick of an option: the model reads it
+    expect(answerAction('el 2 fue 4500', { asked, pending: null })).toBeNull()
+    expect(answerAction('sí', { asked, pending: null })).toBeNull()
+    // one option: asking about it again would loop
+    const one = [asked[0] as (typeof asked)[number]]
+    expect(answerAction('1', { asked: one, pending: null })).toBeNull()
+    expect(answerAction('sí', { asked: one, pending: null })).toBeNull()
+  })
+
   it('is nothing without a pending action, or when the message is more than an answer', () => {
-    expect(answerAction('2', { asked, pending: null })).toBeNull()
+    expect(
+      answerAction('2', { asked: [asked[0] as (typeof asked)[number]], pending: null }),
+    ).toBeNull()
     expect(answerAction('2', null)).toBeNull()
     expect(answerAction('el 2 fue 4500', { asked, pending: { action: 'delete' } })).toBeNull()
     expect(answerAction('3', { asked, pending: { action: 'delete' } })).toBeNull()

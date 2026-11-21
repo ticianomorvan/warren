@@ -3,19 +3,22 @@ import {
   type Action,
   AgentError,
   type AuditEntry,
+  type ContextInput,
+  contextFacts,
   estimateCostUsd,
   type ModelKey,
   renderContext,
   runAgent,
   type Usage,
+  windowReplies,
 } from './agent'
 import { actionLabel, execute } from './execute'
 import { log } from './log'
-import { REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
+import { REPLY_AUDIO, REPLY_FAILED, REPLY_IMAGE, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
 import { answerAction } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
-import { type Graph, GraphError } from './whatsapp/graph'
+import { type Graph, GraphError, type Image, ImageError } from './whatsapp/graph'
 
 export interface ProcessorOptions {
   store: Store
@@ -198,59 +201,92 @@ export function createProcessor(o: ProcessorOptions) {
     const typing = c.typingSent ? Promise.resolve(undefined) : showTyping(c)
     const today = argentinaToday(c.messageAt)
     const text = c.body ?? ''
+    const isPhoto = c.kind === 'image'
+    // The download starts with the first signal, beside the database reads, and is awaited only when
+    // the model needs it. A photo that cannot be read is answered, not failed.
+    const download = isPhoto ? fetchPhoto(graph, c, signal) : null
+    download?.catch(() => {})
     const working = (async (): Promise<Worked> => {
       const accountId = await store.upsertAccount(c.wa_id)
       const [movements, conversation] = await Promise.all([
         store.recentMovements(accountId),
         store.conversation(c),
       ])
+      const photo = await download
+      // Answers that need no model: a photo that cannot be read, a bare answer to our question.
+      const unprompted = (
+        action: Action,
+        entry: Omit<AuditEntry, 'turn' | 'ms' | 'action'>,
+      ): Worked => ({
+        accountId,
+        actions: [action],
+        parsed: null,
+        audit: [{ ...entry, turn: 0, ms: 0, action: 0 }],
+        turns: 0,
+        ms: 0,
+        usage: null,
+        facts: [],
+        window: [],
+      })
+      if (photo && 'problem' in photo) {
+        log('photo_unreadable', {
+          wamid: c.wamid,
+          problem: photo.problem.problem,
+          detail: photo.problem.message,
+        })
+        return unprompted(
+          { tool: 'notice', input: { text: REPLY_IMAGE[photo.problem.problem] } },
+          {
+            tool: 'notice',
+            input: { media_id: c.mediaId },
+            status: 'answered',
+            detail: photo.problem.message,
+          },
+        )
+      }
       // A bare answer to the question we just asked is code's job: no model call at all.
-      const answer = answerAction(text, conversation.question)
+      const answer = isPhoto ? null : answerAction(text, conversation.question)
       if (answer) {
-        const entry = {
-          turn: 0,
-          tool: answer.tool,
-          input: answer.input,
-          status: 'answered',
-          ms: 0,
-          action: 0,
-        }
-        return {
-          accountId,
-          actions: [answer],
-          parsed: null,
-          audit: [entry],
-          turns: 0,
-          ms: 0,
-          usage: null,
-        }
+        return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }
       const seen = new Set([
         ...movements.map((m) => m.id),
         ...(conversation.question?.asked.map((a) => a.id) ?? []),
       ])
+      const context: ContextInput = {
+        text,
+        today,
+        time: argentinaTime(c.messageAt),
+        movements,
+        conversation: conversation.turns,
+        photo: Boolean(photo),
+        pending: conversation.question
+          ? {
+              asked: conversation.question.asked,
+              action: conversation.question.pending?.action ?? 'none',
+            }
+          : null,
+      }
       const result = await runAgent({
         client: o.client ?? defaultClient(),
         model: o.model ?? 'haiku',
-        context: renderContext({
-          text,
-          today,
-          time: argentinaTime(c.messageAt),
-          movements,
-          conversation: conversation.turns,
-          pending: conversation.question
-            ? {
-                asked: conversation.question.asked,
-                action: conversation.question.pending?.action ?? 'none',
-              }
-            : null,
-        }),
+        context: renderContext(context),
+        ...(photo ? { photo: photo.image } : {}),
+        facts: contextFacts(context),
+        window: windowReplies(context),
+        message: text,
         today,
         env: { find: (filter) => store.find(accountId, filter) },
         seen,
         signal,
       })
-      return { accountId, parsed: result.actions, ...result }
+      return {
+        accountId,
+        parsed: result.actions,
+        facts: contextFacts(context, result.found),
+        window: windowReplies(context),
+        ...result,
+      }
     })().then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
@@ -273,7 +309,7 @@ export function createProcessor(o: ProcessorOptions) {
         return await fail(c, `parse failed: ${errorText(e)}`, trace)
       }
 
-      const { accountId, actions, parsed, audit, turns, ms, usage } = outcome.value
+      const { accountId, actions, parsed, audit, turns, ms, usage, facts, window } = outcome.value
 
       // The commit point. Nothing awaits between the signal check above and this call.
       let reply: string | null
@@ -291,6 +327,9 @@ export function createProcessor(o: ProcessorOptions) {
               actions,
               audit,
               today,
+              message: text,
+              facts,
+              window,
               render: { helpContact: o.helpContact },
             }),
         })
@@ -328,10 +367,11 @@ export function createProcessor(o: ProcessorOptions) {
       return
     }
 
-    if (c.kind !== 'text') {
+    if (c.kind !== 'text' && c.kind !== 'image') {
       release() // stores nothing the sender's next message could depend on
       const typing_ms = await showTyping(c)
-      await deliver(c, REPLY_NON_TEXT, { typing_ms })
+      // A voice note is the one non-text kind people send to log something: say what to do instead.
+      await deliver(c, c.kind === 'audio' ? REPLY_AUDIO : REPLY_NON_TEXT, { typing_ms })
       return
     }
     if (c.replyText !== null) {
@@ -462,6 +502,30 @@ interface Worked {
   turns: number
   ms: number
   usage: Usage | null
+  /** What the model's words may take numbers from (see `contextFacts`). */
+  facts: string[]
+  /** What Warren answered earlier (see `windowReplies`). */
+  window: string[]
+}
+
+/** The photo of a message, or why it cannot be read. Anything else (the deadline's abort) is thrown. */
+function fetchPhoto(
+  graph: Graph,
+  c: Claim,
+  signal: AbortSignal,
+): Promise<{ image: Image } | { problem: ImageError }> {
+  if (!c.mediaId) {
+    return Promise.resolve({
+      problem: new ImageError('unavailable', 'the webhook has no media id'),
+    })
+  }
+  return graph.fetchImage(c.mediaId, signal).then(
+    (image) => ({ image }),
+    (error: unknown) => {
+      if (error instanceof ImageError) return { problem: error }
+      throw error
+    },
+  )
 }
 
 let shared: Anthropic | undefined

@@ -1,3 +1,4 @@
+import { canonical } from '../../src/agent/say'
 import { formatMoney } from '../../src/render'
 import type { NewMovementExpect, Turn } from './schema'
 
@@ -267,7 +268,13 @@ export function gradeTurn(input: TurnInput): TurnGrade {
   if (unnecessaryQuestion) problems.push('asked a question instead of acting')
 
   // Numbers: every amount in a reply must come from a movement (queries hold sums: their text is checked by `has`).
+  // An amount is not invented when a movement has it or the person wrote it in this message (the
+  // model may quote their own figure back; every figure it did not get from code is refused earlier).
   const known = new Set(after.map((r) => formatMoney(r.amount, r.currency)))
+  for (const [token] of turn.text.matchAll(/\d+(?:[.,]\d+)*/g)) {
+    for (const currency of ['ARS', 'USD'] as const)
+      known.add(formatMoney(canonical(token), currency))
+  }
   const invented =
     input.commandType === 'query'
       ? []

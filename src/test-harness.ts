@@ -10,7 +10,7 @@ import { connect, migrate, type Sql } from './db'
 import { createProcessor } from './process'
 import { createStore, type Store } from './store'
 import { argentinaToday } from './time'
-import type { Graph } from './whatsapp/graph'
+import { checkImage, type Graph, type Image, ImageError } from './whatsapp/graph'
 
 export const SECRET = 'app-secret'
 export const VERIFY = 'verify-token-123'
@@ -65,17 +65,40 @@ export const sign = (raw: string, secret: string) =>
 
 export type SendFn = (n: number) => Promise<string>
 
-/** A Graph double that records calls. `send` and `typing` can be replaced to fail or to hang. */
-export function fakeGraph(o: { send?: SendFn; typing?: () => Promise<void> } = {}) {
+/** A photo the fake Graph serves under a media id: its bytes, or the error its download raises. */
+export type FakeMedia = Uint8Array | Error
+
+/**
+ * A Graph double that records calls. `send` and `typing` can be replaced to fail or to hang; `media`
+ * holds the photos by media id. A photo goes through the same limits as the real download (`checkImage`).
+ */
+export function fakeGraph(
+  o: {
+    send?: SendFn
+    typing?: () => Promise<void>
+    media?: Record<string, FakeMedia>
+    /** Holds a download until it resolves. */
+    download?: () => Promise<void>
+  } = {},
+) {
   const calls = {
     typing: [] as string[],
     sent: [] as { to: string; body: string }[],
+    downloads: [] as string[],
     attempts: 0,
   }
   const graph: Graph = {
     async markReadAndType(wamid) {
       calls.typing.push(wamid)
       await o.typing?.()
+    },
+    async fetchImage(mediaId): Promise<Image> {
+      calls.downloads.push(mediaId)
+      await o.download?.()
+      const media = o.media?.[mediaId]
+      if (media === undefined) throw new ImageError('unavailable', 'no such media')
+      if (media instanceof Error) throw media
+      return checkImage(media)
     },
     async sendText(to, body) {
       calls.attempts++
@@ -103,14 +126,12 @@ export const cafeMovement: Movement = {
 export type ToolCall = { name: string; input: unknown }
 export const logCall = (...movements: Movement[]): ToolCall => ({
   name: 'log_movements',
-  input: { movements },
+  input: { movements, text: null },
 })
-export const replyCall = (
-  kind: 'help' | 'off_topic' | 'smalltalk' | 'nothing_logged',
-): ToolCall => ({
-  name: 'reply',
-  input: { kind },
-})
+/** The model answers in its own words. */
+export const replyCall = (text: string): ToolCall => ({ name: 'reply', input: { text } })
+/** The model asks for the canned help text. */
+export const helpCall: ToolCall = { name: 'help', input: {} }
 /** What a model returns for "café 3500". */
 export const cafe: ToolCall[] = [logCall(cafeMovement)]
 
@@ -203,6 +224,21 @@ export async function setup(
     close: () => server.close(),
   }
 }
+
+/** A webhook with one photo: its media id and caption, no bytes (those come from the Graph by id). */
+export const photoBody = (
+  wamid: string,
+  mediaId: string,
+  caption?: string,
+  from = '5491100000000',
+  timestamp = '1760000000',
+) =>
+  messageBody(wamid, from, {
+    type: 'image',
+    timestamp,
+    text: undefined,
+    image: { id: mediaId, mime_type: 'image/jpeg', ...(caption ? { caption } : {}) },
+  })
 
 export const messageBody = (wamid: string, from = '5491100000000', extra: object = {}) =>
   JSON.stringify({

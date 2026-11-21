@@ -9,6 +9,7 @@ import {
   fakeGraph,
   fakeModel,
   gate,
+  helpCall,
   logCall,
   messageBody,
   movement,
@@ -123,7 +124,7 @@ describe('webhook', () => {
     const app = await setup()
     await post(
       app.base,
-      messageBody('wamid.D', '5491100000000', { type: 'image', text: undefined }),
+      messageBody('wamid.D', '5491100000000', { type: 'sticker', text: undefined }),
     )
     await settle()
     expect(app.calls.sent).toEqual([{ to: '5491100000000', body: REPLY_NON_TEXT }])
@@ -318,6 +319,7 @@ describe('recovery', () => {
       claimedAt: 0,
       messageAt: new Date(),
       typingSent: false,
+      mediaId: null,
     }
     expect(await app.store.settle(stale, 'pending', 'late')).toBe(false)
     expect(await app.store.recordSendStarted(stale)).toBe(false)
@@ -769,8 +771,8 @@ describe('logging', () => {
     app.close()
   })
 
-  it('answers help (with and without a contact) and off_topic', async () => {
-    const without = await setup({ model: fakeModel(() => [replyCall('help')]) })
+  it("answers help (with and without a contact), and the model's own words when it replies", async () => {
+    const without = await setup({ model: fakeModel(() => [helpCall]) })
     await post(without.base, messageBody('wamid.H1'))
     await until(() => without.calls.sent.length === 1)
     const plain = bodies(without.calls)[0] as string
@@ -779,7 +781,7 @@ describe('logging', () => {
     without.close()
 
     const withContact = await setup({
-      model: fakeModel(() => [replyCall('help')]),
+      model: fakeModel(() => [helpCall]),
       helpContact: 'hola@heywarren.app',
     })
     await post(withContact.base, messageBody('wamid.H2'))
@@ -789,10 +791,12 @@ describe('logging', () => {
     )
     withContact.close()
 
-    const off = await setup({ model: fakeModel(() => [replyCall('off_topic')]) })
+    const off = await setup({
+      model: fakeModel(() => [replyCall('Eso no lo sé: solo llevo tus gastos e ingresos.')]),
+    })
     await post(off.base, messageBody('wamid.O1'))
     await until(() => off.calls.sent.length === 1)
-    expect(bodies(off.calls)).toEqual(['Solo puedo ayudarte con tus gastos e ingresos.'])
+    expect(bodies(off.calls)).toEqual(['Eso no lo sé: solo llevo tus gastos e ingresos.'])
     await off.processor.drain(1_000)
     off.close()
   })
@@ -813,7 +817,7 @@ describe('logging', () => {
     const app = await setup()
     await post(
       app.base,
-      messageBody('wamid.IMG', '5491100000000', { type: 'image', text: undefined }),
+      messageBody('wamid.IMG', '5491100000000', { type: 'sticker', text: undefined }),
     )
     await until(() => app.calls.sent.length === 1)
     expect(bodies(app.calls)).toEqual([REPLY_NON_TEXT])

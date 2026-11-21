@@ -10,11 +10,12 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Change fields of one existing movement, by id. Only the fields that change are sent.',
   delete_movement: 'Delete one existing movement, by id.',
   summarize:
-    'Answer how much the person spent or received in a period. Code computes the totals; you only choose the period and filters.',
+    'Answer how much the person spent or received in a period, or how many movements there were. Code computes the totals and the counts; you only choose the period and the filters (including the words of a description, for "cuántos cafés").',
   ask_user:
     'Ask the person a question when you cannot act. Code writes the question and lists the movements you give.',
   reply:
-    'Send a canned reply: help, off_topic, smalltalk, or nothing_logged (the person has no movements to change).',
+    'Answer in words, for anything that is not a change to the ledger: a question about what you did or what is stored, small talk, something you cannot do, a request outside expenses, a change when the person has no movements at all (never when some exist and none fits: that is ask_user). Short, in Argentine Spanish. The text may use only numbers that code gave you.',
+  help: 'Send the canned help text: only when the person asks for help or what you can do, or greets you.',
 }
 
 /** The strict-tool form of a zod schema: the API rejects numeric bounds and the `$schema` key. */

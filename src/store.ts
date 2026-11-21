@@ -20,6 +20,8 @@ export interface Claim {
   /** The reply stored at the commit point; set means the model must not be called again. */
   replyText: string | null
   typingSent: boolean
+  /** A photo's media id, to download it (the webhook payload keeps it; the bytes are never stored). */
+  mediaId: string | null
 }
 
 /** What the commit point stores, in one transaction. */
@@ -154,6 +156,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
           FOR UPDATE SKIP LOCKED)
         RETURNING id, wamid, wa_id, kind, attempts, body, reply_text AS "replyText",
           typing_sent_at IS NOT NULL AS "typingSent",
+          payload->'image'->>'id' AS "mediaId",
           COALESCE(meta_ts, received_at) AS "messageAt",
           extract(epoch FROM now() - received_at) * 1000 AS "ageMs"`
       const claimedAt = performance.now()
@@ -186,11 +189,12 @@ export function createStore(sql: Sql, o: StoreOptions) {
     async conversation(c: Claim): Promise<Conversation> {
       const [turns, [previous]] = await Promise.all([
         sql<ConversationTurn[]>`
-          SELECT p.body AS text, p.reply_text AS reply,
+          SELECT CASE WHEN p.kind = 'image' THEN trim('[foto] ' || COALESCE(p.body, '')) ELSE p.body END AS text,
+            p.reply_text AS reply, p.asked_numbers IS NOT NULL AS asked,
             floor(extract(epoch FROM cur.received_at - p.received_at) / 60)::int AS "minutesAgo"
           FROM inbound_message cur
           JOIN inbound_message p ON p.wa_id = cur.wa_id AND p.id < cur.id
-          WHERE cur.id = ${c.id} AND p.kind = 'text' AND p.reply_text IS NOT NULL
+          WHERE cur.id = ${c.id} AND p.kind IN ('text', 'image') AND p.reply_text IS NOT NULL
             AND p.received_at > cur.received_at - make_interval(secs => ${CONVERSATION_WINDOW_MS / 1000})
           ORDER BY p.id DESC LIMIT ${CONVERSATION_TURNS}`,
         sql<
@@ -203,7 +207,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
             FROM inbound_message
             WHERE wa_id = cur.wa_id AND id < cur.id
             ORDER BY id DESC LIMIT 1) p ON true
-          WHERE cur.id = ${c.id} AND p.kind = 'text' AND p.reply_text IS NOT NULL
+          WHERE cur.id = ${c.id} AND p.kind IN ('text', 'image') AND p.reply_text IS NOT NULL
             AND p.received_at > cur.received_at - make_interval(secs => ${ANSWER_WINDOW_MS / 1000})`,
       ])
       return {

@@ -3,6 +3,7 @@ import {
   movement as base,
   bodies,
   fakeModel,
+  helpCall,
   logCall,
   messageBody,
   post,
@@ -10,6 +11,7 @@ import {
   row,
   type setup,
   sql,
+  TODAY,
   type ToolCall,
   until,
 } from './test-harness'
@@ -22,15 +24,36 @@ export const NONE: Changes = {}
 export const logOf = (...movements: Movement[]): ToolCall => logCall(...movements)
 export const correct = (id: number, changes: Partial<Changes>): ToolCall => ({
   name: 'correct_movement',
-  input: { id, changes: { ...NONE, ...changes } },
+  input: { id, changes: { ...NONE, ...changes }, text: null },
 })
-export const remove = (id: number): ToolCall => ({ name: 'delete_movement', input: { id } })
+export const remove = (id: number): ToolCall => ({
+  name: 'delete_movement',
+  input: { id, text: null },
+})
+/** The same call with the model's own words added. */
+export const saying = (call: ToolCall, text: string): ToolCall => ({
+  ...call,
+  input: { ...(call.input as object), text },
+})
 export const summarize = (
   period: string,
-  o: { direction?: 'in' | 'out' | null; category?: string | null; payment?: string | null } = {},
+  o: {
+    direction?: 'in' | 'out' | null
+    category?: string | null
+    payment?: string | null
+    description?: string | null
+  } = {},
 ): ToolCall => ({
   name: 'summarize',
-  input: { period, direction: 'out', category: null, payment: null, ...o },
+  input: {
+    period,
+    direction: 'out',
+    category: null,
+    payment: null,
+    description: null,
+    text: null,
+    ...o,
+  },
 })
 export const find = (o: Record<string, unknown> = {}): ToolCall => ({
   name: 'find_movements',
@@ -48,7 +71,7 @@ export const ask = (
     ...(o.after === 'correct' ? { changes: o.changes } : {}),
   },
 })
-export { replyCall }
+export { helpCall, replyCall }
 
 export type App = Awaited<ReturnType<typeof setup>>
 
@@ -67,6 +90,14 @@ export async function say(app: App, o: { at?: string; text?: string } = {}): Pro
   await until(async () => (await row(wamid))?.status === 'done')
   return bodies(app.calls)[before] ?? ''
 }
+
+/**
+ * A model that sends each given turn as it is, three times in a row: a text the numbers check refuses
+ * is sent back for a repair (inside the cap), so a test of what the commit point drops needs a model that
+ * insists. A bare call is a turn of one.
+ */
+export const insist = (...turns: (ToolCall | ToolCall[])[]) =>
+  script(...turns.flatMap((t) => [t, t, t]))
 
 /** A model that answers each call with the next turn: a list of tool calls. A bare call is a turn of one. */
 export const script = (...turns: (ToolCall | ToolCall[])[]) => {
@@ -124,3 +155,33 @@ export const sum = async (where: string) =>
 /** The how-to-answer line every question ends with, for a first candidate numbered `n`. */
 export const HOW = (n: number) =>
   `\nRespondé con el número, por ejemplo "el ${n} fue 4100" o "borrá el ${n}".`
+
+/** Five movements of today, logged at 09:00, 10:10, 10:45, 11:54 and 11:59; ids 1 to 5, the taxi is the newest. */
+export const day = async () =>
+  seed([
+    {
+      on: TODAY,
+      amount: '12000',
+      description: 'súper',
+      category: 'supermercado',
+      payment: 'crédito visa',
+      at: '09:12',
+    },
+    { on: TODAY, amount: '3500', description: 'café', category: 'restaurantes', at: '10:10' },
+    {
+      on: TODAY,
+      amount: '20000',
+      description: 'nafta',
+      category: 'combustible',
+      payment: 'efectivo',
+      at: '10:45',
+    },
+    { on: TODAY, amount: '2900', description: 'café', category: 'restaurantes', at: '11:54' },
+    { on: TODAY, amount: '5400', description: 'taxi', category: 'transporte', at: '11:59' },
+  ])
+
+export const live = async () =>
+  (
+    await sql`SELECT id::int AS id, description, amount::text AS amount FROM movement
+      WHERE superseded_by IS NULL AND deleted_at IS NULL ORDER BY id`
+  ).map((r) => `${r.description} ${r.amount}`)

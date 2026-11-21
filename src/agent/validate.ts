@@ -1,3 +1,4 @@
+import { hasLongNumber } from './say'
 import { type Changes, MAX_MOVEMENTS, type Movement } from './schema'
 
 /** A value the movement table cannot hold, or a rule the model broke. Never repaired: the model is told. */
@@ -39,12 +40,35 @@ function checkValues(
   return issues
 }
 
+/**
+ * Code copies a description and a payment name into the reply as the model wrote them, so a run of
+ * four or more digits there ("café 12000", "visa 4509") would put a figure in the record that no
+ * rule vouches for. Refused, never repaired: the model is told and sends it again.
+ */
+function checkWords(
+  values: { description?: string | null; payment?: string | null },
+  path: string,
+): Issue[] {
+  return (['description', 'payment'] as const).flatMap((field) => {
+    const value = values[field]
+    return value != null && hasLongNumber(value)
+      ? [
+          {
+            path: `${path}.${field}`,
+            message: `${field} has a number of 4 or more digits: leave numbers out of descriptions and payment names (the amount goes in "amount")`,
+          },
+        ]
+      : []
+  })
+}
+
 /** The movements of a `log_movements` call: 1 to 10, with values the table can hold. */
 export function checkLog(movements: Movement[], today: string): Issue[] {
   if (movements.length === 0) return [{ path: 'movements', message: 'no movements' }]
   const issues: Issue[] = []
   movements.forEach((movement, i) => {
     issues.push(...checkValues(movement, today, `movements[${i}]`))
+    issues.push(...checkWords(movement, `movements[${i}]`))
     if (movement.description.trim() === '') {
       issues.push({ path: `movements[${i}].description`, message: 'description is empty' })
     }
@@ -66,7 +90,7 @@ export function checkCount(count: number): Issue[] {
 
 /** Changed values the movement table cannot hold. Same rules as a logged movement. */
 export function checkChanges(changes: Changes, today: string, path = 'changes'): Issue[] {
-  const issues = checkValues(changes, today, path)
+  const issues = [...checkValues(changes, today, path), ...checkWords(changes, path)]
   for (const field of ['description', 'payment'] as const) {
     if (changes[field] != null && changes[field].trim() === '') {
       issues.push({ path: `${path}.${field}`, message: `${field} is empty` })

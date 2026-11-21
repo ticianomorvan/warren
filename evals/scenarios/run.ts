@@ -7,7 +7,7 @@ import { MODELS, type ModelKey } from '../../src/agent'
 import { keepAliveFetch } from '../../src/http'
 import { createTestDatabase } from '../../src/test-harness'
 import { Meter, runScenario, type ScenarioResult } from './drive'
-import { failureLines, renderSummary, summarize } from './report'
+import { failureLines, latencyByTag, renderLatencyByTag, renderSummary, summarize } from './report'
 import { loadScenarios } from './schema'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -91,6 +91,8 @@ await db.close()
 const out = (title: string, rs: ScenarioResult[]) => {
   console.log(`\n${title}`)
   for (const line of renderSummary(summarize(rs))) console.log(`  ${line}`)
+  console.log('  latency by tag (a scenario counts in each of its tags):')
+  for (const line of renderLatencyByTag(latencyByTag(rs))) console.log(`  ${line}`)
 }
 console.log(
   `Warren scenario eval: ${MODELS[model].id}, split ${split}, ${results.length} scenarios`,
@@ -119,6 +121,8 @@ writeFileSync(
       startedAt,
       model: MODELS[model].id,
       summary: all,
+      // Computed before the held-out turns are stripped: latency only, no texts.
+      latencyByTag: latencyByTag(results),
       results: results.map((r) => (r.split === 'dev' ? r : { ...r, turns: [] })),
     },
     null,

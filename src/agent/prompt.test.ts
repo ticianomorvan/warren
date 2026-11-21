@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import type { MovementRow } from '../ledger'
-import { renderContext, SYSTEM_PROMPT } from './prompt'
+import { contextFacts, movementFact, renderContext, SYSTEM_PROMPT } from './prompt'
 import { CATEGORIES } from './schema'
 
 describe('SYSTEM_PROMPT', () => {
@@ -163,5 +163,106 @@ describe('SYSTEM_PROMPT and the eval set', () => {
 
   it('names every category of the schema', () => {
     for (const category of CATEGORIES) expect(SYSTEM_PROMPT).toContain(category)
+  })
+})
+
+describe('renderContext: expired questions', () => {
+  const base = {
+    text: 'borrá el 2',
+    today: '2026-11-21',
+    time: '12:14',
+    movements: [],
+    pending: null,
+  }
+  const asked = {
+    text: 'uno de los cafés estaba mal',
+    reply: '¿Cuál? 1. Café $2.900 · 2. Café $3.500',
+    minutesAgo: 14,
+    asked: true,
+  }
+  const plain = { text: 'café 3500', reply: '✓ Café $3.500', minutesAgo: 20 }
+
+  it('marks the options of a question that can no longer be answered as expired', () => {
+    const text = renderContext({ ...base, conversation: [plain, asked] })
+    expect(text).toContain('(Warren) ¿Cuál? 1. Café $2.900 · 2. Café $3.500\n(pregunta vencida')
+    expect(text).toContain('un número ahora es una posición de "Últimos movimientos"')
+    // only the question carries the mark, not an ordinary reply
+    expect(text.match(/pregunta vencida/g)).toHaveLength(1)
+  })
+
+  it('does not mark the question that is still pending, but does mark an older one', () => {
+    const pending = { asked: [{ number: 1, id: 5 }], action: 'delete' as const }
+    const live = renderContext({ ...base, conversation: [plain, asked], pending })
+    expect(live).not.toContain('pregunta vencida')
+    const older = renderContext({
+      ...base,
+      conversation: [asked, plain, { ...asked, minutesAgo: 1 }],
+      pending,
+    })
+    expect(older.match(/pregunta vencida/g)).toHaveLength(1)
+    expect(older.indexOf('pregunta vencida')).toBeLessThan(older.indexOf('hace 1 min'))
+  })
+})
+
+describe('renderContext: a photo', () => {
+  const base = {
+    today: '2026-11-21',
+    time: '12:00',
+    movements: [],
+    conversation: [],
+    pending: null,
+  }
+
+  it('says the person sent a photo, and shows its caption or that there is none', () => {
+    const withCaption = renderContext({ ...base, text: 'anotá este ticket', photo: true })
+    expect(withCaption).toContain('La persona envió una foto')
+    expect(withCaption).toContain('<mensaje>\nanotá este ticket\n</mensaje>')
+    expect(renderContext({ ...base, text: '', photo: true })).toContain(
+      '<mensaje>\n(sin texto)\n</mensaje>',
+    )
+    expect(renderContext({ ...base, text: 'café 3500' })).not.toContain('foto')
+  })
+})
+
+describe('contextFacts: what the model’s own words may quote', () => {
+  const row = (o: Partial<MovementRow> = {}): MovementRow => ({
+    id: 905,
+    direction: 'out',
+    amount: '12000',
+    currency: 'ARS',
+    date: '2026-11-21',
+    description: 'súper',
+    category: 'supermercado',
+    payment: 'crédito visa',
+    time: '09:12',
+    ...o,
+  })
+
+  it('leaves the id out of a movement', () => {
+    expect(movementFact(row())).toBe(
+      'out 12000 ARS 2026-11-21 09:12 súper supermercado crédito visa',
+    )
+    expect(movementFact(row())).not.toContain('905')
+  })
+
+  it('has the message, the movements, the conversation, the option numbers and the search results', () => {
+    const facts = contextFacts(
+      {
+        text: 'borraste el super?',
+        today: '2026-11-21',
+        time: '12:00',
+        movements: [row({ id: 7, amount: '2500' })],
+        conversation: [{ text: 'borra el super', reply: '✓ Borré: Súper $12.000', minutesAgo: 2 }],
+        pending: { asked: [{ number: 1, id: 905 }], action: 'none' },
+      },
+      [row({ id: 3, amount: '8000' })],
+    )
+    expect(facts.join('\n')).toContain('borraste el super?')
+    expect(facts.join('\n')).toContain('out 2500 ARS')
+    expect(facts.join('\n')).toContain('✓ Borré: Súper $12.000')
+    expect(facts.join('\n')).toContain('opción 1')
+    expect(facts.join('\n')).toContain('out 8000 ARS')
+    // neither an id nor the calendar or the clock is a fact
+    expect(facts.join('\n')).not.toMatch(/905|id=|12:00|Calendario/)
   })
 })

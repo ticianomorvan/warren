@@ -131,3 +131,20 @@ export function failureLines(results: ScenarioResult[]): string[] {
     ]
   })
 }
+
+/** Per-turn wall time by tag (a scenario counts in each of its tags), over every turn that ran. */
+export function latencyByTag(results: ScenarioResult[]): Partial<Record<Tag, Latency>> {
+  const out: Partial<Record<Tag, Latency>> = {}
+  for (const tag of TAGS) {
+    const turns = results.filter((r) => r.tags.includes(tag)).flatMap((r) => r.turns)
+    if (turns.length > 0) out[tag] = latency(turns.map((t) => t.wallMs))
+  }
+  return out
+}
+
+/** The per-tag latency as lines of text. */
+export function renderLatencyByTag(byTag: Partial<Record<Tag, Latency>>): string[] {
+  return Object.entries(byTag).map(
+    ([tag, l]) => `  tag ${tag}: n ${l.n}, p50 ${ms(l.p50)}, p95 ${ms(l.p95)}`,
+  )
+}

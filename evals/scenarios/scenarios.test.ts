@@ -124,7 +124,7 @@ describe('the driver, with a scripted model', () => {
         .split('\n')
         .find((l) => l.startsWith(`${position}. id=`))
       const id = Number(/id=(\d+)/.exec(line ?? '')?.[1])
-      return [{ name: 'correct_movement', input: { id, changes: { amount } } }]
+      return [{ name: 'correct_movement', input: { id, changes: { amount }, text: null } }]
     })
 
   it('passes a right correction and counts its cost and time', async () => {
