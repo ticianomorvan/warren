@@ -249,3 +249,71 @@ describe('which movement a correction or delete points at', () => {
     expect(grade(rec(null, true), del(1)).full).toBe(false)
   })
 })
+
+describe('silent wrong targets', () => {
+  const recent = [
+    {
+      direction: 'out',
+      amount: '2800',
+      currency: 'ARS',
+      date: '2026-11-20',
+      description: 'café',
+      category: 'restaurantes',
+      payment: null,
+    },
+    {
+      direction: 'out',
+      amount: '12000',
+      currency: 'ARS',
+      date: '2026-11-19',
+      description: 'súper',
+      category: 'supermercado',
+      payment: null,
+    },
+    {
+      direction: 'out',
+      amount: '3100',
+      currency: 'ARS',
+      date: '2026-11-18',
+      description: 'café',
+      category: 'restaurantes',
+      payment: null,
+    },
+  ] as EvalCase['recent']
+  const deleting = (text: string, expectedIndex: number | null, ambiguous = false): EvalCase => ({
+    ...base,
+    text,
+    recent,
+    ambiguous,
+    expected: { type: 'delete', target: 'café', target_index: expectedIndex, confidence: 'high' },
+  })
+  const del = (
+    target: string,
+    target_index: number | null,
+    confidence: 'high' | 'low' = 'high',
+  ): Command => ({
+    type: 'delete',
+    target,
+    target_index,
+    confidence,
+  })
+
+  it('counts a confident wrong number that code would still apply', () => {
+    const g = grade(deleting('borrá lo del súper', 1), del('súper', 2))
+    expect(g.full).toBe(false)
+    expect(g.silentWrongTarget).toBe(true)
+  })
+
+  it('does not count a wrong number that code turns into a question (the model misses, nothing breaks)', () => {
+    const g = grade(deleting('borrá el café', null, true), del('café', 1))
+    expect(g.full).toBe(false) // the model was wrong
+    expect(g.silentWrongTarget).toBe(false) // two cafés and no position in the message: code asks
+  })
+
+  it('does not count a right number, or a low-confidence answer', () => {
+    expect(grade(deleting('borrá el 3', 3), del('café', 3)).silentWrongTarget).toBe(false)
+    expect(grade(deleting('borrá lo del súper', 1), del('súper', 2, 'low')).silentWrongTarget).toBe(
+      false,
+    )
+  })
+})

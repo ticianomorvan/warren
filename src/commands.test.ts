@@ -1,8 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import type { Changes, Command, Movement } from './parse'
-import { REPLY_GONE, REPLY_NO_CHANGES, REPLY_NO_MOVEMENTS } from './render'
 import {
-  movement as base,
+  ask,
+  correct,
+  HOW,
+  history,
+  lastWamid,
+  logOf,
+  movement,
+  remove,
+  say,
+  script,
+  seed,
+  sum,
+  WA,
+} from './command-fixtures'
+import type { Sql } from './db'
+import { execute } from './execute'
+import type { MovementRow } from './ledger'
+import type { Command } from './parse'
+import { REPLY_BAD_CHANGE, REPLY_NO_CHANGES, REPLY_NO_MOVEMENTS } from './render'
+import {
   bodies,
   fakeModel,
   gate,
@@ -17,101 +34,6 @@ import {
 } from './test-harness'
 
 useDatabase()
-
-const WA = '5491100000000'
-/** The harness café, with no payment unless a test gives one. */
-const movement = (o: Partial<Movement> = {}) => base({ payment: null, ...o })
-const NONE: Changes = {
-  direction: null,
-  amount: null,
-  currency: null,
-  date: null,
-  description: null,
-  category: null,
-  payment: null,
-}
-const logOf = (...movements: Movement[]): Command => ({ type: 'log', movements })
-const correct = (
-  o: { target?: string; index?: number | null; changes?: Partial<Changes>; low?: boolean } = {},
-): Command => ({
-  type: 'correct',
-  target: o.target ?? 'last',
-  target_index: o.index === undefined ? 1 : o.index,
-  changes: { ...NONE, ...o.changes },
-  confidence: o.low ? 'low' : 'high',
-})
-const remove = (target = 'last', index: number | null = 1): Command => ({
-  type: 'delete',
-  target,
-  target_index: index,
-  confidence: 'high',
-})
-const ask = (
-  period: Extract<Command, { type: 'query' }>['period'],
-  o: Partial<Extract<Command, { type: 'query' }>> = {},
-): Command => ({ type: 'query', period, direction: 'out', category: null, payment: null, ...o })
-
-type App = Awaited<ReturnType<typeof setup>>
-
-let n = 0
-let lastWamid = ''
-/** One message in, waits until its reply is out and recorded. Returns that reply. */
-async function say(app: App, o: { at?: string } = {}): Promise<string> {
-  const wamid = `wamid.CMD${++n}`
-  lastWamid = wamid
-  const before = app.calls.sent.length
-  const extra = o.at ? { timestamp: String(Math.floor(Date.parse(o.at) / 1000)) } : {}
-  await post(app.base, messageBody(wamid, WA, extra))
-  await until(async () => (await row(wamid))?.status === 'done')
-  return bodies(app.calls)[before] ?? ''
-}
-
-/** A model that answers each call with the next command. */
-const script = (...commands: Command[]) => {
-  let i = 0
-  return fakeModel(() => commands[i++] as Command)
-}
-
-type Seed = {
-  on: string
-  amount: string
-  currency?: Movement['currency']
-  direction?: Movement['direction']
-  category?: Movement['category']
-  payment?: string | null
-  description?: string
-}
-let seeds = 0
-/** Stores movements straight in the table, as if earlier messages had logged them. */
-async function seed(rows: Seed[]): Promise<void> {
-  const [account] = await sql`
-    INSERT INTO account (wa_id) VALUES (${WA})
-    ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id RETURNING id`
-  const [inbound] = await sql`
-    INSERT INTO inbound_message (wamid, wa_id, kind, body, payload)
-    VALUES (${`seed.${++seeds}`}, ${WA}, 'text', 'seed', '{}'::jsonb) RETURNING id`
-  const values = rows.map((r, position) => ({
-    account_id: account?.id,
-    inbound_message_id: inbound?.id,
-    position,
-    direction: r.direction ?? 'out',
-    amount: r.amount,
-    currency: r.currency ?? 'ARS',
-    occurred_on: r.on,
-    description: r.description ?? 'algo',
-    category: r.category ?? 'otros',
-    payment: r.payment ?? null,
-    confidence: 'high',
-  }))
-  await sql`INSERT INTO movement ${sql(values)}`
-}
-
-const history = () =>
-  sql`SELECT id::int AS id, inbound_message_id::int AS inbound, amount::text AS amount, description,
-    superseded_by::int AS superseded_by, deleted_at IS NOT NULL AS deleted, deleted_by::int AS deleted_by
-    FROM movement ORDER BY id`
-const sum = async (where: string) =>
-  (await sql.unsafe(`SELECT sum(amount)::text AS total FROM movement WHERE ${where}`))[0]?.total
 
 describe('correct', () => {
   it('inserts a new row linked to the correcting message and keeps the old one, superseded', async () => {
@@ -201,7 +123,7 @@ describe('correct', () => {
     })
     await say(app)
     const reply = await say(app)
-    expect(reply).toBe('¿Cuál? 1. Café $3.100 · 2. Café $2.800')
+    expect(reply).toBe(`¿Cuál? 1. Café $3.100 · 2. Café $2.800${HOW(1)}`)
     expect(await history()).toHaveLength(2)
     expect((await history()).every((r) => r.superseded_by === null && !r.deleted)).toBe(true)
     expect(await row(lastWamid)).toMatchObject({ status: 'done', reply_text: reply })
@@ -213,7 +135,7 @@ describe('correct', () => {
       model: script(logOf(movement()), correct({ index: 1, low: true, changes: { amount: '1' } })),
     })
     await say(app)
-    expect(await say(app)).toBe('¿Cuál? 1. Café $3.500')
+    expect(await say(app)).toBe(`¿Cuál? 1. Café $3.500${HOW(1)}`)
     expect(await sum('superseded_by IS NULL')).toBe('3500')
     app.close()
   })
@@ -226,7 +148,7 @@ describe('correct', () => {
       ),
     })
     await say(app)
-    expect(await say(app)).toBe('¿Cuál? 1. Súper $12.000 · 2. Café $3.500')
+    expect(await say(app)).toBe(`¿Cuál? 1. Súper $12.000 · 2. Café $3.500${HOW(1)}`)
     app.close()
   })
 
@@ -252,14 +174,35 @@ describe('correct', () => {
     app.close()
   })
 
-  it('a correction with an unstorable value fails the message and changes nothing', async () => {
+  it('a correction with an unstorable value says so and changes nothing', async () => {
     const app = await setup({
       model: script(logOf(movement()), correct({ changes: { amount: '3.500,5' } })),
     })
     await say(app)
-    await post(app.base, messageBody('wamid.BADFIX', WA))
-    await until(async () => (await row('wamid.BADFIX'))?.status === 'failed')
+    expect(await say(app)).toBe(REPLY_BAD_CHANGE)
+    expect(await row(lastWamid)).toMatchObject({ status: 'done', reply_text: REPLY_BAD_CHANGE })
     expect(await history()).toHaveLength(1)
+    app.close()
+  })
+
+  it('applies a guess among equal matches only when the person said which: a position, or a detail', async () => {
+    // The model picks number 1 with high confidence for "el café", a guess the words cannot back.
+    const two = logOf(
+      movement({ amount: '2800' }),
+      movement({ amount: '3100', payment: 'efectivo' }),
+    )
+    const guess = correct({ target: 'café', index: 1, changes: { amount: '4100' } })
+    const app = await setup({ model: script(two, guess, guess, guess) })
+    await say(app)
+    // List is [3100 efectivo, 2800]: number 1 is the efectivo one.
+    expect(await say(app, { text: 'perdón, el café salió 4100' })).toBe(
+      `¿Cuál? 1. Café $3.100 (efectivo) · 2. Café $2.800${HOW(1)}`,
+    )
+    expect(await history()).toHaveLength(2)
+    expect(await say(app, { text: 'el último café fue 4100' })).toBe(
+      '✓ Corregido: Café $4.100 (efectivo) (antes $3.100)',
+    )
+    expect(await history()).toHaveLength(3)
     app.close()
   })
 
@@ -311,62 +254,76 @@ describe('correct', () => {
 })
 
 describe('concurrent and replayed messages', () => {
-  it('corrects a target that a message in flight already corrected only once', async () => {
+  it('a correction sent while an earlier message is still parsing waits for it and finds its movement', async () => {
+    // "nafta 20000" is stored, "café 3500" is still parsing, "uy, era 3800" must fix the café.
     const hold = gate()
     let calls = 0
-    const first = correct({ changes: { amount: '3800' } })
-    const second = correct({ changes: { amount: '4200' } })
     const model = fakeModel(async (): Promise<Command> => {
       const k = ++calls
-      if (k === 1) return logOf(movement())
-      await hold.promise // both corrections have read the same list before either commits
-      return k === 2 ? first : second
+      if (k === 1)
+        return logOf(movement({ description: 'nafta', amount: '20000', category: 'combustible' }))
+      if (k === 2) {
+        await hold.promise
+        return logOf(movement())
+      }
+      return correct({ changes: { amount: '3800' } })
     })
     const app = await setup({ model })
     await say(app)
-    await post(app.base, messageBody('wamid.RACE1', WA))
-    await post(app.base, messageBody('wamid.RACE2', WA))
-    await until(() => app.model.n === 3)
+    await post(app.base, messageBody('wamid.CAFE', WA))
+    await until(() => app.model.n === 2)
+    await post(app.base, messageBody('wamid.ERA', WA))
+    await new Promise((r) => setTimeout(r, 150))
+    expect(app.model.n).toBe(2) // the correction has not started: it queues behind the café
     hold.open()
-    await until(async () => {
-      const [a, b] = await Promise.all([row('wamid.RACE1'), row('wamid.RACE2')])
-      return a?.status === 'done' && b?.status === 'done'
-    })
-    const replies = new Set(bodies(app.calls).slice(1))
-    expect(replies.size).toBe(2)
-    expect(replies).toContain(REPLY_GONE)
-    expect([...replies].some((r) => r.startsWith('✓ Corregido: '))).toBe(true)
-    const rows = await history()
-    expect(rows).toHaveLength(2) // the café and one correction, not two
-    expect(await sum('superseded_by IS NULL')).toMatch(/^(3800|4200)$/)
+    await until(async () => (await row('wamid.ERA'))?.status === 'done')
+    expect(bodies(app.calls)[2]).toBe('✓ Corregido: Café $3.800 (antes $3.500)')
+    const live = await sql`SELECT description, amount::text AS amount FROM movement
+      WHERE superseded_by IS NULL ORDER BY id`
+    expect(live.map((r) => `${r.description} ${r.amount}`)).toEqual(['nafta 20000', 'café 3800'])
     app.close()
   })
 
-  it('a delete racing a correction leaves one outcome, never both', async () => {
+  it('different senders do not wait for each other', async () => {
     const hold = gate()
-    let calls = 0
     const model = fakeModel(async (): Promise<Command> => {
-      const k = ++calls
-      if (k === 1) return logOf(movement())
       await hold.promise
-      return k === 2 ? correct({ changes: { amount: '3800' } }) : remove()
+      return logOf(movement())
     })
     const app = await setup({ model })
-    await say(app)
-    await post(app.base, messageBody('wamid.RACE3', WA))
-    await post(app.base, messageBody('wamid.RACE4', WA))
-    await until(() => app.model.n === 3)
+    await post(app.base, messageBody('wamid.S1', '5491100000001'))
+    await post(app.base, messageBody('wamid.S2', '5491100000002'))
+    await until(() => app.model.n === 2)
     hold.open()
     await until(
-      async () => (await sql`SELECT 1 FROM inbound_message WHERE status = 'done'`).length === 3,
+      async () => (await sql`SELECT 1 FROM inbound_message WHERE status = 'done'`).length === 2,
     )
-    expect(bodies(app.calls)).toContain(REPLY_GONE)
-    const rows = await history()
-    // The café ended one way only: replaced by a correction, or deleted, not both.
-    const ended = rows.filter((r) => r.deleted || r.superseded_by !== null)
-    expect(ended).toHaveLength(1)
-    expect(rows.length).toBe(ended[0]?.deleted ? 1 : 2)
     app.close()
+  })
+
+  it('asks instead of applying when the ledger moved since the parser saw it', async () => {
+    await seed([
+      { on: TODAY, amount: '1000', description: 'viejo' },
+      { on: TODAY, amount: '2000', description: 'nuevo' },
+    ])
+    const [account] = await sql`SELECT id FROM account`
+    const [inbound] = await sql`SELECT id FROM inbound_message`
+    const snapshot = (await sql`SELECT id::int AS id, direction, amount::text AS amount, currency,
+      to_char(occurred_on, 'YYYY-MM-DD') AS date, description, category, payment
+      FROM movement ORDER BY id LIMIT 1`) as unknown as MovementRow[]
+    // The parser saw only "viejo"; "nuevo" was stored after, so number 1 now means something else.
+    const reply = await sql.begin((tx) =>
+      execute(tx as unknown as Sql, {
+        accountId: Number(account?.id),
+        inboundId: Number(inbound?.id),
+        command: correct({ target: 'viejo', index: 1, changes: { amount: '1' } }),
+        today: TODAY,
+        text: 'el viejo fue 1',
+        recent: snapshot,
+      }),
+    )
+    expect(reply).toBe(`¿Cuál? 1. Nuevo $2.000 · 2. Viejo $1.000${HOW(1)}`)
+    expect(await sum('superseded_by IS NULL')).toBe('3000')
   })
 
   it('a replayed correction or delete applies once: webhook retry, then the sweep re-claiming it', async () => {
@@ -465,7 +422,7 @@ describe('delete', () => {
       model: script(logOf(movement(), movement({ amount: '2800' })), remove('café', null)),
     })
     await say(app)
-    expect(await say(app)).toBe('¿Cuál? 1. Café $2.800 · 2. Café $3.500')
+    expect(await say(app)).toBe(`¿Cuál? 1. Café $2.800 · 2. Café $3.500${HOW(1)}`)
     expect((await history()).some((r) => r.deleted)).toBe(false)
     app.close()
   })

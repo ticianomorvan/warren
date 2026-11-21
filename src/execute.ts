@@ -1,13 +1,14 @@
 import type { Sql } from './db'
 import {
-  applyChanges,
   insertMovements,
   lockLive,
   type MovementRow,
   queryTotals,
+  recentMovements,
   softDelete,
   supersede,
 } from './ledger'
+import { applyChanges, changedFields } from './movement'
 import type { Command } from './parse'
 import {
   REPLY_GONE,
@@ -20,7 +21,7 @@ import {
   renderReply,
   renderUnchanged,
 } from './render'
-import { resolveTarget } from './resolve'
+import { type Numbered, resolveTarget } from './resolve'
 import { periodRange } from './time'
 
 export interface ExecuteInput {
@@ -30,6 +31,8 @@ export interface ExecuteInput {
   command: Command
   /** The Argentine day of the message. */
   today: string
+  /** What the person wrote; `resolveTarget` checks the model's pick against it. */
+  text: string
   /** The list the model was shown when it parsed the message (newest first). */
   recent: MovementRow[]
   render?: RenderOptions
@@ -59,7 +62,14 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<string> {
       if (command.type === 'correct' && Object.values(command.changes).every((v) => v === null)) {
         return REPLY_NO_CHANGES
       }
-      const target = resolveTarget(command, i.recent)
+      // The pick was made on the list the model saw. If the ledger moved since, the numbers mean
+      // other movements now: ask, listing the list as it is.
+      const fresh = await recentMovements(tx, i.accountId)
+      if (fresh.length !== i.recent.length || fresh.some((m, k) => m.id !== i.recent[k]?.id)) {
+        const numbered: Numbered[] = fresh.map((movement, k) => ({ number: k + 1, movement }))
+        return renderQuestion(numbered.slice(0, 3), today)
+      }
+      const target = resolveTarget(command, i.recent, { text: i.text, today })
       if (target.kind === 'ask') return renderQuestion(target.candidates, today)
       const old = await lockLive(tx, i.accountId, target.movement.id)
       if (!old) return REPLY_GONE
@@ -68,10 +78,10 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<string> {
         return renderDeletion(old, today)
       }
       const next = applyChanges(old, command.changes)
-      const reply = renderCorrection(old, next, today)
-      if (reply === null) return renderUnchanged(old, today)
+      const changed = changedFields(old, next)
+      if (changed.length === 0) return renderUnchanged(old, today)
       await supersede(tx, { accountId: i.accountId, inboundId: i.inboundId, old, next })
-      return reply
+      return renderCorrection(old, next, changed, today)
     }
     case 'query': {
       const totals = await queryTotals(tx, i.accountId, {

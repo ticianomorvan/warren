@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { changedFields } from './movement'
 import type { Movement, RecentMovement } from './parse'
 import {
   formatMoney,
@@ -108,48 +109,41 @@ const row = (o: Partial<RecentMovement> = {}): RecentMovement => ({
 })
 
 describe('renderCorrection', () => {
+  const fix = (before: RecentMovement, after: RecentMovement) =>
+    renderCorrection(before, after, changedFields(before, after), TODAY)
+
   it('shows the new movement and only what changed, as it was', () => {
-    expect(renderCorrection(row(), row({ amount: '3800' }), TODAY)).toBe(
-      '✓ Corregido: Café $3.800 (antes $3.500)',
+    expect(fix(row(), row({ amount: '3800' }))).toBe('✓ Corregido: Café $3.800 (antes $3.500)')
+    expect(fix(row({ payment: 'efectivo' }), row({ payment: 'crédito amex' }))).toBe(
+      '✓ Corregido: Café $3.500 (crédito amex) (antes efectivo)',
     )
-    expect(
-      renderCorrection(row({ payment: 'efectivo' }), row({ payment: 'crédito amex' }), TODAY),
-    ).toBe('✓ Corregido: Café $3.500 (crédito amex) (antes efectivo)')
-    expect(renderCorrection(row(), row({ payment: 'débito' }), TODAY)).toBe(
+    expect(fix(row(), row({ payment: 'débito' }))).toBe(
       '✓ Corregido: Café $3.500 (débito) (antes sin medio de pago)',
     )
   })
 
   it('spells out a date or category the movement line would not show', () => {
-    expect(renderCorrection(row({ date: '2026-11-20' }), row({ date: TODAY }), TODAY)).toBe(
+    expect(fix(row({ date: '2026-11-20' }), row({ date: TODAY }))).toBe(
       '✓ Corregido: Café $3.500 · hoy (antes ayer)',
     )
-    expect(renderCorrection(row(), row({ date: '2026-11-16' }), TODAY)).toBe(
+    expect(fix(row(), row({ date: '2026-11-16' }))).toBe(
       '✓ Corregido: Café $3.500 · 16/11 (antes hoy)',
     )
-    expect(renderCorrection(row(), row({ category: 'entretenimiento' }), TODAY)).toBe(
+    expect(fix(row(), row({ category: 'entretenimiento' }))).toBe(
       '✓ Corregido: Café $3.500 · Entretenimiento (antes Restaurantes)',
     )
   })
 
   it('lists every changed field, and a changed currency or direction as money', () => {
-    expect(
-      renderCorrection(
-        row(),
-        row({ amount: '25.5', currency: 'USD', description: 'brunch' }),
-        TODAY,
-      ),
-    ).toBe('✓ Corregido: Brunch US$ 25,50 (antes $3.500, café)')
-    expect(renderCorrection(row(), row({ direction: 'in' }), TODAY)).toBe(
-      '✓ Corregido: Café +$3.500 (antes $3.500)',
+    expect(fix(row(), row({ amount: '25.5', currency: 'USD', description: 'brunch' }))).toBe(
+      '✓ Corregido: Brunch US$ 25,50 (antes $3.500, café)',
     )
-    expect(
-      renderCorrection(row({ amount: '1500000.50' }), row({ amount: '1500000.5' }), TODAY),
-    ).toBe(null)
+    expect(fix(row(), row({ direction: 'in' }))).toBe('✓ Corregido: Café +$3.500 (antes $3.500)')
   })
+})
 
-  it('has nothing to show when nothing changed', () => {
-    expect(renderCorrection(row(), row({ amount: '3500.00' }), TODAY)).toBeNull()
+describe('renderUnchanged', () => {
+  it('says the movement already is that way', () => {
     expect(renderUnchanged(row({ payment: 'visa' }), TODAY)).toBe(
       'Ya figura así: Café $3.500 (visa)',
     )
@@ -178,7 +172,9 @@ describe('renderQuestion', () => {
       ],
       TODAY,
     )
-    expect(asked).toBe('¿Cuál? 1. Café $3.500 · 3. Súper $12.000 (Visa) · 4. Café $3.500 del 18/11')
+    expect(asked).toBe(
+      '¿Cuál? 1. Café $3.500 · 3. Súper $12.000 (Visa) · 4. Café $3.500 del 18/11\nRespondé con el número, por ejemplo "el 1 fue 4100" o "borrá el 1".',
+    )
   })
 
   it('says there is nothing to pick when the list is empty', () => {

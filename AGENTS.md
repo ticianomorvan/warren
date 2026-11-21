@@ -32,12 +32,14 @@ src/store.ts  The rules of the tables (inbound_message, reply, account): due pre
               the commit transaction (guard, then the command's effects, then the stored reply), ownership-guarded writes
 src/ledger.ts All SQL on `movement`: live movements (not superseded, not deleted), insert, lock, supersede,
               soft delete, query totals
-src/resolve.ts  Pure: turns a correct/delete target (list number plus words) into one movement or a question
+src/movement.ts Pure: text normalizing, applying a correction's changes, which fields changed
+src/resolve.ts  Pure: turns a correct/delete target (list number, words, and the person's own message) into one movement or a question
 src/execute.ts  Runs a command inside the commit transaction and returns the reply to store
 src/process.ts  Per message: ignored vs reply; for text, typing + parse together, the 10 s interim note, the 30 s
               deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
 src/render.ts The reply templates (Argentine money format) and every canned text; pure
-src/test-harness.ts  Shared integration-test setup: PGlite, fake Graph, fake Anthropic client, `setup()`
+src/test-harness.ts  Shared integration-test setup: PGlite (or a real Postgres), fake Graph, fake Anthropic client, `setup()`
+src/command-fixtures.ts  Scripted models, seeded movements and `say()` for the command tests
 src/http.ts   keepAliveFetch: a fetch with its own 60 s keep-alive pool (Graph and Anthropic)
 src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts (Graph API client)
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
@@ -54,6 +56,9 @@ pnpm install --frozen-lockfile
 pnpm lint          # Biome
 pnpm typecheck
 pnpm test          # Vitest, no network; real SQL on in-process PGlite, Graph API injected
+PG_TEST_URL=postgres://postgres:test@localhost:55432/postgres pnpm test src/concurrency.test.ts
+                   # also runs the real-Postgres concurrency tests (skipped without PG_TEST_URL; CI never sets it).
+                   # Throwaway database only, it is truncated. docker run --rm -d --name warren-pg-test -p 55432:5432 -e POSTGRES_PASSWORD=test postgres:17
 pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the WhatsApp variables (see src/config.ts)
 pnpm latency [--last N]   # p50/p95 per stage, model time, log-only reply time, from DATABASE_URL (Railway: the Postgres public URL)
 pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # calls the API, needs .env
@@ -116,13 +121,20 @@ model at the end. CI never calls the Anthropic API.
   means the reply goes out). `today` comes from the message's own time (`meta_ts`), not the clock.
 - **Corrections, deletes and queries (slice 4).** They run inside `store.commit`, in the same transaction as
   the guard and the stored reply, so a replay or a sweep re-claim never applies them twice (the stored reply
-  is sent instead). The parser sees the account's last 10 live movements (`RECENT_LIMIT`, the most one message
-  can log) as a numbered list and returns `target_index` (that number, or null) plus `target` (text). Code
-  (`resolveTarget`) trusts the number only when the words agree with that row ("last" agrees with 1), else
-  falls back to the words; low confidence, no match or several matches reply `¿Cuál? 1. … · 2. …` and change
-  nothing (the numbers are the list's, so "el 2" works on the next message). The target row is locked
-  (`FOR UPDATE`) and must still be live: if a message that ran meanwhile corrected or deleted it, the reply
-  says so and nothing is applied. A corrected movement is a new row, so it counts as the newest ("el último").
-  A correction's values are validated like a `log`'s; an unstorable one fails the message. Query totals are
-  `sum()` in SQL, grouped by direction and currency, never converted; the payment filter is accent- and
-  case-insensitive contains. Changing `schema.ts` or `prompt.ts` means rerunning `pnpm eval` (see Slice 4 notes).
+  is sent instead). **One sender's messages run strictly one after the other** (`run` chains them per
+  `wa_id`, kick and sweep alike; different senders stay parallel), because a message reads its context before
+  the parse and must see what the one before it stored. A shutdown hands queued messages back as `pending`
+  like the one in flight. The parser sees the account's last 10 live movements (`RECENT_LIMIT`, the most one
+  message can log) as a numbered list and returns `target_index` plus `target`. Code (`resolveTarget`) reads
+  the person's own message too, since `target` only echoes the row the model chose: "last" is number 1 (any
+  other number with it asks); a number is trusted when the words name that row (description stems, or the
+  whole category name, never a stem of a category or payment); when the words fit several movements it is
+  trusted only if the message gives a position ("el 3", "el último") or a detail that fits that row and no
+  other match (its payment, old amount, hoy/ayer, dd/mm). Otherwise, and for low confidence or no match, the
+  reply is `¿Cuál? 1. … · 2. …` plus how to answer, and nothing changes. Inside the transaction the live
+  list is read again: if it differs from the one the model saw, the same question is asked. The target row is
+  locked (`FOR UPDATE`) and must still be live, else the reply says it was already corrected or deleted. A
+  corrected movement is a new row, so it counts as the newest. A `correct` whose new value cannot be stored
+  gets a specific reply, not the failure notice. Query totals are `sum()` in SQL, grouped by direction and
+  currency, never converted; the payment filter is accent- and case-insensitive contains. Changing
+  `schema.ts` or `prompt.ts` means rerunning `pnpm eval` (see Slice 4 notes).

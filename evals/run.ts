@@ -70,6 +70,7 @@ const emptyGrade = (reason: string): Grade => ({
   full: false,
   typeOk: false,
   silentWrongAmount: false,
+  silentWrongTarget: false,
   soft: {},
   reasons: [reason],
 })
@@ -170,6 +171,7 @@ const summary = {
   typeAccuracy:
     results.length === 0 ? 0 : results.filter((r) => r.grade.typeOk).length / results.length,
   silentWrongAmounts: results.filter((r) => r.grade.silentWrongAmount).length,
+  silentWrongTargets: results.filter((r) => r.grade.silentWrongTarget).length,
   soft: Object.fromEntries(
     Object.entries(soft).map(([name, c]) => [
       name,
@@ -186,6 +188,7 @@ const summary = {
     accuracyAtLeast97:
       results.length > 0 && results.filter((r) => r.grade.full).length / results.length >= 0.97,
     noSilentWrongAmounts: results.every((r) => !r.grade.silentWrongAmount),
+    noSilentWrongTargets: results.every((r) => !r.grade.silentWrongTarget),
   },
 }
 
@@ -212,6 +215,7 @@ console.table({
   'fully correct': `${summary.fullyCorrect}/${results.length} (${pct(summary.accuracy)})`,
   'command type': pct(summary.typeAccuracy),
   'silently wrong amounts': summary.silentWrongAmounts,
+  'silently wrong targets': summary.silentWrongTargets,
   errors: summary.errors,
   'latency p50': ms(summary.latencyMs.p50),
   'latency p95': ms(summary.latencyMs.p95),
@@ -226,8 +230,13 @@ console.table(
     Object.entries(summary.soft).map(([name, c]) => [name, `${c.ok}/${c.total} (${pct(c.rate)})`]),
   ),
 )
-const gatePassed = summary.gate.accuracyAtLeast97 && summary.gate.noSilentWrongAmounts
-console.log(`Gate (>=97% fully correct, 0 silent wrong amounts): ${gatePassed ? 'PASS' : 'FAIL'}`)
+const gatePassed =
+  summary.gate.accuracyAtLeast97 &&
+  summary.gate.noSilentWrongAmounts &&
+  summary.gate.noSilentWrongTargets
+console.log(
+  `Gate (>=97% fully correct, 0 silent wrong amounts, 0 silent wrong targets): ${gatePassed ? 'PASS' : 'FAIL'}`,
+)
 if (!gatePassed) process.exitCode = 1
 
 // Held-out cases are never listed while tuning; their details stay in the results file only.

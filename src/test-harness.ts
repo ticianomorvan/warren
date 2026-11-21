@@ -15,26 +15,31 @@ import type { Graph } from './whatsapp/graph'
 export const SECRET = 'app-secret'
 export const VERIFY = 'verify-token-123'
 
-/** The test database, set by `useDatabase`: an in-process PGlite behind a socket, migrated. */
+/** The test database, set by `useDatabase`: in-process PGlite behind a socket, or a real Postgres (`real`). Migrated. */
 export let sql: Sql
 
-export function useDatabase() {
-  let pg: PGlite
-  let socket: PGLiteSocketServer
+export function useDatabase(real?: { url: string; max: number }) {
+  let pg: PGlite | undefined
+  let socket: PGLiteSocketServer | undefined
   beforeAll(async () => {
-    pg = await PGlite.create()
-    socket = new PGLiteSocketServer({ db: pg, port: 0, host: '127.0.0.1', maxConnections: 10 })
-    await socket.start()
-    const port = (socket as unknown as { server: { address(): AddressInfo } }).server.address().port
-    sql = connect(`postgres://postgres:postgres@127.0.0.1:${port}/postgres`, { max: 1 })
+    let url = real?.url
+    if (!url) {
+      pg = await PGlite.create()
+      socket = new PGLiteSocketServer({ db: pg, port: 0, host: '127.0.0.1', maxConnections: 10 })
+      await socket.start()
+      const port = (socket as unknown as { server: { address(): AddressInfo } }).server.address()
+        .port
+      url = `postgres://postgres:postgres@127.0.0.1:${port}/postgres`
+    }
+    sql = connect(url, { max: real?.max ?? 1 })
     await migrate(sql)
     await migrate(sql) // idempotent
   })
 
   afterAll(async () => {
     await sql.end({ timeout: 1 })
-    await socket.stop()
-    await pg.close()
+    await socket?.stop()
+    await pg?.close()
   })
 
   beforeEach(async () => {

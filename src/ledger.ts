@@ -1,5 +1,6 @@
 import type { Sql } from './db'
-import type { Changes, Movement, RecentMovement } from './parse'
+import { normalizeText } from './movement'
+import type { Movement, RecentMovement } from './parse'
 import type { DateRange } from './time'
 
 /** How many live movements the model is shown. 10 is the most one message can log, so a whole message can always be addressed. */
@@ -78,19 +79,6 @@ export async function lockLive(
   return row ?? null
 }
 
-/** The values a correction leaves unset keep the old row's. A blank payment is not a change. */
-export function applyChanges(old: MovementRow, changes: Changes): RecentMovement {
-  return {
-    direction: changes.direction ?? old.direction,
-    amount: changes.amount ?? old.amount,
-    currency: changes.currency ?? old.currency,
-    date: changes.date ?? old.date,
-    description: changes.description?.trim() ?? old.description,
-    category: changes.category ?? old.category,
-    payment: changes.payment?.trim() || old.payment,
-  }
-}
-
 /** Inserts the corrected movement, linked to the correcting message, and points the old one at it. */
 export async function supersede(
   sql: Sql,
@@ -107,14 +95,6 @@ export async function supersede(
 export async function softDelete(sql: Sql, id: number, inboundId: number): Promise<void> {
   await sql`UPDATE movement SET deleted_at = now(), deleted_by = ${inboundId} WHERE id = ${id}`
 }
-
-/** Lowercase without accents. The payment filter's needle goes through this; SQL folds the stored side the same way. */
-export const normalizeText = (value: string) =>
-  value
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase()
-    .trim()
 
 /** Totals per direction and currency, summed by the database. Currencies are never converted. */
 export async function queryTotals(

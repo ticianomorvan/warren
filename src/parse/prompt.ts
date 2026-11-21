@@ -131,43 +131,43 @@ Message: abl 85 mil y expensas 210.500 el 3
 Message: teatro 20k pasado manana
 {"type":"log","movements":[{"direction":"out","amount":"20000","currency":"ARS","date":"<today>","description":"teatro","category":"entretenimiento","payment":null,"confidence":"low"}]}
 
-Recent: 1. out 3500 ARS <today> café [restaurantes] (sin medio) / 2. out 12000 ARS <yesterday> súper [supermercado] (crédito visa)
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa)
 Message: uy no, el cafe fueron 4200
 {"type":"correct","target":"café","target_index":1,"changes":{"direction":null,"amount":"4200","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
-Recent: 1. out 3500 ARS <today> café [restaurantes] (sin medio) / 2. out 12000 ARS <yesterday> súper [supermercado] (crédito visa)
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa)
 Message: cambia lo del super a ayer
 {"type":"correct","target":"súper","target_index":2,"changes":{"direction":null,"amount":null,"currency":null,"date":"<yesterday>","description":null,"category":null,"payment":null},"confidence":"high"}
 
-Recent: 1. out 3500 ARS <today> café [restaurantes] (sin medio) / 2. out 12000 ARS <yesterday> súper [supermercado] (crédito visa)
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa)
 Message: upa, eran 18 lucas
 {"type":"correct","target":"last","target_index":1,"changes":{"direction":null,"amount":"18000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
-Recent: 1. out 3500 ARS <today> café [restaurantes] (sin medio) / 2. out 12000 ARS <yesterday> súper [supermercado] (crédito visa)
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa)
 Message: eso fue con la master y ayer
 {"type":"correct","target":"last","target_index":1,"changes":{"direction":null,"amount":null,"currency":null,"date":"<yesterday>","description":null,"category":null,"payment":"crédito mastercard"},"confidence":"high"}
 
-Recent: 1. out 2800 ARS <today> café [restaurantes] (sin medio) / 2. out 9000 ARS <today> cena [restaurantes] (débito) / 3. out 3100 ARS <2 days ago> café [restaurantes] (efectivo)
+Recent: 1. out 2400 ARS <today> café [restaurantes] (sin medio) / 2. out 7300 ARS <today> cena [restaurantes] (débito) / 3. out 2700 ARS <2 days ago> café [restaurantes] (efectivo)
 Message: no, el cafe fue 4000
 {"type":"correct","target":"café","target_index":null,"changes":{"direction":null,"amount":"4000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"low"}
 
-Recent: 1. out 12000 ARS <today> súper [supermercado] (crédito visa) / 2. out 9000 ARS <today> cena [restaurantes] (débito) / 3. out 8000 ARS <2 days ago> súper [supermercado] (efectivo)
+Recent: 1. out 15400 ARS <today> súper [supermercado] (crédito visa) / 2. out 7300 ARS <today> cena [restaurantes] (débito) / 3. out 6800 ARS <2 days ago> súper [supermercado] (efectivo)
 Message: el super fueron 9500
 {"type":"correct","target":"súper","target_index":null,"changes":{"direction":null,"amount":"9500","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"low"}
 
-Recent: 1. out 12000 ARS <today> súper [supermercado] (crédito visa) / 2. out 9000 ARS <today> cena [restaurantes] (débito) / 3. out 8000 ARS <2 days ago> súper [supermercado] (efectivo)
+Recent: 1. out 15400 ARS <today> súper [supermercado] (crédito visa) / 2. out 7300 ARS <today> cena [restaurantes] (débito) / 3. out 6800 ARS <2 days ago> súper [supermercado] (efectivo)
 Message: el super que pague en efectivo era 8500
 {"type":"correct","target":"súper","target_index":3,"changes":{"direction":null,"amount":"8500","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
-Recent: 1. out 3500 ARS <today> café [restaurantes] (sin medio) / 2. out 12000 ARS <yesterday> súper [supermercado] (crédito visa)
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa)
 Message: borra lo ultimo que puse
 {"type":"delete","target":"last","target_index":1,"confidence":"high"}
 
-Recent: 1. out 3500 ARS <today> café [restaurantes] (sin medio) / 2. out 12000 ARS <yesterday> súper [supermercado] (crédito visa) / 3. out 4500 ARS <2 days ago> farmacia [salud] (sin medio)
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa) / 3. out 6200 ARS <2 days ago> farmacia [salud] (sin medio)
 Message: saca lo de la farmacia
 {"type":"delete","target":"farmacia","target_index":3,"confidence":"high"}
 
-Recent: 1. out 3500 ARS <today> café [restaurantes] (sin medio) / 2. out 12000 ARS <yesterday> súper [supermercado] (crédito visa) / 3. out 4500 ARS <2 days ago> farmacia [salud] (sin medio)
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa) / 3. out 6200 ARS <2 days ago> farmacia [salud] (sin medio)
 Message: elimina el 2
 {"type":"delete","target":"súper","target_index":2,"confidence":"high"}
 
