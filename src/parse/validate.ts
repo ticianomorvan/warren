@@ -2,6 +2,13 @@ import type { Changes, Command, Movement } from './schema'
 
 export type Issue = { path: string; message: string }
 
+/** The model's command cannot be used at all (as opposed to a doubtful one, which is low confidence). */
+export class InvalidCommandError extends Error {}
+
+function checkTarget(target: string): Issue[] {
+  return target.trim() === '' ? [{ path: 'target', message: 'target is empty' }] : []
+}
+
 export const MAX_MOVEMENTS = 10
 
 const AMOUNT_RE = /^\d+(\.\d{1,2})?$/
@@ -67,19 +74,33 @@ export function validateCommand(
   today: string,
 ): { command: Command; issues: Issue[] } {
   if (command.type === 'log') {
+    // A log with nothing in it is not a command at all.
+    if (command.movements.length === 0) throw new InvalidCommandError('log has no movements')
     const issues: Issue[] = []
-    if (command.movements.length < 1 || command.movements.length > MAX_MOVEMENTS) {
+    // Too many movements is a sign the model invented or split things: none of them is trusted.
+    const tooMany = command.movements.length > MAX_MOVEMENTS
+    if (tooMany) {
       issues.push({ path: 'movements', message: `expected 1 to ${MAX_MOVEMENTS} movements` })
     }
     const movements = command.movements.map((movement, i) => {
       const found = checkMovement(movement, today, `movements[${i}]`)
       issues.push(...found)
-      return found.length > 0 ? { ...movement, confidence: 'low' as const } : movement
+      return found.length > 0 || tooMany ? { ...movement, confidence: 'low' as const } : movement
     })
     return { command: { ...command, movements }, issues }
   }
   if (command.type === 'correct') {
-    const issues = checkChanges(command.changes, today, 'changes')
+    const issues = [
+      ...checkTarget(command.target),
+      ...checkChanges(command.changes, today, 'changes'),
+    ]
+    return {
+      command: issues.length > 0 ? { ...command, confidence: 'low' } : command,
+      issues,
+    }
+  }
+  if (command.type === 'delete') {
+    const issues = checkTarget(command.target)
     return {
       command: issues.length > 0 ? { ...command, confidence: 'low' } : command,
       issues,

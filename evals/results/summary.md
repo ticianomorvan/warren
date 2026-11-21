@@ -10,12 +10,13 @@ Gate: at least 97% fully correct and 0 silently wrong amounts.
 | claude-haiku-5-5                              | dev, 106 | 106/106       | 0      | 984 / 1,162                             | 401 / 79 / 7,770                  | US$0.0166 |
 | claude-sonnet-5-5                             | dev, 106 | 106/106       | 0      | 2,072 / 2,498                           | 401 / 79 / 7,770                  | US$0.2506 |
 
-Rerun under the stricter grader (target of a correction or delete and the query direction,
-category and payment are hard fields; a merged movement counted as silent): claude-haiku-5-5,
-split all, 131 cases: **131/131 fully correct, 0 silent wrong amounts**, p50 / p95 1,034 / 1,263
-ms, mean in / out / cache read / cache write tokens 401 / 77 / 7,573 / 58 (the cache had expired
-before this run, so the first request wrote it), US$0.0212. Test-split detail is not stored. The
-Sonnet rows above were measured before the grader was tightened and were not rerun.
+Rerun after the second review (prompt examples no longer match any eval case, stricter grader:
+targets and query fields are hard, stopwords no longer match, amounts compare as decimals, a
+merged movement counts as silent). claude-haiku-5-5, split all, 131 cases: **131/131 fully
+correct, 0 silent wrong amounts**, which is dev 106/106 and test 25/25. p50 / p95 967 / 1,128 ms,
+mean in / out / cache read / cache write tokens 401 / 77 / 7,581 / 58 (the prompt changed, so the
+first request wrote the cache), US$0.0212. Test-split detail is not stored. The Sonnet rows above
+were measured before these changes and were not rerun.
 
 Soft fields (description, category, payment, target, query fields) were 99 to 100% on dev and
 100% on test for both models.

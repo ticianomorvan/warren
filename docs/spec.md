@@ -26,7 +26,7 @@ How we know it worked:
 
 ## What exists
 
-- **warren** (`ticianomorvan/warren`; a shallow read-only clone is in the session scratchpad). It is not reused as a codebase, because its setup cost is the thing we are escaping. Three ideas are worth copying:
+- **warren** (`ticianomorvan/warren`; the old code is at the tag `v0-mail-ledger`, and the paths below are from that tag). It is not reused as a codebase, because its setup cost is the thing we are escaping. Three ideas are worth copying:
   - Amounts as decimal strings with a separate direction (`packages/db/src/schema.ts`, `movement`).
   - The Argentine calendar day (`packages/core/src/time/argentina.ts`).
   - Every movement links to its source (`movement_source`).
@@ -164,7 +164,7 @@ Each slice ships on its own and comes with its proof.
 | Sonnet 5.5 | dev (106) | 106/106       | 0                    | 2,072 / 2,498 ms | 7,770 tokens      | US$0.0024        |
 
 - Eval set: 131 messages in `evals/cases.jsonl` (106 dev, 25 test), 9 of them ambiguous on purpose. The prompt needed no tuning on the dev split: the first dev run of the final prompt was already 100%.
-- Stricter grader (a wrong correct/delete target or query field also fails a message; a merged high-confidence movement counts as silent): Haiku, all 131 messages, 131/131 fully correct, 0 silent, p50 / p95 1,034 / 1,263 ms, US$0.0212. The Sonnet rows above predate the stricter grader and were not rerun.
+- After review (few-shot examples no longer equal any eval message, stricter grader): Haiku, all 131 messages, 131/131 fully correct (dev 106/106, test 25/25), 0 silent, p50 / p95 967 / 1,128 ms, US$0.0212. The Sonnet rows above predate these changes and were not rerun.
 - Prompt: about 8,170 tokens in total, of which 7,770 are the frozen cached prefix. `cache_read_input_tokens` was 7,770 on every request after the first, on both models. Both models' minimum cacheable prefix is 512 tokens.
 - Latency was measured from a Mac in Argentina, so it is indicative only. Real latency is measured on Railway in slice 2. Haiku's p95 of about 1.2 s is inside the 2.0 s budget for the whole request path, with room for the other steps. Sonnet's 2.5 s p95 is not.
 - Caveats: the eval messages were written by the same agent that wrote the prompt, so they are likely easier than real traffic, and 25 test messages is a small sample. Slice 3 should add real messages to the set and re-run it.

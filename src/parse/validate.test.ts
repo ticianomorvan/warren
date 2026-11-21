@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Command, Movement } from './schema'
-import { validateCommand } from './validate'
+import { InvalidCommandError, validateCommand } from './validate'
 
 const today = '2026-11-20'
 const movement: Movement = {
@@ -65,8 +65,7 @@ describe('validateCommand', () => {
     ])
   })
 
-  it('flags an empty log and a correction that changes nothing or sets a bad amount', () => {
-    expect(validateCommand({ type: 'log', movements: [] }, today).issues).toHaveLength(1)
+  it('flags a correction that changes nothing or sets a bad amount', () => {
     const changes = {
       direction: null,
       amount: null,
@@ -91,5 +90,41 @@ describe('validateCommand', () => {
       today,
     )
     expect(bad.command).toMatchObject({ confidence: 'low' })
+  })
+
+  it('throws on a log with no movements', () => {
+    expect(() => validateCommand({ type: 'log', movements: [] }, today)).toThrow(
+      InvalidCommandError,
+    )
+  })
+
+  it('lowers every movement to low confidence when there are more than 10', () => {
+    const movements = Array.from({ length: 11 }, () => movement)
+    const result = validateCommand({ type: 'log', movements }, today)
+    expect(result.issues).toHaveLength(1)
+    expect(
+      result.command.type === 'log' &&
+        result.command.movements.every((m) => m.confidence === 'low'),
+    ).toBe(true)
+  })
+
+  it('lowers confidence for an empty target on correct and delete', () => {
+    const del = validateCommand({ type: 'delete', target: '  ', confidence: 'high' }, today)
+    expect(del.command).toMatchObject({ confidence: 'low' })
+    expect(del.issues[0]?.path).toBe('target')
+    const changes = {
+      direction: null,
+      amount: '10',
+      currency: null,
+      date: null,
+      description: null,
+      category: null,
+      payment: null,
+    }
+    const fix = validateCommand({ type: 'correct', target: '', changes, confidence: 'high' }, today)
+    expect(fix.command).toMatchObject({ confidence: 'low' })
+    expect(
+      validateCommand({ type: 'delete', target: 'last', confidence: 'high' }, today).issues,
+    ).toEqual([])
   })
 })

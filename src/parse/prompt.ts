@@ -43,7 +43,7 @@ Today's date and a calendar of the last 14 days are given after the message pref
 - "hoy" = today, "ayer" = yesterday, "anteayer" / "antes de ayer" = two days ago, "hace N dias" = N days ago.
 - A weekday name ("el lunes", "el sabado") is the most recent such day strictly before today; use the calendar. "el sabado pasado" is the same day.
 - "el 15", "el dia 3" is that day of the current month, or of the previous month if it would fall after today.
-- "la semana pasada", "el mes pasado" or another vague period with no day: use the calendar day that is closest, and set confidence "low".
+- "la semana pasada", "el mes pasado" or another vague period with no day: use today's date and set confidence "low".
 - A date after today ("manana", "el viernes que viene") cannot be logged: use today and set confidence "low".
 
 # Fields of a movement
@@ -79,8 +79,8 @@ period is one of: today, yesterday, this_week, last_week, this_month, last_month
 
 # Examples
 
-Message: cafe 3500
-{"type":"log","movements":[{"direction":"out","amount":"3500","currency":"ARS","date":"<today>","description":"café","category":"restaurantes","payment":null,"confidence":"high"}]}
+Message: cafecito 2800
+{"type":"log","movements":[{"direction":"out","amount":"2800","currency":"ARS","date":"<today>","description":"café","category":"restaurantes","payment":null,"confidence":"high"}]}
 
 Message: super 12.000 con la visa y 4.500 de farmacia
 {"type":"log","movements":[{"direction":"out","amount":"12000","currency":"ARS","date":"<today>","description":"súper","category":"supermercado","payment":"crédito visa","confidence":"high"},{"direction":"out","amount":"4500","currency":"ARS","date":"<today>","description":"farmacia","category":"salud","payment":null,"confidence":"high"}]}
@@ -121,23 +121,23 @@ Message: me pagó Juan 120 lucas por el laburo
 Message: abl 85 mil y expensas 210.500 el 3
 {"type":"log","movements":[{"direction":"out","amount":"85000","currency":"ARS","date":"<the 3rd of this month>","description":"ABL","category":"impuestos","payment":null,"confidence":"high"},{"direction":"out","amount":"210500","currency":"ARS","date":"<the 3rd of this month>","description":"expensas","category":"vivienda","payment":null,"confidence":"high"}]}
 
-Message: cine 12k manana
-{"type":"log","movements":[{"direction":"out","amount":"12000","currency":"ARS","date":"<today>","description":"cine","category":"entretenimiento","payment":null,"confidence":"low"}]}
+Message: teatro 20k pasado manana
+{"type":"log","movements":[{"direction":"out","amount":"20000","currency":"ARS","date":"<today>","description":"teatro","category":"entretenimiento","payment":null,"confidence":"low"}]}
 
-Message: no, el café fue 3800
-{"type":"correct","target":"café","changes":{"direction":null,"amount":"3800","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
+Message: uy no, el cafe fueron 4200
+{"type":"correct","target":"café","changes":{"direction":null,"amount":"4200","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
-Message: me equivoqué, eran 25 lucas
-{"type":"correct","target":"last","changes":{"direction":null,"amount":"25000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
+Message: upa, eran 18 lucas
+{"type":"correct","target":"last","changes":{"direction":null,"amount":"18000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
 Message: eso fue con la master y ayer
 {"type":"correct","target":"last","changes":{"direction":null,"amount":null,"currency":null,"date":"<yesterday>","description":null,"category":null,"payment":"crédito mastercard"},"confidence":"high"}
 
-Message: borra el ultimo
+Message: borra lo ultimo que puse
 {"type":"delete","target":"last","confidence":"high"}
 
-Message: elimina lo del super
-{"type":"delete","target":"súper","confidence":"high"}
+Message: saca lo de la farmacia
+{"type":"delete","target":"farmacia","confidence":"high"}
 
 Message: cuanto gaste este mes en comida?
 {"type":"query","period":"this_month","direction":"out","category":"restaurantes","payment":null}
@@ -151,10 +151,10 @@ Message: cuanto me salio la visa la semana pasada
 Message: hola, que podes hacer?
 {"type":"help"}
 
-Message: a cuanto está el dolar blue hoy
+Message: cuanto sale el dolar oficial
 {"type":"off_topic"}
 
-Message: contame un chiste
+Message: cantame una cancion
 {"type":"off_topic"}
 
 The <today>, <yesterday> and similar markers above stand for dates you read from the calendar; always output real ISO dates.`
@@ -165,8 +165,10 @@ export function renderVolatile(input: {
   recentMovements: RecentMovement[]
 }): string {
   const { today, recentMovements } = input
-  // The message sits between delimiters, so it must not be able to close them.
-  const text = input.text.replace(/<\/?mensaje>/gi, '')
+  // The message sits between delimiters, so it must not be able to close them: no raw angle
+  // brackets get through.
+  const text = input.text.replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  const oneLine = (value: string) => value.replace(/\s+/g, ' ').trim()
   const calendar = Array.from({ length: 14 }, (_, i) => {
     const day = addDays(today, -i)
     const label = i === 0 ? 'hoy' : i === 1 ? 'ayer' : `hace ${i} días`
@@ -178,7 +180,7 @@ export function renderVolatile(input: {
       : recentMovements
           .map(
             (m, i) =>
-              `${i + 1}. ${m.direction} ${m.amount} ${m.currency} ${m.date} ${m.description} [${m.category}] (${m.payment ?? 'sin medio'})`,
+              `${i + 1}. ${m.direction} ${m.amount} ${m.currency} ${m.date} ${oneLine(m.description)} [${m.category}] (${oneLine(m.payment ?? 'sin medio')})`,
           )
           .join('\n')
   return [

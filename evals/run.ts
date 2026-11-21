@@ -39,17 +39,17 @@ const split = values.split as 'dev' | 'test' | 'all'
 if (!['dev', 'test', 'all'].includes(split)) throw new Error('--split must be dev, test or all')
 const concurrency = Number(values.concurrency)
 const budget = Number(values.budget)
-for (const [flag, value] of [
-  ['--concurrency', concurrency],
-  ['--budget', budget],
-] as const) {
-  if (!Number.isFinite(value) || value <= 0) {
-    console.error(`${flag} must be a number greater than 0`)
-    process.exit(1)
-  }
-}
-if (values.limit && !(Number(values.limit) > 0)) {
-  console.error('--limit must be a number greater than 0')
+const flagErrors = [
+  Number.isInteger(concurrency) && concurrency > 0
+    ? ''
+    : '--concurrency must be an integer above 0',
+  Number.isFinite(budget) && budget > 0 ? '' : '--budget must be a number above 0',
+  !values.limit || (Number.isInteger(Number(values.limit)) && Number(values.limit) > 0)
+    ? ''
+    : '--limit must be an integer above 0',
+].filter(Boolean)
+if (flagErrors.length > 0) {
+  console.error(flagErrors.join('\n'))
   process.exit(1)
 }
 

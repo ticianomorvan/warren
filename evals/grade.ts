@@ -31,14 +31,20 @@ const norm = (value: string | null | undefined) =>
     .toLowerCase()
     .trim()
 
+const STOPWORDS = new Set(['del', 'los', 'las', 'con', 'por', 'para', 'una', 'que', 'mis'])
+
+/** 4-letter stems of the content words: stopwords and words under 4 letters carry no meaning. */
 function stems(text: string): string[] {
   return norm(text)
     .split(/[^a-z0-9]+/)
-    .filter((word) => word.length >= 3)
+    .filter((word) => word.length >= 4 && !STOPWORDS.has(word))
     .map((word) => word.slice(0, 4))
 }
 
-/** Loose match for free text: one contains the other, or they share a word stem. */
+/**
+ * Loose match for free text: equal, one contains the other, or they share the stem of a content
+ * word.
+ */
 export function similarText(a: string | null | undefined, b: string | null | undefined): boolean {
   const x = norm(a)
   const y = norm(b)
@@ -48,6 +54,14 @@ export function similarText(a: string | null | undefined, b: string | null | und
   const sy = new Set(stems(y))
   return stems(x).some((stem) => sy.has(stem))
 }
+
+/** An amount as a canonical decimal string, so "2800.50" and "2800.5" compare equal. */
+export function canonicalAmount(amount: string | null): string | null {
+  if (amount === null || !/^\d+(\.\d+)?$/.test(amount)) return amount
+  return amount.includes('.') ? amount.replace(/0+$/, '').replace(/\.$/, '') : amount
+}
+
+const sameAmount = (a: string | null, b: string | null) => canonicalAmount(a) === canonicalAmount(b)
 
 function addSoft(soft: SoftCounts, name: string, ok: boolean) {
   const entry = soft[name] ?? { ok: 0, total: 0 }
@@ -79,7 +93,7 @@ export function grade(testCase: EvalCase, actual: Command): Grade {
         if (!got) return
         const hardOk =
           got.direction === want.direction &&
-          got.amount === want.amount &&
+          sameAmount(got.amount, want.amount) &&
           got.currency === want.currency &&
           got.date === want.date
         const lowOk = testCase.ambiguous && got.confidence === 'low'
@@ -88,7 +102,8 @@ export function grade(testCase: EvalCase, actual: Command): Grade {
             `#${i}: got ${got.direction} ${got.amount} ${got.currency} ${got.date} (${got.confidence}), expected ${want.direction} ${want.amount} ${want.currency} ${want.date}`,
           )
         }
-        if (got.amount !== want.amount && got.confidence === 'high') silentWrongAmount = true
+        if (!sameAmount(got.amount, want.amount) && got.confidence === 'high')
+          silentWrongAmount = true
         addSoft(soft, 'description', similarText(got.description, want.description))
         addSoft(soft, 'category', got.category === want.category)
         addSoft(soft, 'payment', norm(got.payment) === norm(want.payment))
@@ -96,14 +111,18 @@ export function grade(testCase: EvalCase, actual: Command): Grade {
     }
   } else if (expected.type === 'correct' && actual.type === 'correct') {
     for (const field of ['amount', 'currency', 'date', 'direction'] as const) {
-      if (actual.changes[field] !== expected.changes[field]) {
+      const same =
+        field === 'amount'
+          ? sameAmount(actual.changes.amount, expected.changes.amount)
+          : actual.changes[field] === expected.changes[field]
+      if (!same) {
         reasons.push(
           `changes.${field} ${actual.changes[field]}, expected ${expected.changes[field]}`,
         )
       }
     }
     if (
-      actual.changes.amount !== expected.changes.amount &&
+      !sameAmount(actual.changes.amount, expected.changes.amount) &&
       actual.changes.amount !== null &&
       actual.confidence === 'high'
     ) {

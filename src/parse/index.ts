@@ -44,7 +44,7 @@ export async function parseMessage(input: {
     model: config.id,
     max_tokens: 2048,
     thinking: config.thinking,
-    output_config: { effort: config.effort, format: COMMAND_FORMAT },
+    output_config: { effort: 'low', format: COMMAND_FORMAT },
     // Frozen prefix under one cache breakpoint; everything per-request comes after it.
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
     messages: [

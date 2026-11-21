@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Command, Movement } from '../src/parse/schema'
-import { type EvalCase, grade, similarText } from './grade'
+import { canonicalAmount, type EvalCase, grade, similarText } from './grade'
 
 const want: Movement = {
   direction: 'out',
@@ -135,6 +135,20 @@ describe('hard fields of the other commands', () => {
   })
 })
 
+describe('canonical amounts', () => {
+  it('compares decimals, not strings', () => {
+    expect(canonicalAmount('2800.50')).toBe('2800.5')
+    expect(canonicalAmount('3500.00')).toBe('3500')
+    expect(canonicalAmount('3500')).toBe('3500')
+    const decimal: EvalCase = {
+      ...base,
+      expected: { type: 'log', movements: [{ ...want, amount: '2800.5' }] },
+    }
+    expect(grade(decimal, log({ ...want, amount: '2800.50' })).full).toBe(true)
+    expect(grade(decimal, log({ ...want, amount: '2800.55' })).full).toBe(false)
+  })
+})
+
 describe('movement count mismatch', () => {
   it('flags a sum of two purchases returned as one high-confidence movement', () => {
     const two: EvalCase = {
@@ -151,6 +165,16 @@ describe('movement count mismatch', () => {
 })
 
 describe('similarText', () => {
+  it('does not match on stopwords or short words', () => {
+    expect(similarText('service del auto', 'pago del gas')).toBe(false)
+    expect(similarText('regalo para mamá', 'compra para el auto')).toBe(false)
+  })
+
+  it('matches equal or contained targets', () => {
+    expect(similarText('el café', 'café')).toBe(true)
+    expect(similarText('last', 'last')).toBe(true)
+  })
+
   it('ignores case and accents and matches shared stems', () => {
     expect(similarText('Café', 'cafe')).toBe(true)
     expect(similarText('farmacia del barrio', 'farmacia')).toBe(true)

@@ -39,5 +39,6 @@ Assets are people's messages and movements, the WhatsApp access token, the app s
 Anthropic API key. Secrets live only in the gitignored `.env` (and the host's environment), never
 in code, logs or eval output. The model only parses a message into a typed command; code
 validates it, does all arithmetic and writes the reply, so a message cannot make the model act.
-Corrections never overwrite a movement, so history is kept. Webhooks are accepted only with a
-valid signature.
+Design rules for the slices still to build, not protections that exist today: corrections never
+overwrite a movement, so history is kept (slices 3 and 4), and webhooks are accepted only with a
+valid signature (slice 2). Today the repository holds the parser and its eval only.
