@@ -11,6 +11,8 @@
  * its own lines instead.
  */
 
+import { fitReply } from '../render'
+
 export const MAX_SAY_LENGTH = 280
 
 /**
@@ -390,6 +392,8 @@ export function composeReply(i: {
   facts: readonly string[]
   window: readonly string[]
   fallback: string
+  /** What was heard in a voice note: the reply starts with it. */
+  heard?: string
 }): { reply: string; verdicts: Map<number, Verdict> } {
   const applied: Applied = { deleted: false, corrected: false, logged: false }
   for (const step of i.steps) {
@@ -422,5 +426,5 @@ export function composeReply(i: {
     }
   }
   const body = i.lines.length === 0 && notes.length === 0 ? [i.fallback] : i.lines
-  return { reply: [...body, ...notes].join('\n'), verdicts }
+  return { reply: fitReply({ heard: i.heard, lines: body, notes }), verdicts }
 }

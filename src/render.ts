@@ -16,6 +16,81 @@ export const REPLY_VOICE = {
   /** The confidence gate refused it: noise, silence, or too unsure to act on. */
   unclear: 'No te entendí el audio, ¿me lo escribís?',
 } as const
+/**
+ * WhatsApp refuses a text body over 4,096 characters with a permanent error, and a reply that cannot be sent
+ * after its changes were committed is a silent write. Replies stay under this, with room to spare.
+ */
+export const MAX_REPLY_CHARS = 4000
+
+const BULLET = '• '
+/** `text` in at most `max` UTF-16 units (what WhatsApp's limit and `.length` count), ending in "…" when cut, never inside an emoji. */
+const cut = (text: string, max: number) => {
+  if (text.length <= max) return text
+  let out = ''
+  for (const char of text) {
+    if (out.length + char.length > max - 1) break
+    out += char
+  }
+  return `${out}…`
+}
+
+/**
+ * The reply to send: what was heard (voice only), the record lines code rendered, then the model's own words, one
+ * per line, held under `max` characters. When they do not fit, in this order: what was heard is shortened with
+ * "…" (to 80 characters at least), the model's words go (they add nothing the record lacks), and long bulleted
+ * lists in the record are collapsed to their first items and "• … y N más". A record is never dropped without
+ * saying so: lines that still do not fit end as "… y N más", and a single line is cut with "…" as a last resort.
+ */
+export function fitReply(
+  parts: { heard?: string; lines: string[]; notes: string[] },
+  max = MAX_REPLY_CHARS,
+): string {
+  const join = (heard: string | undefined, lines: string[], notes: string[]) =>
+    [...(heard === undefined ? [] : [renderHeard(heard)]), ...lines, ...notes].join('\n')
+  let heard = parts.heard
+  let { notes } = parts
+  const whole = () => join(heard, parts.lines, notes)
+  if (whole().length <= max) return whole()
+
+  if (heard !== undefined) {
+    const rest = join(undefined, parts.lines, notes).length + 1
+    const room = max - rest - renderHeard('').length
+    heard = cut(heard, Math.max(80, room))
+    if (whole().length <= max) return whole()
+  }
+  notes = []
+  if (whole().length <= max) return whole()
+
+  // Collapse the longest bulleted list, one item at a time.
+  const blocks = parts.lines.map((line) => line.split('\n'))
+  const hidden = blocks.map(() => 0)
+  const lines = () =>
+    blocks.map((rows, k) =>
+      [...rows, ...(hidden[k] ? [`${BULLET}… y ${hidden[k]} más`] : [])].join('\n'),
+    )
+  const items = (rows: string[]) => rows.filter((r) => r.startsWith(BULLET)).length
+  for (;;) {
+    if (join(heard, lines(), notes).length <= max) return join(heard, lines(), notes)
+    let longest = -1
+    for (const [k, rows] of blocks.entries()) {
+      if (items(rows) > 1 && (longest < 0 || items(rows) > items(blocks[longest] ?? [])))
+        longest = k
+    }
+    if (longest < 0) break
+    const rows = blocks[longest] ?? []
+    const last = rows.map((r) => r.startsWith(BULLET)).lastIndexOf(true)
+    rows.splice(last, 1)
+    hidden[longest] = (hidden[longest] ?? 0) + 1
+  }
+  // Still too long with nothing left to collapse: keep the first lines that fit and say how many more there are.
+  const all = lines()
+  for (let keep = all.length - 1; keep >= 1; keep--) {
+    const text = join(heard, [...all.slice(0, keep), `… y ${all.length - keep} más`], notes)
+    if (text.length <= max) return text
+  }
+  return cut(join(heard, all, notes), max)
+}
+
 /** The first line of the reply to a voice note: what was heard, so a mishearing is visible before anything is acted on. */
 export const renderHeard = (transcript: string) => `🎙️ "${transcript}"`
 /** What the person is told when a photo cannot be read, by why. */

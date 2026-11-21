@@ -101,9 +101,51 @@ describe('the confidence gate', () => {
     expect(verdict.ok).toBe(true)
   })
 
+  it('fails closed on numbers that overflow: extreme times cannot make a mean NaN and let the checks pass', () => {
+    // Before: weights of Infinity gave a mean of NaN, and NaN is under no threshold.
+    const extreme = { start: -1e308, end: 1e308 }
+    expect(
+      judgeTranscript(
+        note('Café 3500', { ...extreme, avg_logprob: -0.9, no_speech_prob: 0.9 }, extreme),
+      ),
+    ).toMatchObject({ ok: false })
+    expect(
+      judgeTranscript(
+        note('Café 3500', { ...extreme, avg_logprob: -1e308 }, { ...extreme, avg_logprob: 1e308 }),
+      ),
+    ).toMatchObject({ ok: false, reason: 'low_confidence' })
+    expect(
+      judgeTranscript({ text: 'Café 3500', segments: [{ ...seg(), avg_logprob: Number.NaN }] }),
+    ).toMatchObject({ ok: false, reason: 'low_confidence' })
+    expect(
+      judgeTranscript({
+        text: 'Café 3500',
+        segments: [{ ...seg(), compression_ratio: Number.NaN }],
+      }),
+    ).toMatchObject({ ok: false, reason: 'repetitive' })
+    expect(
+      judgeTranscript({ text: 'Café 3500', segments: [{ ...seg(), no_speech_prob: Number.NaN }] }),
+    ).toMatchObject({ ok: false, reason: 'no_speech' })
+  })
+
+  it('judges a huge number of segments without throwing', () => {
+    const many = Array.from({ length: 300_000 }, () => seg())
+    expect(judgeTranscript({ text: 'Café 3500', segments: many })).toEqual({
+      ok: true,
+      text: 'Café 3500',
+    })
+    expect(
+      judgeTranscript({ text: 'Café 3500', segments: [...many, seg({ avg_logprob: -2 })] }),
+    ).toMatchObject({ ok: false, reason: 'low_confidence' })
+    expect(
+      judgeTranscript({ text: 'Café 3500', segments: [...many, seg({ compression_ratio: 3 })] }),
+    ).toMatchObject({ ok: false, reason: 'repetitive' })
+  })
+
   it('refuses a text too long to be a note about an expense', () => {
-    const verdict = judgeTranscript(note('x'.repeat(3001)))
+    const verdict = judgeTranscript(note('x'.repeat(1001)))
     expect(verdict).toMatchObject({ ok: false, reason: 'too_long' })
+    expect(judgeTranscript(note('x'.repeat(1000)))).toMatchObject({ ok: true })
   })
 
   it('collapses the whitespace of the transcript into one line', () => {
@@ -171,6 +213,26 @@ describe('createTranscriber', () => {
     await t.transcribe(checkAudio(new Uint8Array([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70])))
     await t.transcribe(checkAudio(new Uint8Array([0x49, 0x44, 0x33, 4])))
     expect(seen.map((s) => (s.form.get('file') as File).name)).toEqual(['voice.m4a', 'voice.mp3'])
+  })
+
+  it('refuses numbers that are not numbers, or outside what the service gives, in the answer', async () => {
+    const good = { start: 0, end: 1, avg_logprob: -0.2, compression_ratio: 1, no_speech_prob: 0.01 }
+    for (const bad of [
+      { no_speech_prob: null },
+      { no_speech_prob: 1e308 },
+      { no_speech_prob: -0.5 },
+      { avg_logprob: 3 },
+      { compression_ratio: -1 },
+    ]) {
+      const body = `{"text":"hola","segments":[${JSON.stringify({ ...good, ...bad })}]}`
+      const t = createTranscriber({
+        apiKey: 'k',
+        fetch: fetchWith(() => new Response(body)).fetchFn,
+      })
+      await expect(t.transcribe(OGG), JSON.stringify(bad)).rejects.toMatchObject({
+        failure: 'bad_response',
+      })
+    }
   })
 
   it('maps a failing service, a bad body and a wrong shape to a TranscriptionError with the cause', async () => {

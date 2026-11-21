@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Movement } from './agent'
-import { formatMoney, renderHelp, renderLog } from './render'
+import { fitReply, formatMoney, MAX_REPLY_CHARS, renderHelp, renderLog } from './render'
 
 const TODAY = '2026-11-21'
 
@@ -80,5 +80,70 @@ describe('renderHelp', () => {
     expect(plain).not.toContain('persona')
     const withContact = renderHelp({ helpContact: 'ayuda@heywarren.app' })
     expect(withContact).toBe(`${plain}\nSi necesitás hablar con una persona: ayuda@heywarren.app`)
+  })
+})
+
+describe('fitReply', () => {
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, k) => ({
+      ...mv(),
+      description: `café número ${k + 1} con un nombre largo`,
+      amount: String(1000 + k),
+    }))
+  const log = (n: number) => renderLog(many(n), TODAY)
+
+  it('is the heard line, the record and the texts, unchanged, when they fit', () => {
+    expect(fitReply({ heard: 'café 3500', lines: ['✓ Café $3.500'], notes: ['Ojo.'] })).toBe(
+      '🎙️ "café 3500"\n✓ Café $3.500\nOjo.',
+    )
+    expect(fitReply({ lines: ['✓ Café $3.500'], notes: [] })).toBe('✓ Café $3.500')
+  })
+
+  it('shortens what was heard first, with "…", and keeps the record and the texts', () => {
+    const heard = 'palabra '.repeat(400).trim() // 3,199 characters
+    const reply = fitReply({ heard, lines: [log(40)], notes: ['Un texto.'] })
+    expect(reply.length).toBeLessThanOrEqual(MAX_REPLY_CHARS)
+    expect(reply.split('\n')[0]).toMatch(/^🎙️ "palabra .*…"$/)
+    expect(reply).toContain('✓ Anoté 40:')
+    expect(reply).toContain(renderLog(many(40), TODAY).split('\n')[40] ?? '') // the last item is still there
+    expect(reply.endsWith('Un texto.')).toBe(true)
+  })
+
+  it('drops the model texts, not the record, when shortening what was heard is not enough', () => {
+    const reply = fitReply({ heard: 'x'.repeat(3000), lines: [log(110)], notes: ['Un texto.'] })
+    expect(reply.length).toBeLessThanOrEqual(MAX_REPLY_CHARS)
+    expect(reply).not.toContain('Un texto.')
+    expect(reply).toContain('✓ Anoté 110:')
+  })
+
+  it('collapses a long list of movements to its first items and says how many more', () => {
+    const reply = fitReply({ heard: 'x'.repeat(3000), lines: [log(120)], notes: [] })
+    expect(reply.length).toBeLessThanOrEqual(MAX_REPLY_CHARS)
+    expect(reply).toContain('✓ Anoté 120:')
+    expect(reply).toContain('• Café número 1 con')
+    expect(reply).toMatch(/\n• … y \d+ más$/)
+    const shown = reply.split('\n').filter((l) => l.startsWith('• ') && !l.includes('…')).length
+    const hidden = Number(/y (\d+) más/.exec(reply)?.[1])
+    expect(shown + hidden).toBe(120) // every movement is either listed or counted
+  })
+
+  it('keeps the first lines and counts the rest when there is no list to collapse (typed text too)', () => {
+    const lines = Array.from({ length: 300 }, (_, k) => `✓ Borré: Café número ${k} $1.000 · 10:00`)
+    const reply = fitReply({ lines, notes: [] })
+    expect(reply.length).toBeLessThanOrEqual(MAX_REPLY_CHARS)
+    expect(reply.startsWith(lines[0] ?? '')).toBe(true)
+    expect(reply).toMatch(/\n… y \d+ más$/)
+  })
+
+  it('cuts one line that is alone too long, never past the limit', () => {
+    const reply = fitReply({ lines: ['y'.repeat(9000)], notes: [] })
+    expect(reply.length).toBeLessThanOrEqual(MAX_REPLY_CHARS)
+    expect(reply.endsWith('…')).toBe(true)
+  })
+
+  it('does not split an emoji when it cuts', () => {
+    const reply = fitReply({ heard: '😀'.repeat(3000), lines: ['✓ Café $3.500'], notes: [] }, 500)
+    expect(reply.length).toBeLessThanOrEqual(500)
+    expect(reply).not.toMatch(/[\ud800-\udbff]"|[\ud800-\udbff]…/)
   })
 })

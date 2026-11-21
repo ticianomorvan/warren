@@ -110,6 +110,55 @@ describe('a voice note', () => {
     app.close()
   })
 
+  it('reads the database while the transcription is still running, not after it', async () => {
+    const slow = gate()
+    let conversation = 0
+    const app = await setup({
+      fake: fakeGraph({ media: { a1: NOTE } }),
+      transcriber: fakeTranscriber(async () => {
+        await slow.promise
+        return heard('Anotá 4200 de farmacia')
+      }).transcriber,
+      model: script(logOf(farmacia)),
+      processorStore: (store) => ({
+        ...store,
+        conversation: (c) => {
+          conversation++
+          return store.conversation(c)
+        },
+      }),
+    })
+    await post(app.base, voiceBody('wamid.A11', 'a1', WA))
+    await until(() => conversation === 1) // read while the transcription has not answered
+    expect(app.calls.sent).toHaveLength(0)
+    slow.open()
+    await until(() => app.calls.sent.length === 1)
+    app.close()
+  })
+
+  it('keeps the whole reply under what WhatsApp accepts, for the longest note and the largest log', async () => {
+    const long = 'palabra '.repeat(124).trim() // 991 characters: just under the gate
+    const app = await setup({
+      fake: fakeGraph({ media: { a1: NOTE } }),
+      transcriber: fakeTranscriber(heard(long)).transcriber,
+      model: script(
+        logOf(
+          ...Array.from({ length: 10 }, (_, k) =>
+            movement({
+              description: `compra número ${k + 1} de nombre largo`,
+              amount: String(1000 + k),
+            }),
+          ),
+        ),
+      ),
+    })
+    const reply = await voice(app, 'wamid.A12')
+    expect(reply.length).toBeLessThanOrEqual(4096)
+    expect(reply).toContain('✓ Anoté 10:')
+    expect(await live()).toHaveLength(10)
+    app.close()
+  })
+
   it('shows in the conversation window of the next message as [audio] and what was heard', async () => {
     const app = await setup({
       fake: fakeGraph({ media: { a1: NOTE } }),
@@ -213,6 +262,17 @@ describe('a voice note that the confidence gate refuses', () => {
       app.close()
     },
   )
+
+  it('that is too long to be a note about an expense gets the "too long" notice, not "no te entendí"', async () => {
+    const app = await setup({
+      fake: fakeGraph({ media: { a1: NOTE } }),
+      transcriber: fakeTranscriber(heard('café '.repeat(300))).transcriber,
+    })
+    expect(await voice(app, 'wamid.G3')).toBe(REPLY_VOICE.too_large)
+    expect(app.model.n).toBe(0)
+    expect(await live()).toEqual([])
+    app.close()
+  })
 
   it("does not put the refused noise in the next message's window as something the person said", async () => {
     const app = await setup({

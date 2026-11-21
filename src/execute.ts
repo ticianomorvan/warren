@@ -19,7 +19,6 @@ import {
   renderAsk,
   renderCorrection,
   renderDeletion,
-  renderHeard,
   renderHelp,
   renderLog,
   renderQuery,
@@ -201,11 +200,12 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
     facts: i.facts,
     window: i.window,
     fallback: REPLY_SAY_FALLBACK,
+    heard: i.heard,
   })
   const audit = i.audit.map((e) =>
     e.action === undefined
       ? e
       : { ...e, status: steps[e.action]?.outcome ?? e.status, ...verdicts.get(e.action) },
   )
-  return { reply: i.heard ? `${renderHeard(i.heard)}\n${reply}` : reply, ...out, audit }
+  return { reply, ...out, audit }
 }

@@ -116,6 +116,10 @@ export function moneyTokens(reply: string): string[] {
   return found.map((t) => t.replace(/\.+$/, ''))
 }
 
+/** A money token as `formatMoney` writes it, so "$5000" and "$5.000" are the same amount (the value is what counts). */
+const asWritten = (token: string) =>
+  formatMoney(canonical(token.replace(/[^\d.,]/g, '')), token.startsWith('US') ? 'USD' : 'ARS')
+
 export function gradeTurn(input: TurnInput): TurnGrade {
   const { turn, today, before, after, refs, reply } = input
   const problems: string[] = []
@@ -279,7 +283,8 @@ export function gradeTurn(input: TurnInput): TurnGrade {
     input.commandType === 'query'
       ? []
       : moneyTokens(reply).filter(
-          (t) => !known.has(t) && !turn.reply.has.some((s) => s.includes(t)),
+          (t) =>
+            !known.has(t) && !known.has(asWritten(t)) && !turn.reply.has.some((s) => s.includes(t)),
         )
   if (invented.length > 0) problems.push(`amounts not in the ledger: ${invented.join(', ')}`)
 

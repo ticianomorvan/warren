@@ -479,6 +479,25 @@ describe('composeReply', () => {
     expect(added.reply).toBe(`${lines[0]}\nCorregí el café, pero ojo: era el de las 11:11.`)
   })
 
+  it('holds the reply under what WhatsApp accepts, voice or typed, and keeps the record', () => {
+    const lines = [
+      `✓ Anoté 60:\n${Array.from({ length: 60 }, (_, k) => `• Café ${k} $${1000 + k}`).join('\n')}`,
+    ]
+    const typed = composeReply({ ...base, lines, says: [], steps: [step('log_movements')] })
+    expect(typed.reply.length).toBeLessThanOrEqual(4096)
+    const heard = composeReply({
+      ...base,
+      heard: 'palabra '.repeat(400),
+      lines: [...lines, ...lines],
+      says: [{ action: 0, text: 'Anotados, ojo con el gasto.' }],
+      steps: [step('log_movements')],
+    })
+    expect(heard.reply.length).toBeLessThanOrEqual(4096)
+    expect(heard.reply.startsWith('🎙️ "palabra')).toBe(true)
+    expect(heard.reply).toContain('✓ Anoté 60:')
+    expect(heard.reply).toContain('• Café 0 $1000')
+  })
+
   it('never drops a reply as a restatement: its words are the whole answer', () => {
     const lines = ['Hoy gastaste $3.500 (1 movimiento).']
     const r = composeReply({

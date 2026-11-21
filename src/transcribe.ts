@@ -38,11 +38,12 @@ export class TranscriptionError extends Error {
 }
 
 const segmentSchema = z.object({
-  start: z.number(),
-  end: z.number(),
-  avg_logprob: z.number(),
-  compression_ratio: z.number(),
-  no_speech_prob: z.number(),
+  start: z.number().finite(),
+  end: z.number().finite(),
+  // The ranges the service keeps; an answer outside them is not trusted, whatever it says.
+  avg_logprob: z.number().finite().max(0),
+  compression_ratio: z.number().finite().min(0),
+  no_speech_prob: z.number().finite().min(0).max(1),
 })
 const responseSchema = z.object({
   text: z.string(),
@@ -136,8 +137,12 @@ export const GATE = {
   maxCompressionRatio: 1.5,
   /** The mean probability that there was no speech at all. */
   maxNoSpeechProb: 0.1,
-  /** A transcript longer than this is not a note about an expense. */
-  maxChars: 3000,
+  /**
+   * A transcript longer than this is not a note about an expense: a message logs at most 10 movements, about 60
+   * characters each said aloud, so 1,000 is more than a minute of speech and room to spare. It also keeps the
+   * reply, which starts with what was heard, far from WhatsApp's 4,096-character limit.
+   */
+  maxChars: 1000,
 } as const
 
 export type RefusalReason = 'empty' | 'too_long' | 'low_confidence' | 'repetitive' | 'no_speech'
@@ -146,11 +151,21 @@ export type Heard =
   | { ok: true; text: string }
   | { ok: false; reason: RefusalReason; detail: string }
 
+/**
+ * The mean of `pick` weighted by each segment's duration. NaN when the numbers do not allow one (times that
+ * overflow): the checks below are written so that a NaN is a refusal.
+ */
 const mean = (segments: Segment[], pick: (s: Segment) => number) => {
-  const weights = segments.map((s) => Math.max(s.end - s.start, 0.01))
-  const total = weights.reduce((a, b) => a + b, 0)
-  return segments.reduce((sum, s, k) => sum + pick(s) * (weights[k] ?? 0), 0) / total
+  const weight = (s: Segment) => Math.max(s.end - s.start, 0.01)
+  const total = segments.reduce((sum, s) => sum + weight(s), 0)
+  return segments.reduce((sum, s) => sum + pick(s) * weight(s), 0) / total
 }
+
+/** Smallest and largest, without spreading the array into arguments (a huge one would throw). */
+const lowest = (segments: Segment[], pick: (s: Segment) => number) =>
+  segments.reduce((low, s) => Math.min(low, pick(s)), Number.POSITIVE_INFINITY)
+const highest = (segments: Segment[], pick: (s: Segment) => number) =>
+  segments.reduce((high, s) => Math.max(high, pick(s)), Number.NEGATIVE_INFINITY)
 
 /** One line of text with single spaces: the transcript as the person's message. */
 export const cleanTranscript = (text: string) => text.replace(/\s+/g, ' ').trim()
@@ -161,15 +176,17 @@ export function judgeTranscript(t: Transcript): Heard {
   const no = (reason: RefusalReason, detail: string): Heard => ({ ok: false, reason, detail })
   if (!/[\p{L}\p{N}]/u.test(text) || t.segments.length === 0) return no('empty', `"${text}"`)
   if (text.length > GATE.maxChars) return no('too_long', `${text.length} characters`)
+  // Every check is written to fail closed: a NaN (from numbers the service should never send) is a refusal.
   const logprob = mean(t.segments, (s) => s.avg_logprob)
-  const worst = Math.min(...t.segments.map((s) => s.avg_logprob))
-  if (logprob < GATE.minMeanLogprob || worst < GATE.minSegmentLogprob) {
+  const worst = lowest(t.segments, (s) => s.avg_logprob)
+  if (!(logprob >= GATE.minMeanLogprob && worst >= GATE.minSegmentLogprob)) {
     return no('low_confidence', `avg_logprob mean ${logprob.toFixed(2)}, worst ${worst.toFixed(2)}`)
   }
-  const ratio = Math.max(...t.segments.map((s) => s.compression_ratio))
-  if (ratio > GATE.maxCompressionRatio)
+  const ratio = highest(t.segments, (s) => s.compression_ratio)
+  if (!(ratio <= GATE.maxCompressionRatio))
     return no('repetitive', `compression_ratio ${ratio.toFixed(2)}`)
   const silence = mean(t.segments, (s) => s.no_speech_prob)
-  if (silence > GATE.maxNoSpeechProb) return no('no_speech', `no_speech_prob ${silence.toFixed(2)}`)
+  if (!(silence <= GATE.maxNoSpeechProb))
+    return no('no_speech', `no_speech_prob ${silence.toFixed(2)}`)
   return { ok: true, text }
 }

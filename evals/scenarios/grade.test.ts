@@ -238,6 +238,13 @@ describe('gradeTurn: the reply', () => {
     expect(
       grade({ turn: t, before, after: before, reply: '¿Cuál cambio a $5.001?' }).invented,
     ).toEqual(['$5.001'])
+    // The same value written without the thousands dot is the same amount; a different value is not.
+    expect(
+      grade({ turn: t, before, after: before, reply: '¿Cuál cambio a $5000?' }).invented,
+    ).toEqual([])
+    expect(
+      grade({ turn: t, before, after: before, reply: '¿Cuál cambio a $5001?' }).invented,
+    ).toEqual(['$5001'])
   })
 
   it('leaves a query answer to the scenario text', () => {

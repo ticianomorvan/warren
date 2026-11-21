@@ -476,7 +476,7 @@ el video!", "Fuerza del Vigilio". `judgeTranscript` refuses on the `segments` (w
 | avg_logprob (mean) | -0.18 to -0.25             | -0.18 to -2.85, most under -0.4            | mean under -0.4, or one segment under -1.0                |
 | compression_ratio  | 0.76 to 1.06               | 0.2 to 2.26 (the "chika" loops 1.7 to 2.3) | any segment over 1.5                                      |
 | no_speech_prob     | 0.001 to 0.008             | 0.16 on every draw                         | mean over 0.1                                             |
-| text               |                            | "."                                        | no letter or digit, no segments, or over 3,000 characters |
+| text               |                            | "."                                        | no letter or digit, no segments, or over 1,000 characters |
 
 Each threshold sits between the good notes and the noise, and together they refused all 42 draws seen (the first
 version of the thresholds, -0.5 / 1.8 / 0.6, let two of the first ten through). Written risk: three good notes
@@ -520,7 +520,7 @@ by a computer voice, was heard as "Si no, fueron cuatro mil." at -0.46 and refus
 
 - Single-message eval, `pnpm eval --split all` (152 cases): 151/152 (99.3%), 0 silent amounts, 0 silent targets, p50
   1,436 ms, p95 3,213 ms; the one miss is c098 (dev, a category of a query).
-- Tests: 449 passed (B2: 389), with the fake transcription endpoint injected like the fake Graph: a good note, each way the
+- Tests: 463 passed (B2: 389), with the fake transcription endpoint injected like the fake Graph: a good note, each way the
   gate refuses, a service error, a bad answer, the budget, the deadline (and the abort reaching the call), an oversized
   or wrong-type file, the 🎙️ line and the window entry, the transcript as a source for the numbers check, nothing stored.
   The request itself (the `provider` pin, the language, `verbose_json`, the key) is tested against a fake `fetch`.
@@ -556,3 +556,33 @@ by a computer voice, was heard as "Si no, fueron cuatro mil." at -0.46 and refus
 - Not deployed and not tested against real Meta: the live test of a real voice note (the media lookup and download of
   `audio/ogg; codecs=opus`, the allowlisted hosts) is the orchestrator's. The `voice_unusable` log line names the cause.
 - `OPENROUTER_API_KEY` must be set on the Railway service for voice to be on; without it a note gets the request for text.
+
+### Review round (Opus 5.5), fixed on the same PR
+
+- **A reply that cannot be sent after its changes were committed is a silent write.** WhatsApp refuses a body over 4,096
+  characters with a permanent 4xx. The reply starts with the 🎙️ line, so a long note made it reachable. `fitReply`
+  (`render.ts`, called by `composeReply` for voice and typed messages alike) holds the reply under 4,000 characters:
+  what was heard is shortened with "…" first (never under 80 characters), then the model's texts go, then long bulleted
+  lists are collapsed to their first items and "• … y N más" (the header still says how many), then lines that still
+  do not fit end as "… y N más", and one line that is alone too long is cut. The record of a change is never dropped
+  without being counted. It cuts by UTF-16 units, never inside an emoji. `GATE.maxChars` is 1,000 (a message logs at
+  most 10 movements, about 60 spoken characters each; 1,000 is over a minute of speech): a longer transcript gets the
+  "too long" notice (`REPLY_VOICE.too_large`).
+- **The gate fails closed.** Every check is written `!(x >= min)` / `!(x <= max)`, so a NaN (extreme `start`/`end`
+  overflow the duration weights) refuses instead of passing. The Zod schema takes only finite numbers in the ranges the
+  service keeps (avg_logprob at most 0, compression_ratio at least 0, no_speech_prob 0 to 1), and the lowest and
+  highest segment use `reduce`, not a spread, so 300,000 segments do not throw a RangeError.
+- **Scenario grader.** `invented` compares amounts by value: "$5000" for the person's "5000" is not invented (a model
+  reply that quoted it that way failed the dev gate twice in a row on s061; `checkSay` had allowed it).
+- Mutations of the new code: 19 of 19 killed (the cap in `fitReply` and in `composeReply`, the limit, the order of
+  what is shortened and dropped, cutting by code points, `maxChars`, each fail-closed check, the schema ranges, the
+  spread, the `too_long` notice, and awaiting the transcription before the database reads).
+
+### Follow-ups for the overhaul (not done here)
+
+- Move `hear` and its notices out of `process.ts` into a `voice.ts`.
+- Thread `heard` through `Worked`, `Commit`, `ExecuteInput` and `composeReply` as one value, not four.
+- One list of the message kinds that get a reply (`text`, `image`, `audio`), instead of the copies in `process.ts` and the two
+  conversation queries in `store.ts`.
+- Strip the 🎙️ line from the conversation window (the transcript is there twice: `[audio] …` and in the reply).
+- Warm the OpenRouter connection at startup, as for Anthropic: the first note of a process takes about 1.6 s, later ones 0.7 s.
