@@ -7,7 +7,7 @@ import { type Issue, validateCommand } from './validate'
 
 export type { ModelKey, Usage } from './models'
 export { estimateCostUsd, MODELS } from './models'
-export type { Command, Movement, RecentMovement } from './schema'
+export type { Changes, Command, Movement, Period, RecentMovement } from './schema'
 export { CATEGORIES, CommandSchema } from './schema'
 export type { Issue } from './validate'
 

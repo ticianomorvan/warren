@@ -1,7 +1,8 @@
 import type Anthropic from '@anthropic-ai/sdk'
+import { execute } from './execute'
 import { log } from './log'
 import { type ModelKey, parseMessage } from './parse'
-import { REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT, renderReply } from './render'
+import { REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
 import type { Claim, Store } from './store'
 import { argentinaToday } from './time'
 import { type Graph, GraphError } from './whatsapp/graph'
@@ -196,7 +197,7 @@ export function createProcessor(o: ProcessorOptions) {
         client: o.client,
         signal,
       })
-      return { accountId, result }
+      return { accountId, result, recentMovements }
     })().then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
@@ -214,28 +215,33 @@ export function createProcessor(o: ProcessorOptions) {
       if (outcome === 'aborted') return
       if ('error' in outcome) return await fail(c, `parse failed: ${errorText(outcome.error)}`)
 
-      const { accountId, result } = outcome.value
+      const { accountId, result, recentMovements } = outcome.value
       const { command } = result
       if (result.fatal.length > 0) {
         const detail = result.fatal.map((i) => `${i.path}: ${i.message}`).join('; ')
         return await fail(c, `invalid model output: ${detail}`)
       }
-      const reply = renderReply(command, today, { helpContact: o.helpContact })
 
       // The commit point. Nothing awaits between the signal check above and this call.
-      let committed: boolean
+      let reply: string | null
       try {
-        committed = await store.commit(c, {
-          accountId,
+        reply = await store.commit(c, {
           command,
           modelMs: result.latencyMs,
-          reply,
-          movements: command.type === 'log' ? command.movements : [],
+          execute: (tx) =>
+            execute(tx, {
+              accountId,
+              inboundId: c.id,
+              command,
+              today,
+              recent: recentMovements,
+              render: { helpContact: o.helpContact },
+            }),
         })
       } catch (err) {
         return await fail(c, `commit failed: ${errorText(err)}`)
       }
-      if (!committed) {
+      if (reply === null) {
         log('claim_lost', { wamid: c.wamid, attempt: c.attempts })
         return
       }

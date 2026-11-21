@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import type { Command, Movement } from './parse'
-import { formatMoney, renderReply } from './render'
+import type { Movement, RecentMovement } from './parse'
+import {
+  formatMoney,
+  renderCorrection,
+  renderDeletion,
+  renderQuery,
+  renderQuestion,
+  renderReply,
+  renderUnchanged,
+  type SimpleCommand,
+} from './render'
 
 const TODAY = '2026-11-21'
 
@@ -15,7 +24,7 @@ const mv = (o: Partial<Movement> = {}): Movement => ({
   confidence: 'high',
   ...o,
 })
-const log = (...movements: Movement[]): Command => ({ type: 'log', movements })
+const log = (...movements: Movement[]): SimpleCommand => ({ type: 'log', movements })
 
 describe('formatMoney', () => {
   it('groups thousands with dots and shows decimals only when not zero', () => {
@@ -73,23 +82,7 @@ describe('renderReply', () => {
     )
   })
 
-  it('answers the commands that are not logging with canned text', () => {
-    const changes = {
-      direction: null,
-      amount: '3800',
-      currency: null,
-      date: null,
-      description: null,
-      category: null,
-      payment: null,
-    }
-    const notYet = 'Todavía no puedo corregir, borrar ni responder consultas. Llega pronto.'
-    const commands: Command[] = [
-      { type: 'correct', target: 'el café', target_index: null, changes, confidence: 'high' },
-      { type: 'delete', target: 'el último', target_index: null, confidence: 'high' },
-      { type: 'query', period: 'today', direction: null, category: null, payment: null },
-    ]
-    for (const c of commands) expect(renderReply(c, TODAY)).toBe(notYet)
+  it('answers off_topic with canned text', () => {
     expect(renderReply({ type: 'off_topic' }, TODAY)).toBe(
       'Solo puedo ayudarte con tus gastos e ingresos.',
     )
@@ -100,5 +93,160 @@ describe('renderReply', () => {
     expect(plain).not.toContain('persona')
     const withContact = renderReply({ type: 'help' }, TODAY, { helpContact: 'ayuda@heywarren.app' })
     expect(withContact).toBe(`${plain}\nSi necesitás hablar con una persona: ayuda@heywarren.app`)
+  })
+})
+
+const row = (o: Partial<RecentMovement> = {}): RecentMovement => ({
+  direction: 'out',
+  amount: '3500',
+  currency: 'ARS',
+  date: TODAY,
+  description: 'café',
+  category: 'restaurantes',
+  payment: null,
+  ...o,
+})
+
+describe('renderCorrection', () => {
+  it('shows the new movement and only what changed, as it was', () => {
+    expect(renderCorrection(row(), row({ amount: '3800' }), TODAY)).toBe(
+      '✓ Corregido: Café $3.800 (antes $3.500)',
+    )
+    expect(
+      renderCorrection(row({ payment: 'efectivo' }), row({ payment: 'crédito amex' }), TODAY),
+    ).toBe('✓ Corregido: Café $3.500 (crédito amex) (antes efectivo)')
+    expect(renderCorrection(row(), row({ payment: 'débito' }), TODAY)).toBe(
+      '✓ Corregido: Café $3.500 (débito) (antes sin medio de pago)',
+    )
+  })
+
+  it('spells out a date or category the movement line would not show', () => {
+    expect(renderCorrection(row({ date: '2026-11-20' }), row({ date: TODAY }), TODAY)).toBe(
+      '✓ Corregido: Café $3.500 · hoy (antes ayer)',
+    )
+    expect(renderCorrection(row(), row({ date: '2026-11-16' }), TODAY)).toBe(
+      '✓ Corregido: Café $3.500 · 16/11 (antes hoy)',
+    )
+    expect(renderCorrection(row(), row({ category: 'entretenimiento' }), TODAY)).toBe(
+      '✓ Corregido: Café $3.500 · Entretenimiento (antes Restaurantes)',
+    )
+  })
+
+  it('lists every changed field, and a changed currency or direction as money', () => {
+    expect(
+      renderCorrection(
+        row(),
+        row({ amount: '25.5', currency: 'USD', description: 'brunch' }),
+        TODAY,
+      ),
+    ).toBe('✓ Corregido: Brunch US$ 25,50 (antes $3.500, café)')
+    expect(renderCorrection(row(), row({ direction: 'in' }), TODAY)).toBe(
+      '✓ Corregido: Café +$3.500 (antes $3.500)',
+    )
+    expect(
+      renderCorrection(row({ amount: '1500000.50' }), row({ amount: '1500000.5' }), TODAY),
+    ).toBe(null)
+  })
+
+  it('has nothing to show when nothing changed', () => {
+    expect(renderCorrection(row(), row({ amount: '3500.00' }), TODAY)).toBeNull()
+    expect(renderUnchanged(row({ payment: 'visa' }), TODAY)).toBe(
+      'Ya figura así: Café $3.500 (visa)',
+    )
+  })
+})
+
+describe('renderDeletion', () => {
+  it('names what was deleted', () => {
+    expect(renderDeletion(row(), TODAY)).toBe('✓ Borré: Café $3.500')
+    expect(renderDeletion(row({ date: '2026-11-20', payment: 'visa' }), TODAY)).toBe(
+      '✓ Borré: Café $3.500 (visa) · ayer',
+    )
+  })
+})
+
+describe('renderQuestion', () => {
+  it('lists the candidates with their numbers in the list the parser sees', () => {
+    const asked = renderQuestion(
+      [
+        { number: 1, movement: { id: 1, ...row() } },
+        {
+          number: 3,
+          movement: { id: 3, ...row({ description: 'súper', amount: '12000', payment: 'Visa' }) },
+        },
+        { number: 4, movement: { id: 4, ...row({ date: '2026-11-18' }) } },
+      ],
+      TODAY,
+    )
+    expect(asked).toBe('¿Cuál? 1. Café $3.500 · 3. Súper $12.000 (Visa) · 4. Café $3.500 del 18/11')
+  })
+
+  it('says there is nothing to pick when the list is empty', () => {
+    expect(renderQuestion([], TODAY)).toBe('Todavía no tenés movimientos anotados.')
+  })
+})
+
+describe('renderQuery', () => {
+  const total = (o: object) => ({
+    direction: 'out' as const,
+    currency: 'ARS' as const,
+    total: '123456',
+    count: 12,
+    ...o,
+  })
+  const scope = {
+    period: 'this_month' as const,
+    direction: 'out' as const,
+    category: null,
+    payment: null,
+  }
+
+  it('answers a filtered total', () => {
+    expect(renderQuery({ ...scope, category: 'supermercado' }, [total({})])).toBe(
+      'Este mes gastaste $123.456 en Súper (12 movimientos).',
+    )
+    expect(renderQuery({ ...scope, payment: 'visa' }, [total({ count: 1 })])).toBe(
+      'Este mes gastaste $123.456 con visa (1 movimiento).',
+    )
+  })
+
+  it('puts USD on its own line and never adds it to pesos', () => {
+    expect(
+      renderQuery(scope, [
+        total({ total: '1234.5' }),
+        total({ currency: 'USD', total: '50', count: 2 }),
+      ]),
+    ).toBe('Este mes gastaste $1.234,50 (12 movimientos).\nY US$ 50 (2 movimientos).')
+    expect(renderQuery(scope, [total({ currency: 'USD', total: '50', count: 1 })])).toBe(
+      'Este mes gastaste US$ 50 (1 movimiento).',
+    )
+  })
+
+  it('words income, and both directions when none is asked', () => {
+    expect(
+      renderQuery({ ...scope, period: 'this_year', direction: 'in' }, [
+        total({ direction: 'in', total: '1850000', count: 1 }),
+      ]),
+    ).toBe('Este año cobraste $1.850.000 (1 movimiento).')
+    expect(
+      renderQuery({ ...scope, period: 'last_week', direction: null }, [
+        total({ total: '5000', count: 2 }),
+        total({ direction: 'in', total: '9000', count: 1 }),
+      ]),
+    ).toBe(
+      'La semana pasada gastaste $5.000 (2 movimientos).\nLa semana pasada cobraste $9.000 (1 movimiento).',
+    )
+  })
+
+  it('says so when nothing matches', () => {
+    expect(renderQuery({ ...scope, category: 'supermercado' }, [])).toBe(
+      'No encontré gastos este mes en Súper.',
+    )
+    expect(renderQuery({ ...scope, period: 'today', direction: 'in' }, [])).toBe(
+      'No encontré ingresos hoy.',
+    )
+    expect(
+      renderQuery({ ...scope, period: 'last_month', direction: null, payment: 'amex' }, []),
+    ).toBe('No encontré movimientos el mes pasado con amex.')
   })
 })

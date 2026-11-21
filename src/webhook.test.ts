@@ -1,202 +1,35 @@
-import { createHmac } from 'node:crypto'
 import { request } from 'node:http'
-import type { AddressInfo } from 'node:net'
-import type Anthropic from '@anthropic-ai/sdk'
-import { PGlite } from '@electric-sql/pglite'
-import { PGLiteSocketServer } from '@electric-sql/pglite-socket'
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { createApp } from './app'
-import { connect, migrate, type Sql } from './db'
-import type { Command, Movement } from './parse'
-import { createProcessor } from './process'
+import { describe, expect, it } from 'vitest'
 import { REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
-import { createStore, type Store } from './store'
-import { argentinaToday } from './time'
-import { type Graph, GraphError } from './whatsapp/graph'
+import {
+  bodies,
+  cafe,
+  count,
+  doneCount,
+  fakeGraph,
+  fakeModel,
+  gate,
+  messageBody,
+  movement,
+  movements,
+  post,
+  row,
+  SECRET,
+  seed,
+  settle,
+  setup,
+  sign,
+  sql,
+  statusBody,
+  TODAY,
+  until,
+  useDatabase,
+  VERIFY,
+} from './test-harness'
+import { GraphError } from './whatsapp/graph'
 import { validSignature } from './whatsapp/signature'
 
-const SECRET = 'app-secret'
-const VERIFY = 'verify-token-123'
-
-let pg: PGlite
-let socket: PGLiteSocketServer
-let sql: Sql
-
-beforeAll(async () => {
-  pg = await PGlite.create()
-  socket = new PGLiteSocketServer({ db: pg, port: 0, host: '127.0.0.1', maxConnections: 10 })
-  await socket.start()
-  const port = (socket as unknown as { server: { address(): AddressInfo } }).server.address().port
-  sql = connect(`postgres://postgres:postgres@127.0.0.1:${port}/postgres`, { max: 1 })
-  await migrate(sql)
-  await migrate(sql) // idempotent
-})
-
-afterAll(async () => {
-  await sql.end({ timeout: 1 })
-  await socket.stop()
-  await pg.close()
-})
-
-beforeEach(async () => {
-  await sql`TRUNCATE movement, reply, inbound_message, account RESTART IDENTITY CASCADE`
-})
-
-const sign = (raw: string, secret: string) =>
-  `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`
-
-type SendFn = (n: number) => Promise<string>
-
-/** A Graph double that records calls. `send` and `typing` can be replaced to fail or to hang. */
-function fakeGraph(o: { send?: SendFn; typing?: () => Promise<void> } = {}) {
-  const calls = {
-    typing: [] as string[],
-    sent: [] as { to: string; body: string }[],
-    attempts: 0,
-  }
-  const graph: Graph = {
-    async markReadAndType(wamid) {
-      calls.typing.push(wamid)
-      await o.typing?.()
-    },
-    async sendText(to, body) {
-      calls.attempts++
-      const id = o.send ? await o.send(calls.attempts) : `wamid.OUT${calls.attempts}`
-      calls.sent.push({ to, body })
-      return id
-    },
-  }
-  return { graph, calls }
-}
-
-// The day comes from the message's own time (meta_ts), as in the processor, so midnight cannot flake.
-const TODAY = argentinaToday(new Date(1760000000 * 1000))
-const cafeMovement: Movement = {
-  direction: 'out',
-  amount: '3500',
-  currency: 'ARS',
-  date: TODAY,
-  description: 'café',
-  category: 'restaurantes',
-  payment: 'visa',
-  confidence: 'high',
-}
-const cafe: Command = { type: 'log', movements: [cafeMovement] }
-
-type ModelFn = (signal: AbortSignal | undefined) => Promise<Command> | Command
-
-/** An Anthropic double: `messages.parse` returns what `model` gives, or throws what it throws. */
-function fakeModel(model: ModelFn = () => cafe) {
-  const calls = { n: 0 }
-  const client = {
-    messages: {
-      parse: async (_params: unknown, options?: { signal?: AbortSignal }) => {
-        calls.n++
-        const parsed_output = await model(options?.signal)
-        return {
-          parsed_output,
-          stop_reason: 'end_turn',
-          usage: { input_tokens: 10, output_tokens: 10 },
-        }
-      },
-    },
-  } as unknown as Anthropic
-  return { client, calls }
-}
-
-async function setup(
-  opts: {
-    allowed?: string[]
-    fake?: ReturnType<typeof fakeGraph>
-    model?: ReturnType<typeof fakeModel>
-    staleMs?: number
-    interimMs?: number
-    deadlineMs?: number
-    helpContact?: string
-    /** The store the processor sees; the app keeps the real one. */
-    processorStore?: (store: Store) => Store
-  } = {},
-) {
-  const fake = opts.fake ?? fakeGraph()
-  const model = opts.model ?? fakeModel()
-  const store = createStore(sql, { staleMs: opts.staleMs ?? 0, maxAttempts: 3 })
-  const makeProcessor = (s: Store, client: Anthropic = model.client) =>
-    createProcessor({
-      store: s,
-      graph: fake.graph,
-      allowed: opts.allowed ?? ['*'],
-      maxAttempts: 3,
-      client,
-      helpContact: opts.helpContact,
-      interimMs: opts.interimMs ?? 60_000,
-      deadlineMs: opts.deadlineMs ?? 120_000,
-    })
-  const processor = makeProcessor(opts.processorStore?.(store) ?? store)
-  const server = createApp({
-    store,
-    processor,
-    config: { WHATSAPP_VERIFY_TOKEN: VERIFY, META_APP_SECRET: SECRET },
-  })
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
-  const port = (server.address() as AddressInfo).port
-  return {
-    base: `http://127.0.0.1:${port}`,
-    port,
-    store,
-    processor,
-    makeProcessor,
-    calls: fake.calls,
-    model: model.calls,
-    close: () => server.close(),
-  }
-}
-
-const messageBody = (wamid: string, from = '5491100000000', extra: object = {}) =>
-  JSON.stringify({
-    object: 'whatsapp_business_account',
-    entry: [
-      {
-        changes: [
-          {
-            value: {
-              messages: [
-                {
-                  id: wamid,
-                  from,
-                  timestamp: '1760000000',
-                  type: 'text',
-                  text: { body: 'café 3500' },
-                  ...extra,
-                },
-              ],
-            },
-          },
-        ],
-      },
-    ],
-  })
-
-const statusBody = (id: string, status: string, ts: number) =>
-  JSON.stringify({
-    entry: [{ changes: [{ value: { statuses: [{ id, status, timestamp: String(ts) }] } }] }],
-  })
-
-const post = (base: string, body: string, signature = sign(body, SECRET)) =>
-  fetch(`${base}/webhook`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-hub-signature-256': signature },
-    body,
-  })
-
-const settle = () => new Promise((r) => setTimeout(r, 150))
-const count = async (table: 'inbound_message' | 'reply' | 'account') =>
-  Number((await sql.unsafe(`SELECT count(*) AS n FROM ${table}`))[0]?.n)
-const seed = (wamid: string, cols = "status = 'pending'") =>
-  sql.unsafe(`INSERT INTO inbound_message (wamid, wa_id, kind, body, payload)
-    VALUES ('${wamid}', '5491100000000', 'text', 'x', '{}'::jsonb);
-    UPDATE inbound_message SET ${cols} WHERE wamid = '${wamid}'`)
-const row = async (wamid: string) =>
-  (await sql`SELECT * FROM inbound_message WHERE wamid = ${wamid}`)[0]
+useDatabase()
 
 describe('webhook', () => {
   it('rejects a bad signature with 401 and stores nothing', async () => {
@@ -576,28 +409,6 @@ describe('status webhooks and verification', () => {
   })
 })
 
-const until = async (cond: () => boolean | Promise<boolean>, ms = 3000) => {
-  const end = Date.now() + ms
-  while (!(await cond())) {
-    if (Date.now() > end) throw new Error('timed out waiting for the condition')
-    await new Promise((r) => setTimeout(r, 10))
-  }
-}
-const doneCount = async (n: number) =>
-  Number((await sql`SELECT count(*) AS n FROM inbound_message WHERE status = 'done'`)[0]?.n) === n
-const bodies = (calls: { sent: { body: string }[] }) => calls.sent.map((s) => s.body)
-const movements = () =>
-  sql`SELECT direction, amount::text AS amount, currency, occurred_on::text AS on, description,
-    category, payment, confidence, position FROM movement ORDER BY inbound_message_id, position`
-const gate = () => {
-  let open = () => {}
-  const promise = new Promise<void>((r) => {
-    open = r
-  })
-  return { promise, open }
-}
-const movement = (o: Partial<Movement> = {}): Movement => ({ ...cafeMovement, ...o })
-
 describe('logging', () => {
   it('stores the movement, replies from the template ', async () => {
     const app = await setup()
@@ -830,7 +641,7 @@ describe('logging', () => {
         commit: async () => {
           // Hold the commit until the interim note is out, then lose the claim.
           await until(() => calls?.sent.length === 1)
-          return false
+          return null
         },
       }),
       interimMs: 10,
@@ -926,34 +737,6 @@ describe('logging', () => {
     await until(async () => (await row('wamid.NR'))?.status === 'unknown')
     await settle()
     expect(await movements()).toHaveLength(1) // stored, and the person is not told to resend
-    app.close()
-  })
-
-  it('answers correct, delete and query with the "not yet" text', async () => {
-    const changes = {
-      direction: null,
-      amount: '3800',
-      currency: null,
-      date: null,
-      description: null,
-      category: null,
-      payment: null,
-    }
-    const commands: Command[] = [
-      { type: 'correct', target: 'el café', target_index: null, changes, confidence: 'high' },
-      { type: 'delete', target: 'el último', target_index: null, confidence: 'high' },
-      { type: 'delete', target: '', target_index: null, confidence: 'low' }, // doubtful, not unstorable
-      { type: 'query', period: 'today', direction: null, category: null, payment: null },
-    ]
-    let i = 0
-    const app = await setup({ model: fakeModel(() => commands[i++] as Command) })
-    for (const n of [1, 2, 3, 4]) await post(app.base, messageBody(`wamid.NY${n}`))
-    await until(() => app.calls.sent.length === 4)
-    expect(new Set(bodies(app.calls))).toEqual(
-      new Set(['Todavía no puedo corregir, borrar ni responder consultas. Llega pronto.']),
-    )
-    expect(await movements()).toHaveLength(0)
-    await app.processor.drain(1_000)
     app.close()
   })
 

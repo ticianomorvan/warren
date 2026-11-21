@@ -155,14 +155,16 @@ type Targeting = Extract<Command, { type: 'correct' | 'delete' }>
 /**
  * Which movement a correction or delete points at is a hard field: a wrong one hits the wrong row.
  * The number in the list decides (the text is only the fallback), so it is checked first. An
- * ambiguous case also passes by coming back low-confidence, which makes code ask.
+ * text is the answer only when no number is expected. An ambiguous case also passes by coming back low-confidence, which makes code ask.
  */
 function hardTarget(testCase: EvalCase, actual: Targeting, expected: Targeting, reasons: string[]) {
   if (testCase.ambiguous && actual.confidence === 'low') return
   if (actual.target_index !== expected.target_index) {
     reasons.push(`target_index ${actual.target_index}, expected ${expected.target_index}`)
   }
-  if (!targetOk(actual.target, expected.target)) {
+  // With the right number the text only has to agree with the row (code checks that); it is the
+  // answer itself only when there is no number.
+  if (expected.target_index === null && !targetOk(actual.target, expected.target)) {
     reasons.push(`target "${actual.target}", expected "${expected.target}"`)
   }
 }

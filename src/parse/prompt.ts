@@ -78,7 +78,7 @@ Today's date and a calendar of the last 14 days are given after the message pref
 The numbered list "Últimos movimientos" is given after the message prefix, newest first: number 1 is the most recent. Point at the movement with two fields:
 - target_index: the number of that movement in the list.
 - target: the word "last" when they mean the most recent movement or give no hint, otherwise the short description of the chosen movement exactly as the list shows it (for example "super"). Always describe the movement you chose; never copy a word that does not name it.
-Use target_index null (and put what they said in target) when you cannot tell which one they mean: the list is empty, nothing in it fits what they said, or several movements fit equally ("el cafe" with two cafes). Code then asks the person. If the message names a number from the list ("borra el 2"), use that number. Never guess: a wrong movement is worse than asking, so use confidence "low" when unsure.
+Use target_index null (and put what they said in target) when you cannot tell which one they mean: the list is empty, nothing in it fits what they said, or the words they used fit more than one movement of the list ("el cafe" when the list has two cafes) and nothing else in the message tells them apart (a number, an amount, a date, "el ultimo"). In that case never pick the newest or the first: use null with confidence "low". Code then asks the person. If the message names a number from the list ("borra el 2"), use that number. Never guess: a wrong movement is worse than asking, so use confidence "low" when unsure.
 
 # Queries
 
