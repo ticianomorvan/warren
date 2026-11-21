@@ -31,3 +31,6 @@ number 1, code asks).
 Slice 4, after live use (2026-11-21): claude-haiku-5-5, split all, 146 cases: **146/146 fully correct, 0 silent wrong
 amounts, 0 silent wrong targets**, p50 / p95 1,159 / 1,706 ms, US$0.0279. Ambiguous targets now expect the newest
 match; 7 cases carry a previous exchange.
+
+Slice 4 review fixes (2026-11-21): claude-haiku-5-5, split all, 154 cases: **151/154 fully correct, 0 silent wrong
+amounts, 0 silent wrong targets**, p50 / p95 1,216 / 1,807 ms, US$0.0311.

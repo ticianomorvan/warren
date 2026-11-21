@@ -67,7 +67,7 @@ const LAST = /^(last|(el |la |lo )?ultim[oa])$/
 
 /** The amounts a person wrote in the message: "3500", "3.500", "3,5", "15 mil", "20k". */
 function amountsIn(text: string): string[] {
-  const norm = normalizeText(text)
+  const norm = normalizeText(text).replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, ' ')
   const thousands = [...norm.matchAll(/\b(\d+)\s*(?:mil|k|lucas?)\b/g)].map((m) => `${m[1]}000`)
   const plain = (norm.match(/\d[\d.,]*/g) ?? []).map((token) =>
     canonicalAmount(
@@ -79,17 +79,35 @@ function amountsIn(text: string): string[] {
   return [...plain, ...thousands]
 }
 
-/** The details of the message that this movement fits: its payment, its old amount, its day. */
-function details(text: string, today: string, m: MovementRow): Set<string> {
+/** What the person's new values are: the details they say are not about the old row. */
+type Changing = Partial<
+  Pick<Extract<Command, { type: 'correct' }>['changes'], 'amount' | 'date' | 'payment'>
+>
+
+/**
+ * The details of the message that this movement fits: its payment, its old amount, its day. A
+ * value the person is setting ("fue 3800", "fue ayer", "con la visa") is the new value, not a
+ * detail of the old row, so it is left out.
+ */
+function details(text: string, today: string, m: MovementRow, setting: Changing): Set<string> {
   const norm = normalizeText(text)
+  const yesterday = addDays(today, -1)
   const fits = new Set<string>()
+  const newPayment = new Set(stems(setting.payment ?? ''))
   const said = new Set(stems(text))
-  for (const stem of stems(m.payment ?? '')) if (said.has(stem)) fits.add(`payment:${stem}`)
-  if (amountsIn(text).includes(canonicalAmount(m.amount))) fits.add('amount')
-  if (/\bhoy\b/.test(norm) && m.date === today) fits.add('day:today')
-  if (/\bayer\b/.test(norm) && m.date === addDays(today, -1)) fits.add('day:yesterday')
+  for (const stem of stems(m.payment ?? '')) {
+    if (said.has(stem) && !newPayment.has(stem)) fits.add(`payment:${stem}`)
+  }
+  const newAmount = setting.amount ? canonicalAmount(setting.amount) : null
+  const old = canonicalAmount(m.amount)
+  if (old !== newAmount && amountsIn(text).includes(old)) fits.add('amount')
+  if (/\bhoy\b/.test(norm) && m.date === today && setting.date !== today) fits.add('day:today')
+  if (/\bayer\b/.test(norm) && m.date === yesterday && setting.date !== yesterday) {
+    fits.add('day:yesterday')
+  }
   for (const [, d = '', mo = ''] of norm.matchAll(/\b(\d{1,2})\/(\d{1,2})\b/g)) {
-    if (m.date.endsWith(`-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`)) fits.add('day:date')
+    const suffix = `-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+    if (m.date.endsWith(suffix) && !setting.date?.endsWith(suffix)) fits.add('day:date')
   }
   return fits
 }
@@ -107,27 +125,37 @@ const NUMBER_WORDS: Record<string, number> = {
   diez: 10,
 }
 
+const CONNECTORS =
+  '(?:fue|era|es|son|eran|por|a|con|en|borr\\w*|elimin\\w*|sac\\w*|quit\\w*|cancel\\w*|cambi\\w*|corrig\\w*|modific\\w*|pon\\w*|pas\\w*)'
+
 /**
- * The positions the person's own message names: "el 2", "la tres", "el último", a bare "2". Not
- * "el 15 de octubre", "el 3 mil" or "el 20 lucas" (dates and amounts). "primero" and "anterior"
- * name a position only the model can place, so they are reported as 0 ("use the model's number").
+ * The positions the person's own message names, from 1 to `max`: a bare "2", or "el 2" / "la tres" /
+ * "numero 4" followed by the end, a punctuation mark or a verb or connector ("el 2 fue 4500",
+ * "borrá el 3", "el 2, bórralo"). Never an article before an amount or a date ("el 2.500", "el 1
+ * luca", "el 3/11", "el 15 de octubre"), and never "no el 1" (a negation is not a second action).
+ * "primero" and "anterior" name a position only the model can place: reported as 0, "use the
+ * model's number". "Último" is handled by `saysLast`, since it can qualify a description.
  */
-export function positionsIn(text: string): number[] {
+export function positionsIn(text: string, max = 99): number[] {
   const norm = normalizeText(text)
   const found: number[] = []
-  const numbered =
-    /\b(?:el|la|lo|del|numero|nro|n°|#)\s*(\d{1,2}|[a-z]+)\b(?!\s*(?:de|mil|lucas|k)\b)/g
-  for (const m of norm.matchAll(numbered)) {
+  const number = new RegExp(
+    `(?<!\\bno\\s)(?:\\b(?:el|la|lo|del|numero|nro)\\s+|#\\s*)(\\d{1,2}|[a-z]+)(?=\\s*$|\\s*(?:,(?!\\d)|[;:!?])|\\s*\\.(?!\\d)|\\s+${CONNECTORS}\\b)`,
+    'g',
+  )
+  for (const m of norm.matchAll(number)) {
     const word = m[1] ?? ''
     const n = /^\d+$/.test(word) ? Number(word) : NUMBER_WORDS[word]
     if (n !== undefined) found.push(n)
   }
   const bare = norm.match(/^\s*#?(\d{1,2})\s*[.!]?\s*$/)
   if (bare) found.push(Number(bare[1]))
-  if (/\bultim[oa]/.test(norm)) found.push(1)
   if (/\b(primer[oa]?|anterior)\b/.test(norm)) found.push(0)
-  return [...new Set(found)]
+  return [...new Set(found)].filter((n) => n <= max)
 }
+
+/** The message says "último/a" ("el último", "borrá lo último", "la última nafta"). */
+export const saysLast = (text: string) => /\bultim[oa]\b/.test(normalizeText(text))
 
 /** How many candidates a question lists when nothing is known. */
 const ASK_FALLBACK = 3
@@ -161,7 +189,7 @@ export function resolveTarget(
       ? index
       : undefined
 
-  const positions = positionsIn(ctx.text).filter((n) => n <= recent.length)
+  const positions = positionsIn(ctx.text, recent.length)
   const said = positions.filter((n) => n >= 1)
   if (said.length > 0) {
     const n = modelPick !== undefined && said.includes(modelPick) ? modelPick : (said[0] ?? 1)
@@ -171,15 +199,21 @@ export function resolveTarget(
     return { kind: 'found', movement: (numbered[modelPick - 1] ?? newest).movement }
   }
 
+  const named = numbered.filter((n) => namesMovement(command.target, n.movement))
+  // "El último" alone is number 1. With a description ("el último café", "la última nafta") it is
+  // the newest row that description names, which the default below already is.
+  if (saysLast(ctx.text) && named.length === 0 && command.confidence !== 'low') {
+    return { kind: 'found', movement: newest.movement }
+  }
   if (LAST.test(normalizeText(command.target))) {
     if (command.confidence === 'low') return ask()
     return index === null || index === 1 ? { kind: 'found', movement: newest.movement } : ask()
   }
 
-  const named = numbered.filter((n) => namesMovement(command.target, n.movement))
   const [first] = named
   if (!first) return ask()
-  const narrowed = named.filter((n) => details(ctx.text, ctx.today, n.movement).size > 0)
+  const setting = command.type === 'correct' ? command.changes : {}
+  const narrowed = named.filter((n) => details(ctx.text, ctx.today, n.movement, setting).size > 0)
   const [winner = first] = narrowed.length > 0 ? narrowed : named
   return { kind: 'found', movement: winner.movement }
 }

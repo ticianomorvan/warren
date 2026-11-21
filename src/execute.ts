@@ -61,7 +61,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<string> {
     case 'correct':
     case 'delete': {
       // Two positions in one message ("el 2 bórralo, cambiame el primero") are two actions.
-      if (positionsIn(i.text).length >= 2) return REPLY_ONE_THING
+      if (positionsIn(i.text, i.recent.length).length >= 2) return REPLY_ONE_THING
       if (command.type === 'correct' && Object.values(command.changes).every((v) => v === null)) {
         return REPLY_NO_CHANGES
       }

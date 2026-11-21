@@ -129,11 +129,12 @@ model at the end. CI never calls the Anthropic API.
   like the one in flight. The parser sees the account's last 10 live movements (`RECENT_LIMIT`, the most one
   message can log) as a numbered list and returns `target_index` plus `target`. Code (`resolveTarget`) reads
   the person's own message too, since `target` only echoes the row the model chose. A position the person
-  wrote ("el 2", a bare "2", "el último") wins over the model's words and number; two positions in one
-  message are two actions and get "una cosa por mensaje". Otherwise the rows whose description the words name
-  (4-letter stems, or a whole category name, never a stem of a category or payment) are the candidates, the
-  message's details (payment, old amount, hoy/ayer, dd/mm) narrow them, and the newest left wins; the reply
-  shows the old values and, if not from today, the date. Nothing named asks `¿Cuál? 1. … · 2. …` plus how to
+  wrote ("el 2 fue…", "borrá el 3", a bare "2") wins over the model's words and number; dates, amounts and units
+  ("el 3/11", "el 2.500", "el 1 luca") are never positions; "el último X" is the newest X, "el último" alone is
+  number 1; two positions in one message get "una cosa por mensaje". Otherwise the rows whose description the
+  words name (4-letter stems, or a whole category name, never a stem of a category or payment) are the
+  candidates, the message's details (payment, old amount, hoy/ayer, dd/mm, but not the value being set) narrow
+  them, and the newest left wins; the reply shows the old values and, if not from today, the date. Nothing named asks `¿Cuál? 1. … · 2. …` plus how to
   answer and changes nothing. The parser also gets the sender's previous exchange (last message and its
   committed reply, at most 10 minutes old) so a bare "2" after a question works. Inside the transaction the live
   list is read again: if it differs from the one the model saw, the same question is asked. The target row is

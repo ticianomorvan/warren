@@ -78,11 +78,11 @@ Today's date and a calendar of the last 14 days are given after the message pref
 The numbered list "Últimos movimientos" is given after the message prefix, newest first: number 1 is the most recent. Point at the movement with two fields:
 - target_index: the number of that movement in the list.
 - target: the word "last" when they mean the most recent movement or give no hint, otherwise the short description of the chosen movement exactly as the list shows it (for example "super"). Always describe the movement you chose; never copy a word that does not name it.
-When the words they used fit more than one movement of the list ("el cafe" with two cafes), choose the most recent of them (the lowest number): a correction almost always means the one just mentioned. If they give a number ("borra el 2", "el 3 fue 4500"), use that number even if its description is not the word they used. If the message gives a detail (the payment, the old amount, "ayer"), choose the movement that detail fits. Use target_index null (and put what they said in target) only when nothing in the list fits what they said or the list is empty, with confidence "low". Code then asks the person.
+When the words they used fit more than one movement of the list ("el cafe" with two cafes), choose the most recent of them (the lowest number): a correction almost always means the one just mentioned. "El ultimo X" / "la ultima X" is the most recent X in the list (the lowest number among the movements called X), not number 1 unless X is number 1. If they give a number ("borra el 2", "el 3 fue 4500"), use that number even if its description is not the word they used. If the message gives a detail (the payment, the old amount, "ayer"), choose the movement that detail fits. Use target_index null (and put what they said in target) only when nothing in the list fits what they said or the list is empty, with confidence "low". Code then asks the person.
 
 # Short answers (previous exchange)
 
-After the message prefix you may be given "Intercambio anterior": the person's previous message and the reply they got. When that reply is a question starting with "¿Cuál?" and the new message is only a short answer ("2", "el 2", "la 3", "dale", "sí", "el primero"), it answers that question: return the same command the person asked in the previous message (the same changes, or the same delete), aimed at the number they chose; "sí" or "dale" chooses the first or only option listed. Never read a short answer as an amount. Use the previous exchange for nothing else: a message that records an expense or asks something new is parsed on its own, and never takes anything from the previous exchange.
+After the message prefix you may be given "Intercambio anterior": the person's previous message and the reply they got. When that reply is a question starting with "¿Cuál?" and the new message is only a short answer ("2", "el 2", "la 3", "dale", "sí", "el primero"), it answers that question: return the same command the person asked in the previous message (the same changes, or the same delete), aimed at the number they chose; "sí" or "dale" is an answer only when exactly one option was listed: then it chooses that one. When the question listed several options and the person only says "sí" or "dale", they did not choose: return the same command with target_index null and confidence "low", and code asks for the number. Never read a short answer as an amount. A bare number or "el N" when the previous reply was not a "¿Cuál?" question (or there is no previous exchange) answers nothing: return help. Use the previous exchange for nothing else: a message that records an expense or asks something new is parsed on its own, and never takes anything from the previous exchange.
 
 # Queries
 
@@ -175,22 +175,62 @@ Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 
 Message: elimina el 2
 {"type":"delete","target":"súper","target_index":2,"confidence":"high"}
 
-Previous: (persona) cambiame lo del almuerzo a 5000 / (Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400 · 3. Farmacia $6.200
+Intercambio anterior, de hace pocos minutos:
+(persona) cambiame lo del almuerzo a 5000
+(Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400 · 3. Farmacia $6.200
 Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa) / 3. out 6200 ARS <2 days ago> farmacia [salud] (sin medio)
 Message: la 3
 {"type":"correct","target":"farmacia","target_index":3,"changes":{"direction":null,"amount":"5000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
-Previous: (persona) borrá lo del taxi / (Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400
+Intercambio anterior, de hace pocos minutos:
+(persona) borrá lo del taxi
+(Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400
 Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa)
 Message: dale el 2
 {"type":"delete","target":"súper","target_index":2,"confidence":"high"}
 
-Previous: (persona) borra lo de la nafta / (Warren) ¿Cuál? 1. Café $2.900
+Recent: 1. out 15400 ARS <today> súper [supermercado] (crédito visa) / 2. out 20000 ARS <yesterday> nafta [combustible] (efectivo) / 3. out 18000 ARS <2 days ago> nafta [combustible] (efectivo)
+Message: la ultima nafta eran 21000
+{"type":"correct","target":"nafta","target_index":2,"changes":{"direction":null,"amount":"21000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
+
+Intercambio anterior, de hace pocos minutos:
+(persona) cambiame lo del taxi a 800
+(Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa)
+Message: la primera
+{"type":"correct","target":"café","target_index":1,"changes":{"direction":null,"amount":"800","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
+
+Intercambio anterior, de hace pocos minutos:
+(persona) sacame lo del almuerzo
+(Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400 · 3. Farmacia $6.200
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa) / 3. out 6200 ARS <2 days ago> farmacia [salud] (sin medio)
+Message: bueno, sí
+{"type":"delete","target":"almuerzo","target_index":null,"confidence":"low"}
+
+Intercambio anterior, de hace pocos minutos:
+(persona) café 2900
+(Warren) ✓ Café $2.900
 Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio)
-Message: dale
+Message: 3
+{"type":"help"}
+
+Intercambio anterior, de hace pocos minutos:
+(persona) el cafe fueron 3100
+(Warren) ✓ Corregido: Café $3.100 (antes $2.900)
+Recent: 1. out 3100 ARS <today> café [restaurantes] (sin medio)
+Message: cuanto gaste hoy?
+{"type":"query","period":"today","direction":"out","category":null,"payment":null}
+
+Intercambio anterior, de hace pocos minutos:
+(persona) borra lo de la nafta
+(Warren) ¿Cuál? 1. Café $2.900
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio)
+Message: dale, ese
 {"type":"delete","target":"café","target_index":1,"confidence":"high"}
 
-Previous: (persona) cuanto gaste hoy / (Warren) Hoy gastaste $2.900 (1 movimiento).
+Intercambio anterior, de hace pocos minutos:
+(persona) cuanto gaste hoy
+(Warren) Hoy gastaste $2.900 (1 movimiento).
 Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio)
 Message: remis 6000
 {"type":"log","movements":[{"direction":"out","amount":"6000","currency":"ARS","date":"<today>","description":"remis","category":"transporte","payment":null,"confidence":"high"}]}

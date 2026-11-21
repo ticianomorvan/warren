@@ -189,6 +189,23 @@ describe('correct', () => {
     app.close()
   })
 
+  it('one action with a date or a negation in it is still one action', async () => {
+    const app = await setup({
+      model: script(
+        logOf(movement({ amount: '2800' }), movement({ description: 'súper', amount: '9000' })),
+        correct({ target: 'café', index: 2, changes: { date: '2025-10-03' } }),
+        correct({ target: 'café', index: 2, changes: { date: '2025-10-08' } }),
+      ),
+    })
+    await say(app)
+    expect(await say(app, { text: 'el 2 fue del 03/10' })).toBe(
+      '✓ Corregido: Café $2.800 · 03/10 (antes hoy)',
+    )
+    // Number 2 is the súper now? No: the corrected café is the newest, so the list is [café, súper].
+    expect(await say(app, { text: 'el 2 fue ayer, no el 1' })).toMatch(/^✓ Corregido: Súper/)
+    app.close()
+  })
+
   it('a short answer after a question is read with the previous exchange', async () => {
     await seed([
       { on: TODAY, amount: '2300', description: 'kiosco' },

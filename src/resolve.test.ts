@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { MovementRow } from './ledger'
 import type { Command } from './parse'
-import { positionsIn, resolveTarget } from './resolve'
+import { positionsIn, resolveTarget, saysLast } from './resolve'
 
 const TODAY = '2026-11-20'
 const row = (id: number, description: string, o: Partial<MovementRow> = {}): MovementRow => ({
@@ -105,7 +105,6 @@ describe('resolveTarget: a position in the message wins', () => {
   it('understands bare numbers, number words and "último"', () => {
     expect(found(del({ target: 'café', target_index: null }), '4')).toBe(7)
     expect(found(del({ target: 'café', target_index: 1 }), 'el cuatro')).toBe(7)
-    expect(found(del({ target: 'nafta', target_index: 5 }), 'el último café fue 4100')).toBe(10)
   })
 
   it('"primero" and "anterior" take the model\'s number', () => {
@@ -116,11 +115,151 @@ describe('resolveTarget: a position in the message wins', () => {
   it('lists the positions a message names', () => {
     expect(positionsIn('el 3 fue 4500')).toEqual([3])
     expect(positionsIn('2')).toEqual([2])
+    expect(positionsIn('borrá el 3')).toEqual([3])
+    expect(positionsIn('el 2, bórralo')).toEqual([2])
+    expect(positionsIn('la 3 bórrala')).toEqual([3])
+    expect(positionsIn('cambiá el 2 por 3000')).toEqual([2])
+    expect(positionsIn('#2')).toEqual([2])
     expect(positionsIn('el dos bórralo, cambiame el primero')).toEqual([2, 0])
-    expect(positionsIn('la última')).toEqual([1])
-    expect(positionsIn('el 15 de octubre')).toEqual([])
-    expect(positionsIn('el 20 lucas')).toEqual([])
     expect(positionsIn('el café fueron 4500')).toEqual([])
+  })
+
+  it('never takes an amount, a date or a unit for a position', () => {
+    for (const text of [
+      'el 15 de octubre',
+      'el 20 lucas',
+      'la nafta del 3/11 fue 25000',
+      'cambiá la nafta del 03/11 a 25000', // our own question writes dates this way
+      'cambiá el 2.500 por 3000',
+      'el 2,5 fue 3',
+      'el 1 luca',
+      'el 2 palos',
+      'el 5 usd',
+      'el 3 pesos',
+      'el 3 mil',
+      'lados',
+    ]) {
+      expect(positionsIn(text), text).toEqual([])
+    }
+  })
+
+  it('drops a position that is not in the list', () => {
+    expect(positionsIn('el 7 fue 4500', 5)).toEqual([])
+    expect(positionsIn('el 4 fue 4500', 5)).toEqual([4])
+  })
+
+  it('a position with a date or a negation is still one position', () => {
+    expect(positionsIn('el 2 fue del 20/11')).toEqual([2])
+    expect(positionsIn('el 2 fue ayer, no el 1')).toEqual([2])
+    expect(positionsIn('el anterior al último')).toEqual([0])
+  })
+
+  it('knows when a message says "último"', () => {
+    expect(saysLast('borrá lo último')).toBe(true)
+    expect(saysLast('la última nafta')).toBe(true)
+    expect(saysLast('el café fue 3500')).toBe(false)
+  })
+})
+
+describe('resolveTarget: "el último X"', () => {
+  // 1 súper, 2 café 3500, 3 café 4000, 4 nafta
+  const list = [
+    row(40, 'súper', { category: 'supermercado' }),
+    row(30, 'café', { amount: '3500' }),
+    row(20, 'café', { amount: '4000' }),
+    row(10, 'nafta', { category: 'combustible' }),
+  ]
+  it('is the newest row its description names, not row 1', () => {
+    const correction = {
+      type: 'correct',
+      target: 'café',
+      target_index: 3,
+      confidence: 'high',
+      changes: {
+        direction: null,
+        amount: '4000',
+        currency: null,
+        date: null,
+        description: null,
+        category: null,
+        payment: null,
+      },
+    } as never
+    expect(found(correction, 'el último café fue 4000', list)).toBe(30)
+    expect(found(del({ target: 'café', target_index: null }), 'el último café', list)).toBe(30)
+    expect(found(del({ target: 'nafta', target_index: 1 }), 'borrá la última nafta', list)).toBe(10)
+  })
+
+  it('is row 1 when nothing else is named', () => {
+    expect(found(del({ target: 'last', target_index: 3 }), 'borrá lo último', list)).toBe(40)
+    expect(found(del({ target: 'last', target_index: null }), 'el último', list)).toBe(40)
+  })
+})
+
+describe('resolveTarget: dates and amounts are not positions', () => {
+  const list = [
+    row(40, 'kiosco'),
+    row(30, 'café'),
+    row(20, 'nafta', { category: 'combustible', date: '2026-11-03', amount: '20000' }),
+  ]
+  it('"la nafta del 3/11 fue 25000" is the nafta, not number 3 by accident, and number 2 stays unmoved', () => {
+    expect(
+      found(del({ target: 'nafta', target_index: 3 }), 'la nafta del 3/11 fue 25000', list),
+    ).toBe(20)
+    expect(found(del({ target: 'café', target_index: 2 }), 'el café del 3/11', list)).toBe(30)
+    expect(found(del({ target: 'café', target_index: 2 }), 'cambiá el 2.500 por 3000', list)).toBe(
+      30,
+    )
+  })
+})
+
+describe('resolveTarget: the new value does not narrow the candidates', () => {
+  const list = [
+    row(30, 'café', { amount: '3500' }),
+    row(20, 'café', { amount: '4000', date: '2026-11-19' }),
+    row(10, 'súper', { category: 'supermercado', payment: 'crédito visa' }),
+    row(9, 'súper', { category: 'supermercado', payment: 'efectivo' }),
+  ]
+  const fix = (target: string, changes: Partial<Record<string, string>>, text: string) =>
+    found(
+      {
+        type: 'correct',
+        target,
+        target_index: null,
+        confidence: 'high',
+        changes: {
+          direction: null,
+          amount: null,
+          currency: null,
+          date: null,
+          description: null,
+          category: null,
+          payment: null,
+          ...changes,
+        },
+      } as never,
+      text,
+      list,
+    )
+
+  it('"el café fue 4000" corrects the newest café, not the one that already is 4000', () => {
+    expect(fix('café', { amount: '4000' }, 'el café fue 4000')).toBe(30)
+  })
+
+  it('"el café fue ayer y 3800" does not pick the café of yesterday', () => {
+    expect(fix('café', { date: '2026-11-19', amount: '3800' }, 'el café fue ayer y 3800')).toBe(30)
+  })
+
+  it('"el súper fue 9500 con la visa" does not pick the súper already on visa', () => {
+    expect(
+      fix('súper', { amount: '9500', payment: 'crédito visa' }, 'el súper fue 9500 con la visa'),
+    ).toBe(10)
+  })
+
+  it('an old value still narrows: "el café de 4000 fue 3800", "el súper en efectivo fue 9500"', () => {
+    expect(fix('café', { amount: '3800' }, 'el café de 4000 fue 3800')).toBe(20)
+    expect(fix('súper', { amount: '9500' }, 'el súper en efectivo fue 9500')).toBe(9)
+    expect(fix('café', { amount: '3800' }, 'el café de ayer fue 3800')).toBe(20)
   })
 })
 
