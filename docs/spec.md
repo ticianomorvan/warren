@@ -192,3 +192,13 @@ Slice 3 notes (decided in the slice 2 review):
 - The user table is `account`, not the reserved word `user`. `movement` and `reply` reference `inbound_message.id`, not the wamid.
 - Sends are at most once: a message whose send outcome is unknown ends as `unknown`, never resent.
 - The allowlist is explicit: `ALLOWED_WA_IDS=*` answers everyone, empty answers nobody.
+
+## Slice 3 notes
+
+Decisions the slice brief did not specify:
+- The commit point is `inbound_message.reply_text IS NOT NULL`. The sweep reads it to send a stored reply without the model.
+- Model output with an invalid amount, date or description is "invalid output": it fails the message, since storing a guess would be a silently wrong amount. Only "more than 10 movements" is stored, as low confidence.
+- The interim note and the failure notice are not stored as `reply` rows (only the failure notice, so its status is kept); this keeps one `reply` row per answered message for `pnpm latency`.
+- The ✅ mark follows every committed reply, including the canned `correct`/`delete`/`query` one, and is not sent for non-text messages.
+- A failure notice that dies between its timestamp and its send is lost, not retried: at most once beats a duplicate.
+- `ANTHROPIC_API_KEY` is now required config, so a missing key stops the server at startup instead of failing every message.

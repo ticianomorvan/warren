@@ -1,3 +1,4 @@
+import Anthropic from '@anthropic-ai/sdk'
 import { createApp } from './app'
 import { loadConfig } from './config'
 import { connect, migrate } from './db'
@@ -22,6 +23,8 @@ const processor = createProcessor({
   graph,
   allowed: config.ALLOWED_WA_IDS,
   maxAttempts: MAX_ATTEMPTS,
+  client: new Anthropic({ apiKey: config.ANTHROPIC_API_KEY }),
+  helpContact: config.HELP_CONTACT,
 })
 const server = createApp({ store, config, processor })
 
