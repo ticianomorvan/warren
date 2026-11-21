@@ -43,18 +43,18 @@ describe('answerAction', () => {
   it('runs the pending correction on the option that was picked, by id', () => {
     expect(answerAction('2', { asked, pending: { action: 'correct', changes } })).toEqual({
       tool: 'correct_movement',
-      input: { id: 37, changes },
+      input: { id: 37, changes, text: null },
     })
     expect(answerAction('la primera', { asked, pending: { action: 'correct', changes } })).toEqual({
       tool: 'correct_movement',
-      input: { id: 41, changes },
+      input: { id: 41, changes, text: null },
     })
   })
 
   it('runs the pending deletion', () => {
     expect(answerAction('dale el 1', { asked, pending: { action: 'delete' } })).toEqual({
       tool: 'delete_movement',
-      input: { id: 41 },
+      input: { id: 41, text: null },
     })
   })
 

@@ -6,6 +6,14 @@ const message = z.object({
   timestamp: z.coerce.number().optional(),
   type: z.string(),
   text: z.object({ body: z.string() }).optional(),
+  // A photo: only its media id (to download it), its type and its caption are read. The bytes are never stored.
+  image: z
+    .object({
+      id: z.string(),
+      mime_type: z.string().optional(),
+      caption: z.string().optional(),
+    })
+    .optional(),
 })
 
 const status = z.object({

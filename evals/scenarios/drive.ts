@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type Anthropic from '@anthropic-ai/sdk'
 import { estimateCostUsd, type ModelKey, type Usage } from '../../src/agent'
 import type { Sql } from '../../src/db'
-import { fakeGraph, messageBody, post, setup } from '../../src/test-harness'
+import { fakeGraph, messageBody, photoBody, post, setup } from '../../src/test-harness'
 import { gradeTurn, type Row, type TurnGrade } from './grade'
 import type { Scenario } from './schema'
 
@@ -118,6 +121,8 @@ export interface Env {
   model: ModelKey
 }
 
+const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
+
 const epoch = (now: string) => Date.parse(`${now}:00-03:00`)
 /** One fake sender per scenario, so scenarios can run side by side in one database. */
 export const waIdOf = (id: string) => `54911${id.slice(1).padStart(8, '0')}`
@@ -183,7 +188,14 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
   const turns: TurnResult[] = []
   const app = await setup({
     sql: env.sql,
-    fake: fakeGraph(),
+    // A turn with an image: the fake Graph serves the fixture under the media id the webhook names.
+    fake: fakeGraph({
+      media: Object.fromEntries(
+        s.turns.flatMap((turn, k) =>
+          turn.image ? [[`media.${s.id}.${k}`, readFileSync(join(fixtures, turn.image))]] : [],
+        ),
+      ),
+    }),
     model: {
       client: meteredClient(env.client, env.meter, calls, env.model),
       calls: { n: 0 },
@@ -208,12 +220,12 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
       const wamid = `wamid.${s.id}.${k}`
       const callsBefore = calls.length
       const started = performance.now()
+      const timestamp = String(Math.floor(epoch(turn.now) / 1000))
       await post(
         app.base,
-        messageBody(wamid, waId, {
-          timestamp: String(Math.floor(epoch(turn.now) / 1000)),
-          text: { body: turn.text },
-        }),
+        turn.image
+          ? photoBody(wamid, `media.${s.id}.${k}`, turn.text, waId, timestamp)
+          : messageBody(wamid, waId, { timestamp, text: { body: turn.text } }),
       )
       const stored = await waitFor(env.sql, wamid)
       const wallMs = performance.now() - started

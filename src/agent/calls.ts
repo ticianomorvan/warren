@@ -1,5 +1,7 @@
+import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
-import { type Action, MAX_FOUND, TOOL_INPUTS, type ToolInput, type ToolName } from './schema'
+import { hasNumberWord } from './say'
+import { MAX_FOUND, type ModelAction, TOOL_INPUTS, type ToolInput, type ToolName } from './schema'
 import {
   checkChanges,
   checkCount,
@@ -13,7 +15,7 @@ import {
 /** What a tool call comes to: a read to run, an action for the commit point, or a refusal the model is told. */
 export type Checked =
   | { kind: 'read'; filter: FindFilter }
-  | { kind: 'action'; action: Action }
+  | { kind: 'action'; action: ModelAction }
   | { kind: 'rejected'; message: string }
 
 const rejected = (message: string): Checked => ({ kind: 'rejected', message })
@@ -35,8 +37,12 @@ const MAX_QUESTION_WORDS = 6
  * (which could smuggle a figure into a reply the model must not write), is replaced by `fallback`.
  */
 export function cleanQuestion(question: string, fallback: string): string {
-  const q = question.replace(/[¿?]/g, '').replace(/\s+/g, ' ').trim()
-  const phrase = q !== '' && q.split(' ').length <= MAX_QUESTION_WORDS && !/[\d$.:;!]/.test(q)
+  const q = question.normalize('NFKC').replace(/[¿?]/g, '').replace(/\s+/g, ' ').trim()
+  const phrase =
+    q !== '' &&
+    q.split(' ').length <= MAX_QUESTION_WORDS &&
+    !/[\d$.:;!]/.test(q) &&
+    !hasNumberWord(q)
   return phrase ? q : fallback
 }
 
@@ -55,7 +61,7 @@ function checkIds(ids: number[], guard: Guard): string | null {
 export function checkCall(name: string, input: unknown, guard: Guard): Checked {
   if (!(name in TOOL_INPUTS)) return rejected(`unknown tool ${name}`)
   const tool = name as ToolName
-  const parsed = TOOL_INPUTS[tool]().safeParse(input)
+  const parsed = (TOOL_INPUTS[tool]() as z.ZodType).safeParse(input)
   if (!parsed.success) return rejected(`invalid input: ${parsed.error.message.slice(0, 300)}`)
 
   switch (tool) {
@@ -84,17 +90,17 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       }
     }
     case 'log_movements': {
-      const { movements } = parsed.data as ToolInput<'log_movements'>
+      const { movements, text } = parsed.data as ToolInput<'log_movements'>
       const issues = [
         ...checkLog(movements, guard.today),
         ...checkCount(guard.logged + movements.length),
       ]
       return issues.length > 0
         ? rejected(issueText(issues))
-        : { kind: 'action', action: { tool, input: { movements } } }
+        : { kind: 'action', action: { tool, input: { movements, text } } }
     }
     case 'correct_movement': {
-      const { id, changes } = parsed.data as ToolInput<'correct_movement'>
+      const { id, changes, text } = parsed.data as ToolInput<'correct_movement'>
       const issues = checkChanges(changes, guard.today)
       const unseen = checkIds([id], guard)
       if (unseen) return rejected(unseen)
@@ -102,12 +108,12 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       if (!hasChanges(changes)) {
         return rejected('changes is empty: if you do not know what to change, call ask_user')
       }
-      return { kind: 'action', action: { tool, input: { id, changes } } }
+      return { kind: 'action', action: { tool, input: { id, changes, text } } }
     }
     case 'delete_movement': {
-      const { id } = parsed.data as ToolInput<'delete_movement'>
+      const { id, text } = parsed.data as ToolInput<'delete_movement'>
       const unseen = checkIds([id], guard)
-      return unseen ? rejected(unseen) : { kind: 'action', action: { tool, input: { id } } }
+      return unseen ? rejected(unseen) : { kind: 'action', action: { tool, input: { id, text } } }
     }
     case 'ask_user': {
       const a = parsed.data as ToolInput<'ask_user'>
@@ -130,11 +136,12 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
             movement_ids: ids,
             after_answer: ids.length > 0 ? a.after_answer : 'none',
             changes: a.after_answer === 'correct' && ids.length > 0 ? a.changes : undefined,
+            text: a.text,
           },
         },
       }
     }
-    default: // summarize, reply: any input of the right shape is fine
-      return { kind: 'action', action: { tool, input: parsed.data } as Action }
+    default: // summarize, reply, help: any input of the right shape is fine
+      return { kind: 'action', action: { tool, input: parsed.data } as ModelAction }
   }
 }

@@ -103,9 +103,7 @@ export function toCommand(actions: Action[], list: MovementRow[]): Command {
             confidence: 'low',
           }
     case 'reply':
-      return first.input.kind === 'help' || first.input.kind === 'nothing_logged'
-        ? { type: 'help' }
-        : { type: 'off_topic' }
+      return { type: 'off_topic' }
     default:
       return { type: 'help' }
   }

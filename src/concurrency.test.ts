@@ -20,9 +20,9 @@ describe.skipIf(!url)('real Postgres: concurrency', () => {
     const store = createStore(sql, { staleMs: 60_000, maxAttempts: 3 })
     const actions: Action[][] = [
       ...[3800, 3900, 4000, 4100, 4200].map((n): Action[] => [
-        { tool: 'correct_movement', input: { id: 0, changes: { amount: String(n) } } },
+        { tool: 'correct_movement', input: { id: 0, changes: { amount: String(n) }, text: null } },
       ]),
-      ...[0, 1, 2].map((): Action[] => [{ tool: 'delete_movement', input: { id: 0 } }]),
+      ...[0, 1, 2].map((): Action[] => [{ tool: 'delete_movement', input: { id: 0, text: null } }]),
     ]
     // The race is a few statements wide, so each round can miss it; several rounds do not.
     const ROUNDS = 6

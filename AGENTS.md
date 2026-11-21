@@ -14,7 +14,9 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
    decimal strings ("3500", "1500000.50"); code computes every total.
 2. **The model acts only through guarded tools.** A short agent loop (at most 3 model turns) calls typed
    tools; the write tools are terminal: code validates them, runs them inside the commit point and renders
-   the reply from a template, with no further model turn. The model never writes a reply and never picks a
+   the record of every change from a template, with no further model turn. The model may add a short text
+   of its own, but it never writes a number code didn't give it (`src/agent/say.ts` checks every number;
+   a text that fails is dropped) and never replaces the code-rendered record of a change. It never picks a
    target in code's place: an id it sends must be one it was shown, the sender's, and live.
 3. **Corrections never overwrite a movement, deletes never remove one.** A correction is a new row
    that supersedes the old one (`superseded_by`); a delete stamps `deleted_at` and `deleted_by`. Only
@@ -25,9 +27,10 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 
 ```
 src/agent/    The agent: schema.ts (tool inputs, categories, periods), tools.ts (the strict tool list, frozen),
-              prompt.ts (frozen system prompt + the per-message context), calls.ts (the guards that need no
-              database), loop.ts (the manual loop, warm-up), validate.ts (the value rules), models.ts
-              (Haiku/Sonnet configs, prices), index.ts
+              prompt.ts (frozen system prompt + the per-message context + `contextFacts`), calls.ts (the guards
+              that need no database), loop.ts (the manual loop, warm-up, held writes, the photo block),
+              say.ts (the numbers check for the model's own words: pure), validate.ts (the value rules),
+              models.ts (Haiku/Sonnet configs, prices), index.ts
 src/time.ts   The Argentine calendar day and clock, and the date range of a summary period
 src/server.ts Entry point: config, migrate, warm-up, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
@@ -41,18 +44,20 @@ src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a questi
 src/execute.ts  Runs a message's actions inside the commit transaction and returns the reply to store
 src/process.ts  Per message: ignored vs reply; for text, typing + agent together, the 10 s interim note, the 30 s
               deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
-src/render.ts The reply templates (Argentine money format) and every canned text; pure
-src/test-harness.ts  Shared integration-test setup: PGlite (or a real Postgres), fake Graph, fake Anthropic client
-              (scripted tool calls), `setup()`
+src/render.ts The reply templates (Argentine money format) and every canned text (help, photo problems, the
+              fallback when the model's words are dropped); pure
+src/test-harness.ts  Shared integration-test setup: PGlite (or a real Postgres), fake Graph (with media by id),
+              fake Anthropic client (scripted tool calls), `setup()`, `photoBody()`
 src/command-fixtures.ts  Scripted tool calls, seeded movements and `say()` for the agent tests
 src/http.ts   keepAliveFetch: a fetch with its own 60 s keep-alive pool (Graph and Anthropic)
-src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts (Graph API client)
+src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks, photos included), graph.ts (Graph API client:
+              send, read and typing, and the photo download with its limits)
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
 src/latency.ts  `pnpm latency` report, by action
 evals/        cases.jsonl (dev/test split, one command per message), command.ts (that command shape), agent.ts
               (runs the agent on a case and maps it to a command), grade.ts, run.ts, results/ (gitignored but summary.md)
-evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl, schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts, run.ts, results/baseline.md
+evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl (a turn may carry an `image`, a file of fixtures/), schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts (pass rate, latency by action and by tag), run.ts, results/baseline.md
 docs/spec.md  Source of truth for what is built and in which order; docs/agent-spec.md the agent design
 ```
 
@@ -122,8 +127,9 @@ wrong changes. Its test split is held out like the other: never print or tune on
 - Sends are at most once. `send_started_at` is committed before the Graph call; a row that dies after that
   (timeout, 5xx, killed worker) ends as `unknown` and is never sent again. Only an HTTP 4xx answer, which
   proves nothing was sent, goes back to `pending` (retryable codes) or `failed` (permanent codes).
-- **Message flow (slices 3, 4 and agent B).** A text message from an allowed sender runs the read receipt plus
-  typing and the agent together. Deadlines count from `received_at` and are processor options (`interimMs` 10 s,
+- **Message flow (slices 3, 4, agent B and B2).** A text or photo message from an allowed sender runs the read receipt plus
+  typing and the agent together (a photo's download runs beside them; a voice note, `audio`, is answered with a
+  request for text, and any other kind with a short reply, and neither calls the model). Deadlines count from `received_at` and are processor options (`interimMs` 10 s,
   `deadlineMs` 30 s). The commit point is one transaction (`store.commit`): the actions' effects, the movements (unique on
   `(inbound_message_id, position)`, counted across the whole message), the stored `reply_text` and the audit.
   Before it, a failed agent run (a model error, no valid action in 3 turns) or the deadline ends the message
@@ -133,6 +139,13 @@ wrong changes. Its test split is held out like the other: never print or tune on
   value (bad amount, date or description) is never repaired: the loop answers it with the reason and the
   model gets another turn; a model that cannot fix it within 3 turns fails the message.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
+- **Photos (agent B2).** An `image` webhook message keeps its media id and caption in `inbound_message`
+  (`payload`, `body`); the bytes are never stored. `graph.fetchImage` looks the id up, checks the declared size
+  and type, downloads from a Meta https host only (the token goes nowhere else), reads at most 5 MB and takes
+  the type from the bytes (JPEG, PNG or WebP), all through the keep-alive client. The agent gets an image block
+  before its context, with the caption in `<mensaje>`. A photo that cannot be read (too big, another type, a
+  failed download) is answered with its own text (`REPLY_IMAGE`) through the commit point as a code `notice`,
+  with no model call. The next message's conversation window shows it as `[foto] caption`.
 - **Shutdown.** On SIGTERM `processor.stop()` aborts agent runs that have not reached the commit point and settles
   those rows to `pending`, so the next process's startup sweep answers them inside their deadline. The deadline
   is one `AbortSignal` checked right before the commit; a deadline that fires mid-commit loses (committed
@@ -149,8 +162,23 @@ wrong changes. Its test split is held out like the other: never print or tune on
   - Terminal, run by code at the commit point in the order given, in one transaction, one combined reply:
     `log_movements`, `correct_movement`, `delete_movement`, `summarize` (today's periods and filters),
     `ask_user` (a short phrase plus the movements to offer, newest first, numbered 1..k by code; it stores
-    `asked_numbers`, `asked_ids` and `pending`, what choosing an option will do), `reply` (help, off_topic,
-    smalltalk, nothing_logged: canned).
+    `asked_numbers`, `asked_ids` and `pending`, what choosing an option will do), `reply({text})` (the model's
+    own words, for what is not a change: a question about what Warren did, thanks, something off topic) and
+    `help` (the one canned text, for "ayuda" and greetings).
+  - **The model's own words (B2).** Every write tool, `summarize` and `ask_user` carry a `text` (a nullable, always
+    present). Code sends the record of what changed (and the totals, and the question) first, then the texts, in
+    order. A text goes out only if `checkSay` passes: at most 280 characters, no `✓`, no number in digits or
+    in words that was not given by code. A number is given if it is in the person's message, the movement list
+    (ids left out), the conversation window, the pending question's option numbers, this message's
+    `find_movements` results or the lines code rendered for this message; amounts, times and days are compared by
+    value (`12.000` = `12000`, `9:12` = `09:12`, `2026-11-03` = `03/11`). A failing text is dropped (the audit
+    entry says `text: dropped` and why; a `reply` that is dropped sends `REPLY_SAY_FALLBACK`), as is a text beside
+    an action that did not apply. A description or payment with 4 or more digits in a row is refused like any
+    other bad value.
+  - **A turn that searches and writes does not end the loop (B2).** Code runs the reads, holds the writes
+    (audit status `held`) and answers them with "your changes were not run; send every change again". The model
+    then sends every change with the results in view, inside the same cap of 3 turns. A plain log or summary is
+    still one model call.
   - Guards, in code: an id must have been shown to the model in this message (list, find result or pending
     question) and, at the commit, belong to the sender and be live (`lockLive`, `FOR UPDATE`), else that action's
     line is "ya fue corregido o borrado" and the others still run; amounts are decimal strings, dates real and
@@ -158,6 +186,9 @@ wrong changes. Its test split is held out like the other: never print or tune on
     empty correction is refused; an `ask_user` question longer than a short phrase or with a digit or `$` in it
     is replaced; the model never computes a total; the cap is 3 model turns and a text-only answer costs one;
     the deadline signal is on every call; a failure or the deadline writes nothing.
+  - **An expired question is marked (B2).** A question older than 10 minutes, or one that a newer message
+    replaced, still shows in the conversation window, now with "pregunta vencida" under it, so that "borrá el 2"
+    reads as a position of the list and not as its option 2.
   - **A bare answer to our question is code's job.** If the previous message got an `ask_user` with a pending
     action, at most 10 minutes ago, and the new message is only an answer (`answerNumber`: "2", "el primero",
     "sí" after one option), `answerAction` runs the pending correction or delete on the id that option offered

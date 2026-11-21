@@ -68,6 +68,6 @@ export function answerAction(text: string, question: PendingQuestion | null): Ac
   const id = question.asked.find((a) => a.number === n)?.id
   if (id === undefined) return null
   return question.pending.action === 'delete'
-    ? { tool: 'delete_movement', input: { id } }
-    : { tool: 'correct_movement', input: { id, changes: question.pending.changes } }
+    ? { tool: 'delete_movement', input: { id, text: null } }
+    : { tool: 'correct_movement', input: { id, changes: question.pending.changes, text: null } }
 }

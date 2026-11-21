@@ -19,13 +19,13 @@ const movement = (o: object = {}) => ({
 })
 const log = (...m: object[]): Call => ({
   name: 'log_movements',
-  input: { movements: m.length ? m : [movement()] },
+  input: { movements: m.length ? m : [movement()], text: null },
 })
 const correct = (id: number, changes: object): Call => ({
   name: 'correct_movement',
-  input: { id, changes },
+  input: { id, changes, text: null },
 })
-const del = (id: number): Call => ({ name: 'delete_movement', input: { id } })
+const del = (id: number): Call => ({ name: 'delete_movement', input: { id, text: null } })
 const find = (input: object = {}): Call => ({ name: 'find_movements', input })
 
 const row = (id: number, o: Partial<MovementRow> = {}): MovementRow => ({
@@ -97,7 +97,7 @@ describe('runAgent', () => {
     const result = await run(c, { seen: [1, 2, 3], find: () => [row(777)] })
     expect(requests).toHaveLength(2)
     expect(result.actions).toEqual([
-      { tool: 'correct_movement', input: { id: 777, changes: { amount: '250000' } } },
+      { tool: 'correct_movement', input: { id: 777, changes: { amount: '250000' }, text: null } },
     ])
   })
 
@@ -135,7 +135,7 @@ describe('runAgent', () => {
     const result = await run(c, { find: () => [row(77)] })
     expect(result.turns).toBe(2)
     expect(result.actions).toEqual([
-      { tool: 'correct_movement', input: { id: 77, changes: { amount: '250000' } } },
+      { tool: 'correct_movement', input: { id: 77, changes: { amount: '250000' }, text: null } },
     ])
     const second = requests[1]?.messages
     expect(second?.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
@@ -157,7 +157,7 @@ describe('runAgent', () => {
     const { c, requests } = client([del(999)], [del(2)])
     const result = await run(c)
     expect(result.turns).toBe(2)
-    expect(result.actions).toEqual([{ tool: 'delete_movement', input: { id: 2 } }])
+    expect(result.actions).toEqual([{ tool: 'delete_movement', input: { id: 2, text: null } }])
     const [refusal] = (requests[1]?.messages[2]?.content ?? []) as Anthropic.ToolResultBlockParam[]
     expect(refusal?.is_error).toBe(true)
     expect(String(refusal?.content)).toContain('999 was not shown')
@@ -170,7 +170,10 @@ describe('runAgent', () => {
       log(movement({ date: '2026-11-22' })),
       correct(1, { amount: '3,5' }),
       correct(1, {}),
-      { name: 'ask_user', input: { question: 'x', movement_ids: [1], after_answer: 'correct' } },
+      {
+        name: 'ask_user',
+        input: { question: 'x', movement_ids: [1], after_answer: 'correct', text: null },
+      },
     ]) {
       const { c } = client([bad], [del(1)])
       const result = await run(c)
@@ -217,7 +220,7 @@ describe('runAgent', () => {
   it('asks again when the model writes text instead of calling a tool, once per turn', async () => {
     const { c, requests } = client('¿Qué querés decir con 2?', [del(2)])
     const result = await run(c)
-    expect(result.actions).toEqual([{ tool: 'delete_movement', input: { id: 2 } }])
+    expect(result.actions).toEqual([{ tool: 'delete_movement', input: { id: 2, text: null } }])
     expect(String(requests[1]?.messages[2]?.content)).toContain('You did not call a tool')
     expect(result.audit[0]).toMatchObject({ tool: 'text', status: 'rejected' })
   })
@@ -245,10 +248,13 @@ describe('runAgent', () => {
   it('replaces a question that carries a digit or a money sign, so the model cannot write a figure', async () => {
     const ask = (question: string): Call => ({
       name: 'ask_user',
-      input: { question, movement_ids: [1, 2], after_answer: 'none' },
+      input: { question, movement_ids: [1, 2], after_answer: 'none', text: null },
     })
     for (const [question, shown] of [
       ['Cuál de los 3 cafés', 'Cuál'],
+      ['Era de doce mil', 'Cuál'],
+      ['Cuál de los dos', 'Cuál'],
+      ['Cuál ２５', 'Cuál'],
       ['Era $3.500?', 'Cuál'],
       ['¿Cuál café?', 'Cuál café'],
       ['No encuentro un almuerzo. Cuál querés borrar', 'Cuál'],
@@ -258,6 +264,133 @@ describe('runAgent', () => {
       const result = await run(c)
       expect(result.actions[0]).toMatchObject({ tool: 'ask_user', input: { question: shown } })
     }
+  })
+})
+
+describe('runAgent: a turn that searches and changes in one', () => {
+  it('runs the search, holds the changes and asks for every change again with the results', async () => {
+    // "borra el súper y la nafta fue 4000": the model searches for the súper and, in the same
+    // turn, corrects the nafta. The correction was written without the results: it is not run.
+    const { c, requests } = client(
+      [find({ text: 'súper' }), correct(2, { amount: '4000' })],
+      [del(77), correct(2, { amount: '4000' })],
+    )
+    const result = await run(c, {
+      seen: [1, 2, 3],
+      find: () => [row(77, { description: 'súper' })],
+    })
+
+    expect(result.turns).toBe(2)
+    expect(result.actions.map((a) => [a.tool, (a.input as { id: number }).id])).toEqual([
+      ['delete_movement', 77],
+      ['correct_movement', 2],
+    ])
+    expect(result.audit.map((e) => [e.tool, e.status])).toEqual([
+      ['find_movements', 'ok'],
+      ['correct_movement', 'held'],
+      ['delete_movement', 'accepted'],
+      ['correct_movement', 'accepted'],
+    ])
+    // The second request answers both calls of the first turn: the search with its rows, the change with the note.
+    const [searched, held] = (requests[1]?.messages[2]?.content ??
+      []) as Anthropic.ToolResultBlockParam[]
+    expect(String(searched?.content)).toContain('id=77')
+    expect(searched?.is_error).toBe(false)
+    expect(String(held?.content)).toContain('Your changes were not run; send every change again')
+    expect(held?.is_error).toBe(true)
+  })
+
+  it('holds every kind of write, not just corrections', async () => {
+    for (const write of [
+      log(),
+      del(1),
+      { name: 'reply', input: { text: 'Hola' } },
+      { name: 'help', input: {} },
+    ]) {
+      const { c } = client([find(), write], [del(1)])
+      const result = await run(c, { find: () => [row(77)] })
+      expect(
+        result.audit.map((e) => e.status),
+        write.name,
+      ).toEqual(['ok', 'held', 'accepted'])
+      expect(result.actions.map((a) => a.tool)).toEqual(['delete_movement'])
+    }
+  })
+
+  it('does not hold anything when there is no search: a log or a summary is one model call', async () => {
+    const { c, requests } = client([log()])
+    const result = await run(c)
+    expect(requests).toHaveLength(1)
+    expect(result.turns).toBe(1)
+    expect(result.audit.map((e) => e.status)).toEqual(['accepted'])
+  })
+
+  it('counts the second turn inside the cap of 3: three mixed turns in a row fail with nothing run', async () => {
+    const mixed = [find(), del(1)]
+    const { c, requests } = client(mixed, mixed, mixed)
+    await expect(run(c, { find: () => [row(77)] })).rejects.toThrow(/no valid action after 3/)
+    expect(requests).toHaveLength(MAX_TURNS)
+  })
+
+  it('a refused call in the same turn says so, not that the turn searched', async () => {
+    const { c, requests } = client([find(), del(999), log()], [log()])
+    await run(c, { find: () => [row(77)] })
+    const results = requests[1]?.messages[2]?.content as Anthropic.ToolResultBlockParam[]
+    expect(results.map((r) => r.is_error)).toEqual([false, true, true])
+    expect(String(results[2]?.content)).toContain('another call of this turn was refused')
+  })
+
+  it('returns what the searches found, once each, for the numbers check', async () => {
+    const { c } = client([find({ text: 'a' }), find({ text: 'b' })], [del(77)])
+    const result = await run(c, { find: () => [row(77), row(78)] })
+    expect(result.found.map((r) => r.id)).toEqual([77, 78])
+  })
+})
+
+describe('runAgent: the last turn', () => {
+  it('tells the model before its last turn that it is the last, so it does not search again', async () => {
+    const { c, requests } = client([find()], [find(), del(1)], [del(1)])
+    const result = await run(c, { find: () => [row(77)] })
+    expect(result.turns).toBe(3)
+    const second = requests[1]?.messages.at(-1)?.content as Anthropic.ContentBlockParam[]
+    expect(JSON.stringify(second)).not.toContain('next turn is the last')
+    const third = requests[2]?.messages.at(-1)?.content as Anthropic.ContentBlockParam[]
+    expect(third.at(-1)).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('next turn is the last'),
+    })
+  })
+})
+
+describe('runAgent: a photo', () => {
+  it('sends the image block before the context, in the first user message only', async () => {
+    const { c, requests } = client([find()], [log()])
+    await runAgent({
+      client: c,
+      model: 'haiku',
+      context: 'ctx',
+      photo: { mediaType: 'image/png', data: 'AAAA' },
+      today: '2026-11-21',
+      env: { find: async () => [] },
+      seen: new Set(),
+    })
+    expect(requests[0]?.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+          { type: 'text', text: 'ctx' },
+        ],
+      },
+    ])
+    // the later turns carry it on, as the first message of the same conversation
+    expect(requests[1]?.messages[0]).toEqual(requests[0]?.messages[0])
+  })
+
+  it('sends plain text when there is no photo', async () => {
+    const { c, requests } = client([log()])
+    await run(c)
+    expect(requests[0]?.messages[0]?.content).toBe('ctx')
   })
 })
 

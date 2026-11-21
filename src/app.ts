@@ -72,7 +72,7 @@ export function createApp(o: AppOptions): Server {
           wamid: m.id,
           wa_id: m.from,
           kind: m.type,
-          body: m.text?.body ?? null,
+          body: m.text?.body ?? m.image?.caption ?? null,
           raw: m.raw,
           metaTs: seconds(m.timestamp),
         })

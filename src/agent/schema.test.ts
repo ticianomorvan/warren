@@ -22,6 +22,7 @@ describe('TOOLS', () => {
       'summarize',
       'ask_user',
       'reply',
+      'help',
     ])
     expect(Object.keys(TOOL_INPUTS)).toEqual(TOOLS.map((t) => t.name))
   })
@@ -87,18 +88,25 @@ describe('TOOL_INPUTS', () => {
   }
 
   it('accepts a call of each tool, with unset optional fields left out', () => {
-    expect(TOOL_INPUTS.log_movements().safeParse({ movements: [movement] }).success).toBe(true)
     expect(
-      TOOL_INPUTS.correct_movement().safeParse({ id: 4, changes: { amount: '3800' } }).success,
+      TOOL_INPUTS.log_movements().safeParse({ movements: [movement], text: null }).success,
+    ).toBe(true)
+    expect(
+      TOOL_INPUTS.correct_movement().safeParse({
+        id: 4,
+        changes: { amount: '3800' },
+        text: 'No encontré el súper.',
+      }).success,
     ).toBe(true)
     expect(TOOL_INPUTS.find_movements().safeParse({ text: 'alquiler' }).success).toBe(true)
-    expect(TOOL_INPUTS.delete_movement().safeParse({ id: 4 }).success).toBe(true)
+    expect(TOOL_INPUTS.delete_movement().safeParse({ id: 4, text: null }).success).toBe(true)
     expect(
       TOOL_INPUTS.summarize().safeParse({
         period: 'this_month',
         direction: 'out',
         category: null,
         payment: null,
+        text: null,
       }).success,
     ).toBe(true)
     expect(
@@ -106,9 +114,16 @@ describe('TOOL_INPUTS', () => {
         question: 'Cuál',
         movement_ids: [1, 2],
         after_answer: 'delete',
+        text: null,
       }).success,
     ).toBe(true)
-    expect(TOOL_INPUTS.reply().safeParse({ kind: 'help' }).success).toBe(true)
+    expect(TOOL_INPUTS.reply().safeParse({ text: 'Sí, lo borré.' }).success).toBe(true)
+    expect(TOOL_INPUTS.help().safeParse({}).success).toBe(true)
+  })
+
+  it('always carries the text key of the write tools (strict tools send every required key)', () => {
+    expect(TOOL_INPUTS.delete_movement().safeParse({ id: 4 }).success).toBe(false)
+    expect(TOOL_INPUTS.log_movements().safeParse({ movements: [movement] }).success).toBe(false)
   })
 
   it('rejects unknown enums, non-integer ids and a period that does not exist', () => {
@@ -120,13 +135,14 @@ describe('TOOL_INPUTS', () => {
       TOOL_INPUTS.log_movements().safeParse({ movements: [{ ...movement, currency: 'EUR' }] })
         .success,
     ).toBe(false)
-    expect(TOOL_INPUTS.delete_movement().safeParse({ id: 1.5 }).success).toBe(false)
+    expect(TOOL_INPUTS.delete_movement().safeParse({ id: 1.5, text: null }).success).toBe(false)
     expect(
       TOOL_INPUTS.summarize().safeParse({
         period: 'forever',
         direction: null,
         category: null,
         payment: null,
+        text: null,
       }).success,
     ).toBe(false)
     expect(TOOL_INPUTS.reply().safeParse({ kind: 'joke' }).success).toBe(false)

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="640" viewBox="0 0 480 640" role="img" aria-label="Ticket de farmacia, total 8.350 pesos, pago con débito">
+  <rect width="480" height="640" fill="#f4f1ea"/>
+  <rect x="40" y="30" width="400" height="580" fill="#ffffff" stroke="#bbbbbb"/>
+  <g font-family="Courier New, Courier, monospace" fill="#222222">
+    <text x="240" y="85" font-size="30" font-weight="bold" text-anchor="middle">FARMACIA DEL SOL</text>
+    <text x="240" y="118" font-size="18" text-anchor="middle">Av. Siempreviva 742</text>
+    <text x="240" y="142" font-size="18" text-anchor="middle">TICKET NO FISCAL</text>
+    <line x1="64" y1="165" x2="416" y2="165" stroke="#222" stroke-dasharray="6 4"/>
+    <text x="64" y="205" font-size="20">Ibuprofeno 400 x2</text><text x="416" y="205" font-size="20" text-anchor="end">5.200,00</text>
+    <text x="64" y="240" font-size="20">Alcohol en gel</text><text x="416" y="240" font-size="20" text-anchor="end">3.150,00</text>
+    <line x1="64" y1="270" x2="416" y2="270" stroke="#222" stroke-dasharray="6 4"/>
+    <text x="64" y="320" font-size="30" font-weight="bold">TOTAL</text><text x="416" y="320" font-size="30" font-weight="bold" text-anchor="end">$ 8.350,00</text>
+    <line x1="64" y1="350" x2="416" y2="350" stroke="#222" stroke-dasharray="6 4"/>
+    <text x="64" y="395" font-size="20">Medio de pago: DEBITO</text>
+    <text x="64" y="430" font-size="20">Fecha: 21/11/2026 10:05</text>
+    <text x="240" y="520" font-size="18" text-anchor="middle">Gracias por su compra</text>
+  </g>
+</svg>

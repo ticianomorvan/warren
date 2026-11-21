@@ -1,5 +1,6 @@
 import type { Action } from './agent'
 import type { AuditEntry } from './agent/loop'
+import { composeReply, type Say } from './agent/say'
 import type { Sql } from './db'
 import {
   insertMovements,
@@ -13,11 +14,12 @@ import {
 import { applyChanges, changedFields } from './movement'
 import {
   REPLY_GONE,
+  REPLY_SAY_FALLBACK,
   type RenderOptions,
   renderAsk,
-  renderCanned,
   renderCorrection,
   renderDeletion,
+  renderHelp,
   renderLog,
   renderQuery,
   renderUnchanged,
@@ -35,6 +37,11 @@ export interface ExecuteInput {
   audit: AuditEntry[]
   /** The Argentine day of the message. */
   today: string
+  /**
+   * What the model's own words may take numbers from, besides the lines this run renders: the person's
+   * message, the context and the search results of this message (`contextFacts`).
+   */
+  facts?: string[]
   render?: RenderOptions
 }
 
@@ -49,6 +56,8 @@ export function actionLabel(actions: Action[]): string {
     summarize: 'summarize',
     ask_user: 'ask',
     reply: 'reply',
+    help: 'reply',
+    notice: 'reply',
   } as const
   return label[only.tool]
 }
@@ -69,8 +78,13 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
   const lines: string[] = []
   const outcomes: string[] = []
   const out: Pick<Executed, 'asked' | 'pending'> = {}
+  /** The model's words, to send after the lines if every number in them is one code gave. */
+  const says: Say[] = []
 
-  for (const action of i.actions) {
+  for (const [index, action] of i.actions.entries()) {
+    if (action.tool !== 'notice' && action.input.text?.trim()) {
+      says.push({ action: index, text: action.input.text })
+    }
     switch (action.tool) {
       case 'log_movements': {
         const { movements } = action.input
@@ -150,15 +164,34 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         }
         break
       }
+      case 'help':
+        lines.push(renderHelp(i.render))
+        outcomes.push('applied')
+        break
+      case 'notice':
+        lines.push(action.input.text)
+        outcomes.push('applied')
+        break
       case 'reply':
-        lines.push(renderCanned(action.input.kind, i.render))
+        // Its text is the whole answer, so it is one of `says` (an empty one is refused below).
+        if (!action.input.text.trim()) says.push({ action: index, text: '' })
         outcomes.push('applied')
         break
     }
   }
 
+  // The model's words go after the record, never instead of it, and only with numbers code gave.
+  const { reply, verdicts } = composeReply({
+    lines,
+    says,
+    outcomes,
+    facts: i.facts ?? [],
+    fallback: REPLY_SAY_FALLBACK,
+  })
   const audit = i.audit.map((e) =>
-    e.action === undefined ? e : { ...e, status: outcomes[e.action] ?? e.status },
+    e.action === undefined
+      ? e
+      : { ...e, status: outcomes[e.action] ?? e.status, ...verdicts.get(e.action) },
   )
-  return { reply: lines.join('\n'), ...out, audit }
+  return { reply, ...out, audit }
 }

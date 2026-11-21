@@ -230,6 +230,16 @@ describe('gradeTurn: the reply', () => {
     expect(g.ok).toBe(false)
   })
 
+  it('does not call an amount invented when the person wrote it in this message', () => {
+    const t = turn({ text: 'cambiame lo del almuerzo a 5000' })
+    expect(
+      grade({ turn: t, before, after: before, reply: '¿Cuál cambio a $5.000?' }).invented,
+    ).toEqual([])
+    expect(
+      grade({ turn: t, before, after: before, reply: '¿Cuál cambio a $5.001?' }).invented,
+    ).toEqual(['$5.001'])
+  })
+
   it('leaves a query answer to the scenario text', () => {
     const t = turn({ reply: { has: ['$15.500'], any: [], not: [] } })
     const g = grade({

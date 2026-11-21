@@ -1,16 +1,25 @@
-import type { Movement, Period, RecentMovement, ReplyKind } from './agent'
+import type { Movement, Period, RecentMovement } from './agent'
 import type { MovementRow, QueryTotal } from './ledger'
 import type { ChangedField } from './movement'
 import { addDays } from './time'
+import type { ImageProblem } from './whatsapp/graph'
 
-export const REPLY_NON_TEXT = 'por ahora solo entiendo texto'
+export const REPLY_NON_TEXT = 'Por ahora solo entiendo texto y fotos.'
+export const REPLY_AUDIO = 'Todavía no entiendo audios. Escribime el gasto y lo anoto.'
+/** What the person is told when a photo cannot be read, by why. */
+export const REPLY_IMAGE: Record<ImageProblem, string> = {
+  too_large:
+    'La foto es muy pesada para leerla (máximo 5 MB). Mandala más liviana o escribime el gasto.',
+  unsupported: 'Solo puedo leer fotos JPG, PNG o WebP. Mandala así o escribime el gasto.',
+  unavailable: 'No pude descargar la foto. Mandala de nuevo o escribime el gasto.',
+}
+/** Sent when the model's own words were thrown away (a number code did not give) and nothing else was to say. */
+export const REPLY_SAY_FALLBACK =
+  'No pude responder eso con seguridad. Mandame un gasto o un ingreso y lo anoto, o preguntame cuánto gastaste.'
 export const REPLY_INTERIM = 'Sigo con esto, ya te respondo.'
 export const REPLY_FAILED = 'No pude procesar tu mensaje. Probá de nuevo en un rato.'
-export const REPLY_NO_MOVEMENTS = 'Todavía no tenés movimientos anotados.'
 export const REPLY_GONE =
   'Ese movimiento ya fue corregido o borrado. Fijate cómo quedó y mandame de nuevo qué querés cambiar.'
-export const REPLY_OFF_TOPIC = 'Solo puedo ayudarte con tus gastos e ingresos.'
-export const REPLY_SMALLTALK = '¡De nada! Mandame un gasto o un ingreso cuando quieras.'
 const REPLY_HELP =
   'Mandame un gasto o un ingreso y lo anoto. Por ejemplo: "café 3500 con la visa" o "cobré el sueldo 850.000".'
 
@@ -209,18 +218,9 @@ export function renderLog(movements: Movement[], today: string): string {
   return [`✓ Anoté ${lines.length}:`, ...lines.map((l) => `• ${l}`)].join('\n')
 }
 
-/** The canned replies of the `reply` tool. The model picks one; it never writes any of them. */
-export function renderCanned(kind: ReplyKind, o: RenderOptions = {}): string {
-  switch (kind) {
-    case 'help':
-      return o.helpContact
-        ? `${REPLY_HELP}\nSi necesitás hablar con una persona: ${o.helpContact}`
-        : REPLY_HELP
-    case 'off_topic':
-      return REPLY_OFF_TOPIC
-    case 'smalltalk':
-      return REPLY_SMALLTALK
-    case 'nothing_logged':
-      return REPLY_NO_MOVEMENTS
-  }
+/** The canned help text: the only reply the model does not write, for "ayuda" and greetings. */
+export function renderHelp(o: RenderOptions = {}): string {
+  return o.helpContact
+    ? `${REPLY_HELP}\nSi necesitás hablar con una persona: ${o.helpContact}`
+    : REPLY_HELP
 }

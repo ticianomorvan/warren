@@ -81,3 +81,26 @@ describe('checkChanges', () => {
     expect(issueText(checkChanges({ amount: 'x' }, today))).toContain('changes.amount')
   })
 })
+
+describe('long numbers in descriptions and payment names', () => {
+  it.each([
+    ['description', 'café 12000'],
+    ['description', 'ticket 1234'],
+    ['description', 'súper 12.000'],
+    ['payment', 'visa 4509'],
+    ['payment', 'tarjeta 4509 1234'],
+  ] as const)('refuses %s "%s": a figure the amount does not vouch for', (field, value) => {
+    const issues = check({ [field]: value })
+    expect(issues.map((i) => i.path)).toEqual([`movements[0].${field}`])
+    expect(issues[0]?.message).toContain('4 or more digits')
+    expect(checkChanges({ [field]: value }, today).map((i) => i.path)).toEqual([`changes.${field}`])
+  })
+
+  it.each(['mc 100', 'cuota 3', 'cuota 12/12', 'club 99', 'pedidos ya', 'personal pay'])(
+    'accepts "%s"',
+    (value) => {
+      expect(check({ description: value, payment: value })).toEqual([])
+      expect(checkChanges({ description: value, payment: value }, today)).toEqual([])
+    },
+  )
+})

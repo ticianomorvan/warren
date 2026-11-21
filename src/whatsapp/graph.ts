@@ -47,11 +47,54 @@ export function shortRecipient(waId: string): string {
   return waId
 }
 
+/** Why a photo could not be given to the agent; each one has its own reply to the person. */
+export type ImageProblem = 'too_large' | 'unsupported' | 'unavailable'
+
+export class ImageError extends Error {
+  constructor(
+    readonly problem: ImageProblem,
+    detail: string,
+  ) {
+    super(`image ${problem}: ${detail}`)
+  }
+}
+
+export type ImageType = 'image/jpeg' | 'image/png' | 'image/webp'
+
+/** A photo that passed the limits: the type read from its bytes and the bytes in base64. Never stored. */
+export interface Image {
+  mediaType: ImageType
+  data: string
+}
+
+/** WhatsApp itself caps an image at 5 MB, and so does the model's API. */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+/** The type of an image by its first bytes (what the sender claims is not trusted), or null. */
+export function sniffImage(bytes: Uint8Array): ImageType | null {
+  const at = (offset: number, ...values: number[]) =>
+    values.every((v, k) => bytes[offset + k] === v)
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg'
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png'
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp'
+  return null
+}
+
+/** The limits on a downloaded photo: not empty, at most 5 MB, a JPEG, PNG or WebP by its bytes. */
+export function checkImage(bytes: Uint8Array): Image {
+  if (bytes.length > MAX_IMAGE_BYTES) throw new ImageError('too_large', `${bytes.length} bytes`)
+  const mediaType = sniffImage(bytes)
+  if (!mediaType) throw new ImageError('unsupported', 'not a JPEG, PNG or WebP')
+  return { mediaType, data: Buffer.from(bytes).toString('base64') }
+}
+
 export interface Graph {
   /** Marks the message read and shows the typing indicator. */
   markReadAndType(wamid: string): Promise<void>
   /** Sends a text message to a webhook `wa_id` and returns its wamid. */
   sendText(waId: string, body: string): Promise<string>
+  /** Downloads a photo by its media id (id, then URL, then bytes) within the limits; throws `ImageError`. */
+  fetchImage(mediaId: string, signal?: AbortSignal): Promise<Image>
 }
 
 export interface GraphOptions {
@@ -114,7 +157,78 @@ export function createGraph(o: GraphOptions): Graph {
     }
   }
 
+  /** Media URLs come from Meta's own domains; the token goes only to one of them, over https. */
+  const metaHost = /(^|\.)(facebook\.com|fbsbx\.com|fbcdn\.net|whatsapp\.net|whatsapp\.com)$/
+
+  async function readLimited(res: Response): Promise<Uint8Array> {
+    const declared = Number(res.headers.get('content-length'))
+    if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
+      await res.body?.cancel()
+      throw new ImageError('too_large', `${declared} bytes declared`)
+    }
+    const reader = res.body?.getReader()
+    if (!reader) throw new ImageError('unavailable', 'no body')
+    const chunks: Uint8Array[] = []
+    let size = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.length
+      if (size > MAX_IMAGE_BYTES) {
+        await reader.cancel()
+        throw new ImageError('too_large', `more than ${MAX_IMAGE_BYTES} bytes`)
+      }
+      chunks.push(value)
+    }
+    return Buffer.concat(chunks)
+  }
+
+  async function download(mediaId: string, signal?: AbortSignal): Promise<Image> {
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(mediaId)) throw new ImageError('unavailable', 'bad media id')
+    // One budget for the lookup and the download together, inside the message's own deadline. A redirect
+    // is an error: the host check below is on the URL Meta named, not on wherever it might send us.
+    const budget = AbortSignal.any([AbortSignal.timeout(8_000), ...(signal ? [signal] : [])])
+    const headers = { authorization: `Bearer ${o.token}` }
+    const meta = await doFetch(`https://graph.facebook.com/${o.version}/${mediaId}`, {
+      headers,
+      signal: budget,
+      redirect: 'error',
+    })
+    if (!meta.ok) throw new ImageError('unavailable', `media lookup ${meta.status}`)
+    const info = (await meta.json()) as { url?: unknown; mime_type?: unknown; file_size?: unknown }
+    // The lookup already says how big it is and what it is: refuse before downloading anything.
+    if (typeof info.file_size === 'number' && info.file_size > MAX_IMAGE_BYTES) {
+      throw new ImageError('too_large', `${info.file_size} bytes declared`)
+    }
+    if (typeof info.mime_type === 'string' && !info.mime_type.startsWith('image/')) {
+      throw new ImageError('unsupported', info.mime_type)
+    }
+    let url: URL
+    try {
+      url = new URL(String(info.url))
+    } catch {
+      throw new ImageError('unavailable', 'no media url')
+    }
+    if (url.protocol !== 'https:' || !metaHost.test(url.hostname)) {
+      throw new ImageError('unavailable', `media host ${url.hostname} is not Meta's`)
+    }
+    const res = await doFetch(url.href, { headers, signal: budget, redirect: 'error' })
+    if (!res.ok) {
+      await res.body?.cancel()
+      throw new ImageError('unavailable', `media download ${res.status}`)
+    }
+    return checkImage(await readLimited(res))
+  }
+
   return {
+    async fetchImage(mediaId, signal) {
+      try {
+        return await download(mediaId, signal)
+      } catch (err) {
+        if (err instanceof ImageError || signal?.aborted) throw err
+        throw new ImageError('unavailable', err instanceof Error ? err.message : String(err))
+      }
+    },
     async markReadAndType(wamid) {
       await post({ status: 'read', message_id: wamid, typing_indicator: { type: 'text' } })
     },
