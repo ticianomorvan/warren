@@ -25,6 +25,14 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 src/parse/    parseMessage: schema.ts (command), prompt.ts (frozen system prompt + volatile part),
               models.ts (Haiku/Sonnet configs, prices), validate.ts (code-side checks), index.ts
 src/time.ts   The Argentine calendar day
+src/server.ts Entry point: config, migrate, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
+src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
+src/process.ts  Claim a row atomically, send read+typing, reply, record timings; the recovery sweep
+src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts (Graph API client)
+src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
+src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
+src/latency.ts  `pnpm latency` report
+railway.json  Railway config (build, start, healthcheck, region)
 evals/        cases.jsonl (dev/test split), grade.ts, run.ts, results/ (gitignored but summary.md)
 docs/spec.md  Source of truth for what is built and in which order
 ```
@@ -35,7 +43,9 @@ docs/spec.md  Source of truth for what is built and in which order
 pnpm install --frozen-lockfile
 pnpm lint          # Biome
 pnpm typecheck
-pnpm test          # Vitest, no network
+pnpm test          # Vitest, no network; real SQL on in-process PGlite, Graph API injected
+pnpm start         # the server; needs DATABASE_URL and the WhatsApp variables (see src/config.ts)
+pnpm latency [--last N]   # p50/p95 per stage from DATABASE_URL (Railway: the Postgres public URL)
 pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # calls the API, needs .env
 ```
 
@@ -53,3 +63,19 @@ model at the end. CI never calls the Anthropic API.
 - pnpm refuses releases younger than `minimumReleaseAge` and install scripts outside
   `allowBuilds` (`pnpm-workspace.yaml`). Do not widen either without a reason in the commit.
 - Node 24 (`.nvmrc`), TypeScript strict, Biome formatting, Zod 4 for schemas.
+
+## Deploy
+
+- Railway project `warren` (US East, Virginia: `us-east4-eqdc4a`, pinned in `railway.json`), services
+  `warren` (the app) and `Postgres`. Deploy by hand with `railway up -s warren` from the repo; there is no
+  GitHub integration yet. `railway.json` is the legacy config format, supported until 2026-12-01; migrate to
+  `.railway/railway.ts` (`railway config migrate`) before then.
+- **Single replica, single process.** The recovery sweep and the in-process worker assume it. The atomic
+  claim stops a double send, but do not scale out without revisiting the sweep.
+- The app reaches Postgres on the private network (`DATABASE_URL=${{Postgres.DATABASE_URL}}`). For
+  `pnpm latency` from a laptop, build the URL from the Postgres service's `RAILWAY_TCP_PROXY_*` and `PG*`
+  variables (a TCP proxy is enabled on that service). Never print it.
+- Webhook host `wa.heywarren.app` (CNAME and TXT in Vercel DNS). The Meta subscription is set by API
+  (`/{app-id}/subscriptions`, `/{waba-id}/subscribed_apps`), not in the dashboard.
+- `ALLOWED_WA_IDS` (comma-separated) limits who gets a reply; empty means everyone (dev mode). Other senders
+  are stored with status `ignored`.

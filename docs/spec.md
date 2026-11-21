@@ -170,3 +170,7 @@ Each slice ships on its own and comes with its proof.
 - Caveats: the eval messages were written by the same agent that wrote the prompt, so they are likely easier than real traffic, and 25 test messages is a small sample. Slice 3 should add real messages to the set and re-run it.
 - Schema notes: `query` also carries `direction` (in, out or null) so "¿cuánto cobré?" can be told from "¿cuánto gasté?", and `correct` and `delete` carry a `confidence`. Query periods are an enum (`this_month`, `last_week`, ...) that code turns into dates, so the model does no date arithmetic there either.
 - API spend for the whole slice: about US$0.40, against the US$2 cap.
+
+## Slice 2 result (2026-11-20)
+
+Delivered: webhook with signature check, `wamid` dedupe, inbound row persisted before the 200, read receipt plus typing indicator, reply "recibido", per-stage timings, recovery sweep (startup and every 30 s, attempts cap 5, atomic claim), `pnpm latency`. Tests (PGlite, Graph API injected) cover bad signature, duplicate `wamid`, crash then sweep replies once, status webhooks and GET verification. Deployed on Railway US East at `wa.heywarren.app`, Meta subscribed by API. Still open: the floor measured with real messages from a phone (`pnpm latency`).
