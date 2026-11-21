@@ -27,8 +27,12 @@ src/parse/    parseMessage: schema.ts (command), prompt.ts (frozen system prompt
 src/time.ts   The Argentine calendar day
 src/server.ts Entry point: config, migrate, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
-src/store.ts  The rules of inbound_message and reply: due predicate, claim, ownership-guarded writes
-src/process.ts  Decide ignored vs reply, read+typing, send at most once, drain on shutdown; the sweep
+src/store.ts  The rules of the tables (inbound_message, reply, account, movement): due predicate, claim,
+              the commit transaction, ownership-guarded writes
+src/process.ts  Per message: ignored vs reply; for text, typing + parse together, the 10 s interim note, the 30 s
+              deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
+src/render.ts The reply templates (Argentine money format) and every canned text; pure
+src/http.ts   keepAliveFetch: a fetch with its own 60 s keep-alive pool (Graph and Anthropic)
 src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts (Graph API client)
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
@@ -44,8 +48,8 @@ pnpm install --frozen-lockfile
 pnpm lint          # Biome
 pnpm typecheck
 pnpm test          # Vitest, no network; real SQL on in-process PGlite, Graph API injected
-pnpm start         # the server; needs DATABASE_URL and the WhatsApp variables (see src/config.ts)
-pnpm latency [--last N]   # p50/p95 per stage from DATABASE_URL (Railway: the Postgres public URL)
+pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the WhatsApp variables (see src/config.ts)
+pnpm latency [--last N]   # p50/p95 per stage, model time, log-only reply time, from DATABASE_URL (Railway: the Postgres public URL)
 pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # calls the API, needs .env
 ```
 
@@ -91,3 +95,16 @@ model at the end. CI never calls the Anthropic API.
 - Sends are at most once. `send_started_at` is committed before the Graph call; a row that dies after that
   (timeout, 5xx, killed worker) ends as `unknown` and is never sent again. Only an HTTP 4xx answer, which
   proves nothing was sent, goes back to `pending` (retryable codes) or `failed` (permanent codes).
+- **Logging flow (slice 3).** A text message from an allowed sender runs the read receipt plus typing and
+  the parse together. Deadlines count from `received_at` and are processor options (`interimMs` 10 s,
+  `deadlineMs` 30 s). The commit point is one transaction (`store.commit`): the parsed command, the
+  movements (unique on `(inbound_message_id, position)`) and the stored `reply_text`. Before it, a failed
+  parse or the deadline ends the message `failed` with one failure notice (`failure_sent_at`, committed
+  before the send) and a late model result writes nothing. After it, the stored reply is sent even if late,
+  and the sweep sends it without calling the model. The interim note (`interim_sent_at`) and the failure notice are committed before they are sent and never repeated. There is no done mark (a ✅ reaction was removed 2026-11-21). A model output with an
+  unstorable value (bad amount, date or description) is treated as a failed parse, never repaired.
+- Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
+- **Shutdown.** On SIGTERM `processor.stop()` aborts parses that have not reached the commit point and settles
+  those rows to `pending`, so the next process's startup sweep answers them inside their deadline. The deadline
+  is one `AbortSignal` checked right before the commit; a deadline that fires mid-commit loses (committed
+  means the reply goes out). `today` comes from the message's own time (`meta_ts`), not the clock.

@@ -1,6 +1,8 @@
+import Anthropic from '@anthropic-ai/sdk'
 import { createApp } from './app'
 import { loadConfig } from './config'
 import { connect, migrate } from './db'
+import { keepAliveFetch } from './http'
 import { log } from './log'
 import { createProcessor } from './process'
 import { createStore } from './store'
@@ -22,6 +24,8 @@ const processor = createProcessor({
   graph,
   allowed: config.ALLOWED_WA_IDS,
   maxAttempts: MAX_ATTEMPTS,
+  client: new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, fetch: keepAliveFetch() }),
+  helpContact: config.HELP_CONTACT,
 })
 const server = createApp({ store, config, processor })
 
@@ -39,9 +43,10 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     log('shutdown', { signal })
     clearInterval(timer)
     server.close()
-    // Let replies already being sent finish, so a deploy does not leave rows `unknown`.
+    // Messages still parsing go back to `pending` for the next process; replies already being sent
+    // finish, so a deploy does not leave rows `unknown`.
     processor
-      .drain(10_000)
+      .stop(10_000)
       .then(() => sql.end({ timeout: 5 }))
       .finally(() => process.exit(0))
   })

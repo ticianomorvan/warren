@@ -1,4 +1,4 @@
-import { Agent, fetch as undiciFetch } from 'undici'
+import { keepAliveFetch } from '../http'
 
 // Graph `error.code` values, from Meta's error-code reference.
 const PERMANENT = new Set([100, 131026, 131030, 131047, 131051])
@@ -61,18 +61,13 @@ export interface GraphOptions {
   fetch?: typeof fetch
 }
 
-/**
- * Meta answers the first request on a new connection about 0.4 s slower than later ones, and
- * Node's global fetch drops idle connections after 4 s, so a reply a few seconds after the last
- * one paid that every time. Meta kept an idle connection for at least 70 s when measured
- * (2026-11-21); 60 s stays inside that, so a burst of messages reuses one connection. undici
- * also drops a socket early when the server closes it or sends a shorter `Keep-Alive`.
- */
+// Meta answers the first request on a new connection about 0.4 s slower than later ones (see
+// `keepAliveFetch`). Meta kept an idle connection for at least 70 s when measured (2026-11-21).
 // One connection, so the read-and-typing call just before each send proves the socket the send uses
-// is alive; two sockets alternate otherwise. Graph calls are sequential per message anyway.
-const agent = new Agent({ connections: 1, keepAliveTimeout: 60_000, keepAliveMaxTimeout: 60_000 })
-const keptAliveFetch = ((url: string, init: RequestInit) =>
-  undiciFetch(url, { ...(init as object), dispatcher: agent })) as unknown as typeof fetch
+// is alive; two sockets alternate otherwise.
+// graph.facebook.com negotiates HTTP/2 with undici, so parallel calls (typing next to a send) share
+// this one connection without queueing: 4 in parallel took about 338 ms in total (2026-11-21).
+const keptAliveFetch = keepAliveFetch({ connections: 1 })
 
 export function createGraph(o: GraphOptions): Graph {
   const doFetch = o.fetch ?? keptAliveFetch
@@ -102,29 +97,33 @@ export function createGraph(o: GraphOptions): Graph {
   /** wa_ids whose send needed the short form (Meta's test-number recipient list). */
   const useShort = new Set<string>()
 
-  async function send(to: string, body: string): Promise<string> {
-    const res = await post({ recipient_type: 'individual', to, type: 'text', text: { body } })
-    const id = res.messages?.[0]?.id
-    if (!id) throw new GraphError(200, 'no message id in response')
-    return id
+  /**
+   * Runs one send to the `wa_id`, or to its short form once Meta has rejected the `wa_id` with 131030.
+   * 131030 is a 4xx, so nothing was sent and a second try cannot duplicate the message.
+   */
+  async function toRecipient<T>(waId: string, call: (to: string) => Promise<T>): Promise<T> {
+    const short = shortRecipient(waId)
+    if (useShort.has(waId)) return call(short)
+    try {
+      return await call(waId)
+    } catch (err) {
+      if (!(err instanceof GraphError && err.code === 131030) || short === waId) throw err
+      const result = await call(short)
+      useShort.add(waId)
+      return result
+    }
   }
 
   return {
     async markReadAndType(wamid) {
       await post({ status: 'read', message_id: wamid, typing_indicator: { type: 'text' } })
     },
-    async sendText(waId, body) {
-      const short = shortRecipient(waId)
-      if (useShort.has(waId)) return send(short, body)
-      try {
-        return await send(waId, body)
-      } catch (err) {
-        // 131030 is a 4xx, so nothing was sent and a second try cannot duplicate the reply.
-        if (!(err instanceof GraphError && err.code === 131030) || short === waId) throw err
-        const id = await send(short, body)
-        useShort.add(waId)
+    sendText: (waId, body) =>
+      toRecipient(waId, async (to) => {
+        const res = await post({ recipient_type: 'individual', to, type: 'text', text: { body } })
+        const id = res.messages?.[0]?.id
+        if (!id) throw new GraphError(200, 'no message id in response')
         return id
-      }
-    },
+      }),
   }
 }

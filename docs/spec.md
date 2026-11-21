@@ -78,7 +78,7 @@ How we know it worked:
 - **Slow.** If the answer is not out 10 s after the webhook, send one interim note ("Sigo con esto, ya te respondo.") and show the typing indicator again. At most once per message.
 - **Failed.** When processing fails for good (the model keeps failing after its retries, or there is nothing valid to answer with), send a short failure message saying the message was not processed and to try again. A 30 s deadline per message ends in the same failure message, and work still running after it is dropped, so a late answer can never contradict it.
 - **Cost.** Interim and failure messages count toward the 1,000 free delivered service messages a month, like any reply. Both are rare by design. The per-user pair limit (1 message per 6 s, bursts of up to 45) does not bind.
-- **Done mark (decided 2026-11-21).** After the reply is sent, react ✅ on the user's message, so a run of messages shows which ones were handled. It is best effort: it never delays the reply, a failure is only logged and never retried, and it is not sent for `unknown` or failed messages. A reaction needs a recipient, so it uses the same `wa_id`-then-short-form fallback as replies.
+- **No done mark (removed 2026-11-21, Ticiano's call).** A ✅ reaction after the reply was built and then dropped: the reply already confirms the message, and the reaction was an extra Graph call with undocumented billing.
 - **Why not a reaction as the first signal.** Measured 2026-11-21 against Graph: a reaction takes 670–763 ms to be accepted, like a text send (510–720 ms), against 320–390 ms for read plus typing. Setting, replacing and removing a reaction (emoji `""`) all succeeded. Meta does not document whether reactions are billed; check Meta's pricing analytics once there is a payment method.
 
 **Prompt.**
@@ -148,7 +148,7 @@ Each slice ships on its own and comes with its proof.
      - a message from your phone, then `pnpm latency` showing the floor.
 3. **Logging live.**
    - Parser command `log`, movements stored, reply rendered from the template; multiple movements per message.
-   - The transparency rules in Design: typing in parallel with the model, the 10 s interim note, the failure message, the 30 s deadline and the ✅ done mark after the reply.
+   - The transparency rules in Design: typing in parallel with the model, the 10 s interim note, the failure message, and the 30 s deadline.
    - Proof:
      - integration test: a recorded webhook payload against a local server and Postgres produces the expected rows and reply text, and a slow or failing model produces exactly one interim note or one failure message;
      - live, 20 real messages from your phone, then `pnpm latency` meets the latency targets in Goal.
@@ -192,3 +192,14 @@ Slice 3 notes (decided in the slice 2 review):
 - The user table is `account`, not the reserved word `user`. `movement` and `reply` reference `inbound_message.id`, not the wamid.
 - Sends are at most once: a message whose send outcome is unknown ends as `unknown`, never resent.
 - The allowlist is explicit: `ALLOWED_WA_IDS=*` answers everyone, empty answers nobody.
+
+## Slice 3 notes
+
+Decisions the slice brief did not specify:
+- The commit point is `inbound_message.reply_text IS NOT NULL`. The sweep reads it to send a stored reply without the model.
+- Model output with an invalid amount, date or description is "invalid output": it fails the message, since storing a guess would be a silently wrong amount. Only "more than 10 movements" is stored, as low confidence.
+- The interim note and the failure notice are not stored as `reply` rows (only the failure notice, so its status is kept); this keeps one `reply` row per answered message for `pnpm latency`.
+- A failure notice that dies between its timestamp and its send is lost, not retried: at most once beats a duplicate.
+- `ANTHROPIC_API_KEY` is now required config, so a missing key stops the server at startup instead of failing every message.
+- `validateCommand` returns `fatal` (a `log` value the table cannot hold) next to `issues`; only `fatal` fails a message. A `delete` or `correct` with an empty target is doubtful, not fatal, and gets the "not yet" reply.
+- A movement dated in another year than the message renders `dd/mm/yy`.
