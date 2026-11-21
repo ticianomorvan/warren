@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url'
 import type Anthropic from '@anthropic-ai/sdk'
 import { estimateCostUsd, type ModelKey, type Usage } from '../../src/agent'
 import type { Sql } from '../../src/db'
-import { fakeGraph, messageBody, photoBody, post, setup } from '../../src/test-harness'
+import { fakeGraph, messageBody, photoBody, post, setup, voiceBody } from '../../src/test-harness'
+import type { Transcriber } from '../../src/transcribe'
 import { gradeTurn, type Row, type TurnGrade } from './grade'
 import type { Scenario } from './schema'
 
@@ -119,6 +120,8 @@ export interface Env {
   meter: Meter
   /** The model's key, only to price its calls. */
   model: ModelKey
+  /** The real transcription service, for the scenarios that carry a voice note. */
+  transcriber?: Transcriber
 }
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
@@ -188,14 +191,16 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
   const turns: TurnResult[] = []
   const app = await setup({
     sql: env.sql,
-    // A turn with an image: the fake Graph serves the fixture under the media id the webhook names.
+    // A turn with an image or a voice note: the fake Graph serves the fixture under the media id the webhook names.
     fake: fakeGraph({
       media: Object.fromEntries(
-        s.turns.flatMap((turn, k) =>
-          turn.image ? [[`media.${s.id}.${k}`, readFileSync(join(fixtures, turn.image))]] : [],
-        ),
+        s.turns.flatMap((turn, k) => {
+          const file = turn.image ?? turn.audio
+          return file ? [[`media.${s.id}.${k}`, readFileSync(join(fixtures, file))]] : []
+        }),
       ),
     }),
+    transcriber: env.transcriber,
     model: {
       client: meteredClient(env.client, env.meter, calls, env.model),
       calls: { n: 0 },
@@ -225,7 +230,9 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         app.base,
         turn.image
           ? photoBody(wamid, `media.${s.id}.${k}`, turn.text, waId, timestamp)
-          : messageBody(wamid, waId, { timestamp, text: { body: turn.text } }),
+          : turn.audio
+            ? voiceBody(wamid, `media.${s.id}.${k}`, waId, timestamp)
+            : messageBody(wamid, waId, { timestamp, text: { body: turn.text } }),
       )
       const stored = await waitFor(env.sql, wamid)
       const wallMs = performance.now() - started

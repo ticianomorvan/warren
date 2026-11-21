@@ -7,6 +7,7 @@ import { keepAliveFetch } from './http'
 import { log } from './log'
 import { createProcessor } from './process'
 import { createStore } from './store'
+import { createTranscriber } from './transcribe'
 import { createGraph } from './whatsapp/graph'
 
 const MAX_ATTEMPTS = 5
@@ -28,6 +29,9 @@ const processor = createProcessor({
   maxAttempts: MAX_ATTEMPTS,
   client,
   helpContact: config.HELP_CONTACT,
+  transcriber: config.OPENROUTER_API_KEY
+    ? createTranscriber({ apiKey: config.OPENROUTER_API_KEY })
+    : undefined,
 })
 const server = createApp({ store, config, processor })
 

@@ -14,11 +14,19 @@ import {
 } from './agent'
 import { actionLabel, execute } from './execute'
 import { log } from './log'
-import { REPLY_AUDIO, REPLY_FAILED, REPLY_IMAGE, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
+import {
+  REPLY_AUDIO,
+  REPLY_FAILED,
+  REPLY_IMAGE,
+  REPLY_INTERIM,
+  REPLY_NON_TEXT,
+  REPLY_VOICE,
+} from './render'
 import { answerAction } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
-import { type Graph, GraphError, type Image, ImageError } from './whatsapp/graph'
+import { judgeTranscript, type Transcriber, TranscriptionError } from './transcribe'
+import { type Graph, GraphError, type Image, MediaError } from './whatsapp/graph'
 
 export interface ProcessorOptions {
   store: Store
@@ -32,6 +40,8 @@ export interface ProcessorOptions {
   client?: Anthropic
   /** A human contact line for the help reply. */
   helpContact?: string
+  /** Turns voice notes into text. Without one, a voice note is answered with a request for text. */
+  transcriber?: Transcriber
   /** Ms after `received_at` at which a slow message gets one interim note. Default 10 s. */
   interimMs?: number
   /** Ms after `received_at` at which an uncommitted message fails. Default 30 s. */
@@ -200,12 +210,17 @@ export function createProcessor(o: ProcessorOptions) {
 
     const typing = c.typingSent ? Promise.resolve(undefined) : showTyping(c)
     const today = argentinaToday(c.messageAt)
-    const text = c.body ?? ''
     const isPhoto = c.kind === 'image'
     // The download starts with the first signal, beside the database reads, and is awaited only when
-    // the model needs it. A photo that cannot be read is answered, not failed.
+    // the model needs it. A photo that cannot be read is answered, not failed. A voice note's download
+    // and transcription run the same way; what was heard then stands in for the person's text.
     const download = isPhoto ? fetchPhoto(graph, c, signal) : null
     download?.catch(() => {})
+    const hearing =
+      c.kind === 'audio' && o.transcriber ? hear(o.transcriber, graph, c, signal) : null
+    hearing?.catch(() => {})
+    let text = c.body ?? ''
+    let heard: string | undefined
     const working = (async (): Promise<Worked> => {
       const accountId = await store.upsertAccount(c.wa_id)
       const [movements, conversation] = await Promise.all([
@@ -213,7 +228,8 @@ export function createProcessor(o: ProcessorOptions) {
         store.conversation(c),
       ])
       const photo = await download
-      // Answers that need no model: a photo that cannot be read, a bare answer to our question.
+      const voice = await hearing
+      // Answers that need no model: a photo or voice note that cannot be used, a bare answer to our question.
       const unprompted = (
         action: Action,
         entry: Omit<AuditEntry, 'turn' | 'ms' | 'action'>,
@@ -244,8 +260,25 @@ export function createProcessor(o: ProcessorOptions) {
           },
         )
       }
-      // A bare answer to the question we just asked is code's job: no model call at all.
-      const answer = isPhoto ? null : answerAction(text, conversation.question)
+      if (voice && 'notice' in voice) {
+        log('voice_unusable', { wamid: c.wamid, cause: voice.cause, detail: voice.detail })
+        return unprompted(
+          { tool: 'notice', input: { text: voice.notice } },
+          {
+            tool: 'notice',
+            input: { media_id: c.mediaId },
+            status: 'answered',
+            detail: `${voice.cause}: ${voice.detail}`,
+          },
+        )
+      }
+      if (voice) {
+        text = voice.heard
+        heard = voice.heard
+      }
+      // A bare answer to the question we just asked is code's job: no model call at all. Not for a note
+      // of voice: a delete or a correction is never run on what a model of speech thought it heard.
+      const answer = isPhoto || voice ? null : answerAction(text, conversation.question)
       if (answer) {
         return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }
@@ -260,6 +293,7 @@ export function createProcessor(o: ProcessorOptions) {
         movements,
         conversation: conversation.turns,
         photo: Boolean(photo),
+        voice: Boolean(voice),
         pending: conversation.question
           ? {
               asked: conversation.question.asked,
@@ -283,6 +317,7 @@ export function createProcessor(o: ProcessorOptions) {
       return {
         accountId,
         parsed: result.actions,
+        heard,
         facts: contextFacts(context, result.found),
         window: windowReplies(context),
         ...result,
@@ -309,7 +344,8 @@ export function createProcessor(o: ProcessorOptions) {
         return await fail(c, `parse failed: ${errorText(e)}`, trace)
       }
 
-      const { accountId, actions, parsed, audit, turns, ms, usage, facts, window } = outcome.value
+      const { accountId, actions, parsed, audit, turns, ms, usage, facts, window, heard } =
+        outcome.value
 
       // The commit point. Nothing awaits between the signal check above and this call.
       let reply: string | null
@@ -320,6 +356,7 @@ export function createProcessor(o: ProcessorOptions) {
           action: actionLabel(actions),
           turns,
           modelMs: ms,
+          heard,
           execute: (tx) =>
             execute(tx, {
               accountId,
@@ -330,6 +367,7 @@ export function createProcessor(o: ProcessorOptions) {
               message: text,
               facts,
               window,
+              heard,
               render: { helpContact: o.helpContact },
             }),
         })
@@ -367,7 +405,8 @@ export function createProcessor(o: ProcessorOptions) {
       return
     }
 
-    if (c.kind !== 'text' && c.kind !== 'image') {
+    const voice = c.kind === 'audio' && o.transcriber !== undefined
+    if (c.kind !== 'text' && c.kind !== 'image' && !voice) {
       release() // stores nothing the sender's next message could depend on
       const typing_ms = await showTyping(c)
       // A voice note is the one non-text kind people send to log something: say what to do instead.
@@ -506,6 +545,8 @@ interface Worked {
   facts: string[]
   /** What Warren answered earlier (see `windowReplies`). */
   window: string[]
+  /** What was heard in a voice note, which the reply starts with. */
+  heard?: string
 }
 
 /** The photo of a message, or why it cannot be read. Anything else (the deadline's abort) is thrown. */
@@ -513,19 +554,67 @@ function fetchPhoto(
   graph: Graph,
   c: Claim,
   signal: AbortSignal,
-): Promise<{ image: Image } | { problem: ImageError }> {
+): Promise<{ image: Image } | { problem: MediaError }> {
   if (!c.mediaId) {
     return Promise.resolve({
-      problem: new ImageError('unavailable', 'the webhook has no media id'),
+      problem: new MediaError('unavailable', 'the webhook has no media id'),
     })
   }
   return graph.fetchImage(c.mediaId, signal).then(
     (image) => ({ image }),
     (error: unknown) => {
-      if (error instanceof ImageError) return { problem: error }
+      if (error instanceof MediaError) return { problem: error }
       throw error
     },
   )
+}
+
+/** A voice note that could not be used, answered with `notice`; `cause` and `detail` go to the log and the audit, not to the person. */
+interface Unheard {
+  notice: string
+  cause: string
+  detail: string
+}
+
+/**
+ * The words of a voice note, or why they cannot be used: its download (the same limits as a photo's),
+ * the transcription and the confidence gate. A failure is a notice, never silence; only the message's
+ * own deadline (the abort) is thrown.
+ */
+async function hear(
+  transcriber: Transcriber,
+  graph: Graph,
+  c: Claim,
+  signal: AbortSignal,
+): Promise<{ heard: string } | Unheard> {
+  if (!c.mediaId) {
+    return {
+      notice: REPLY_VOICE.failed,
+      cause: 'unavailable',
+      detail: 'the webhook has no media id',
+    }
+  }
+  try {
+    const audio = await graph.fetchAudio(c.mediaId, signal)
+    const verdict = judgeTranscript(await transcriber.transcribe(audio, signal))
+    if (verdict.ok) return { heard: verdict.text }
+    return {
+      notice: verdict.reason === 'too_long' ? REPLY_VOICE.too_large : REPLY_VOICE.unclear,
+      cause: `refused ${verdict.reason}`,
+      detail: verdict.detail,
+    }
+  } catch (error) {
+    if (signal.aborted) throw error
+    if (error instanceof MediaError) {
+      const notice =
+        error.problem === 'unavailable' ? REPLY_VOICE.failed : REPLY_VOICE[error.problem]
+      return { notice, cause: error.problem, detail: error.message }
+    }
+    if (error instanceof TranscriptionError) {
+      return { notice: REPLY_VOICE.failed, cause: error.failure, detail: error.message }
+    }
+    throw error
+  }
 }
 
 let shared: Anthropic | undefined

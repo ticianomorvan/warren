@@ -225,6 +225,29 @@ export function echoes(text: string, message: string): boolean {
   )
 }
 
+/** Words that say nothing about a movement: articles, prepositions, and the verbs of "I did it" that the line's own label already says. */
+const FILLER = new Set(
+  (
+    'el la los las un una de del en con por para a al y o que se me lo le es fue era su sus tu tus mi este esta ese esa ' +
+    'ya ahora queda quedo quedaron listo hecho dale ok perfecto ' +
+    'corregi corregido corregida corregidos anote anotado anotados anotada borre borrado borrada borrados ' +
+    'registre registrado cambie cambiado actualice actualizado'
+  ).split(' '),
+)
+
+/**
+ * Whether a text adds nothing to the lines code rendered: every word of it is filler or already in
+ * those lines ("Corregí el café de las 11:11." beside "✓ Corregido: Café $1.500 (antes $3.500) · 11:11").
+ * Such a text is dropped, like an echo of the person's own message: it is not an error.
+ */
+export function restates(text: string, lines: readonly string[]): boolean {
+  const shown = new Set(flat(lines.join(' ')).split(' '))
+  const words = flat(text)
+    .split(' ')
+    .filter((w) => w !== '' && !FILLER.has(w))
+  return words.every((w) => shown.has(w))
+}
+
 /** What a text may lean on. */
 export interface Evidence {
   /** Where numbers may come from: facts and the lines code rendered. */
@@ -389,7 +412,9 @@ export function composeReply(i: {
       applied,
       ...(step.tool === 'reply' ? { window: i.window } : {}),
     })
-    if (check.ok) {
+    if (check.ok && step.tool !== 'reply' && restates(check.text, i.lines)) {
+      verdicts.set(say.action, { text: 'dropped', textReason: 'only restates the lines' })
+    } else if (check.ok) {
       verdicts.set(say.action, { text: 'sent' })
       if (!notes.includes(check.text)) notes.push(check.text)
     } else {

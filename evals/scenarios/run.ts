@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { MODELS, type ModelKey } from '../../src/agent'
 import { keepAliveFetch } from '../../src/http'
 import { createTestDatabase } from '../../src/test-harness'
+import { createTranscriber, type Transcriber } from '../../src/transcribe'
 import { Meter, runScenario, type ScenarioResult } from './drive'
 import { failureLines, latencyByTag, renderLatencyByTag, renderSummary, summarize } from './report'
 import { loadScenarios } from './schema'
@@ -53,6 +54,22 @@ if (scenarios.length === 0) {
   process.exit(1)
 }
 
+// Voice scenarios go through the real transcription service, as in production.
+const voiceNotes = scenarios.reduce((n, s) => n + s.turns.filter((t) => t.audio).length, 0)
+if (voiceNotes > 0 && !process.env.OPENROUTER_API_KEY) {
+  throw new Error('the selected scenarios have voice notes: OPENROUTER_API_KEY is missing in .env')
+}
+let transcriptions = 0
+const real = process.env.OPENROUTER_API_KEY
+  ? createTranscriber({ apiKey: process.env.OPENROUTER_API_KEY })
+  : undefined
+const transcriber: Transcriber | undefined = real && {
+  transcribe: (audio, signal) => {
+    transcriptions++
+    return real.transcribe(audio, signal)
+  },
+}
+
 // The pipeline logs one JSON line per event on stdout: keep them out of the report.
 const printLog = console.log
 console.log = () => {}
@@ -69,7 +86,7 @@ async function runAll(): Promise<ScenarioResult[]> {
   const [first, ...rest] = scenarios
   if (!first) return results
   const play = async (s: (typeof scenarios)[number]) =>
-    results.push(await runScenario(s, { sql: db.sql, client, meter, model }))
+    results.push(await runScenario(s, { sql: db.sql, client, meter, model, transcriber }))
   // The first scenario alone writes the prompt cache; the rest read it.
   await play(first)
   let next = 0
@@ -97,6 +114,12 @@ const out = (title: string, rs: ScenarioResult[]) => {
 console.log(
   `Warren scenario eval: ${MODELS[model].id}, split ${split}, ${results.length} scenarios`,
 )
+if (transcriptions > 0) {
+  // OpenRouter billed US$0.000308 for a note of up to 10 s (whisper-large-v3 on Groq, 2026-11-21).
+  console.log(
+    `Transcriptions: ${transcriptions} (about US$${(transcriptions * 0.000308).toFixed(4)}, not in the model spend)`,
+  )
+}
 const all = summarize(results)
 out('All selected', results)
 if (split === 'all') {

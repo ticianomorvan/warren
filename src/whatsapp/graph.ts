@@ -47,15 +47,15 @@ export function shortRecipient(waId: string): string {
   return waId
 }
 
-/** Why a photo could not be given to the agent; each one has its own reply to the person. */
-export type ImageProblem = 'too_large' | 'unsupported' | 'unavailable'
+/** Why a photo or a voice note could not be given to the agent; each one has its own reply to the person. */
+export type MediaProblem = 'too_large' | 'unsupported' | 'unavailable'
 
-export class ImageError extends Error {
+export class MediaError extends Error {
   constructor(
-    readonly problem: ImageProblem,
+    readonly problem: MediaProblem,
     detail: string,
   ) {
-    super(`image ${problem}: ${detail}`)
+    super(`media ${problem}: ${detail}`)
   }
 }
 
@@ -82,10 +82,54 @@ export function sniffImage(bytes: Uint8Array): ImageType | null {
 
 /** The limits on a downloaded photo: not empty, at most 5 MB, a JPEG, PNG or WebP by its bytes. */
 export function checkImage(bytes: Uint8Array): Image {
-  if (bytes.length > MAX_IMAGE_BYTES) throw new ImageError('too_large', `${bytes.length} bytes`)
+  if (bytes.length > MAX_IMAGE_BYTES) throw new MediaError('too_large', `${bytes.length} bytes`)
   const mediaType = sniffImage(bytes)
-  if (!mediaType) throw new ImageError('unsupported', 'not a JPEG, PNG or WebP')
+  if (!mediaType) throw new MediaError('unsupported', 'not a JPEG, PNG or WebP')
   return { mediaType, data: Buffer.from(bytes).toString('base64') }
+}
+
+export type AudioType = 'audio/ogg' | 'audio/mp4' | 'audio/mpeg'
+
+/**
+ * A voice note that passed the limits: the type read from its bytes, the file extension the
+ * transcription service reads the format from, and the bytes. Never stored.
+ */
+export interface Audio {
+  mediaType: AudioType
+  extension: 'ogg' | 'm4a' | 'mp3'
+  bytes: Uint8Array
+}
+
+/**
+ * A few MB. A WhatsApp voice note is Opus at about 2 KB a second, so this is about 25 minutes: far more
+ * than anyone says in one note, and small enough to upload and transcribe inside the deadline.
+ */
+export const MAX_AUDIO_BYTES = 3 * 1024 * 1024
+
+/**
+ * The audio formats WhatsApp sends that the transcription service reads: Ogg (the voice note, Opus),
+ * MP4/M4A and MP3. Raw AAC and AMR, which WhatsApp also accepts, are refused by the service (checked 2026-11-21).
+ */
+export function sniffAudio(bytes: Uint8Array): Pick<Audio, 'mediaType' | 'extension'> | null {
+  const at = (offset: number, ...values: number[]) =>
+    values.every((v, k) => bytes[offset + k] === v)
+  if (at(0, 0x4f, 0x67, 0x67, 0x53)) return { mediaType: 'audio/ogg', extension: 'ogg' } // OggS
+  if (at(4, 0x66, 0x74, 0x79, 0x70)) return { mediaType: 'audio/mp4', extension: 'm4a' } // ftyp
+  if (at(0, 0x49, 0x44, 0x33)) return { mediaType: 'audio/mpeg', extension: 'mp3' } // ID3
+  // An MPEG frame: 11 sync bits, then a non-zero layer (layer 0 is ADTS, raw AAC).
+  const [b0 = 0, b1 = 0] = bytes
+  if (b0 === 0xff && (b1 & 0xe0) === 0xe0 && ((b1 >> 1) & 3) !== 0) {
+    return { mediaType: 'audio/mpeg', extension: 'mp3' }
+  }
+  return null
+}
+
+/** The limits on a downloaded voice note: at most 3 MB, Ogg, MP4/M4A or MP3 by its bytes. */
+export function checkAudio(bytes: Uint8Array): Audio {
+  if (bytes.length > MAX_AUDIO_BYTES) throw new MediaError('too_large', `${bytes.length} bytes`)
+  const sniffed = sniffAudio(bytes)
+  if (!sniffed) throw new MediaError('unsupported', 'not Ogg, MP4/M4A or MP3 audio')
+  return { ...sniffed, bytes }
 }
 
 export interface Graph {
@@ -93,8 +137,10 @@ export interface Graph {
   markReadAndType(wamid: string): Promise<void>
   /** Sends a text message to a webhook `wa_id` and returns its wamid. */
   sendText(waId: string, body: string): Promise<string>
-  /** Downloads a photo by its media id (id, then URL, then bytes) within the limits; throws `ImageError`. */
+  /** Downloads a photo by its media id (id, then URL, then bytes) within the limits; throws `MediaError`. */
   fetchImage(mediaId: string, signal?: AbortSignal): Promise<Image>
+  /** The same for a voice note, within its own limits; throws `MediaError`. */
+  fetchAudio(mediaId: string, signal?: AbortSignal): Promise<Audio>
 }
 
 export interface GraphOptions {
@@ -162,31 +208,40 @@ export function createGraph(o: GraphOptions): Graph {
   /** Media URLs come from Meta's own domains; the token goes only to one of them, over https. */
   const metaHost = /(^|\.)(facebook\.com|fbsbx\.com|fbcdn\.net|whatsapp\.net|whatsapp\.com)$/
 
-  async function readLimited(res: Response): Promise<Uint8Array> {
+  async function readLimited(res: Response, max: number): Promise<Uint8Array> {
     const declared = Number(res.headers.get('content-length'))
-    if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
+    if (Number.isFinite(declared) && declared > max) {
       await res.body?.cancel()
-      throw new ImageError('too_large', `${declared} bytes declared`)
+      throw new MediaError('too_large', `${declared} bytes declared`)
     }
     const reader = res.body?.getReader()
-    if (!reader) throw new ImageError('unavailable', 'no body')
+    if (!reader) throw new MediaError('unavailable', 'no body')
     const chunks: Uint8Array[] = []
     let size = 0
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
       size += value.length
-      if (size > MAX_IMAGE_BYTES) {
+      if (size > max) {
         await reader.cancel()
-        throw new ImageError('too_large', `more than ${MAX_IMAGE_BYTES} bytes`)
+        throw new MediaError('too_large', `more than ${max} bytes`)
       }
       chunks.push(value)
     }
     return Buffer.concat(chunks)
   }
 
-  async function download(mediaId: string, signal?: AbortSignal): Promise<Image> {
-    if (!/^[A-Za-z0-9_-]{1,100}$/.test(mediaId)) throw new ImageError('unavailable', 'bad media id')
+  /** What differs between a photo and a voice note: the declared type, the size cap and the bytes' own check. */
+  interface Kind<T> {
+    mimePrefix: string
+    max: number
+    check(bytes: Uint8Array): T
+  }
+  const photo: Kind<Image> = { mimePrefix: 'image/', max: MAX_IMAGE_BYTES, check: checkImage }
+  const voice: Kind<Audio> = { mimePrefix: 'audio/', max: MAX_AUDIO_BYTES, check: checkAudio }
+
+  async function download<T>(kind: Kind<T>, mediaId: string, signal?: AbortSignal): Promise<T> {
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(mediaId)) throw new MediaError('unavailable', 'bad media id')
     // One budget for the lookup and the download together, inside the message's own deadline. A redirect
     // is an error: the host check below is on the URL Meta named, not on wherever it might send us.
     const budget = AbortSignal.any([
@@ -199,41 +254,45 @@ export function createGraph(o: GraphOptions): Graph {
       signal: budget,
       redirect: 'error',
     })
-    if (!meta.ok) throw new ImageError('unavailable', `media lookup ${meta.status}`)
+    if (!meta.ok) throw new MediaError('unavailable', `media lookup ${meta.status}`)
     const info = (await meta.json()) as { url?: unknown; mime_type?: unknown; file_size?: unknown }
     // The lookup already says how big it is and what it is: refuse before downloading anything.
-    if (typeof info.file_size === 'number' && info.file_size > MAX_IMAGE_BYTES) {
-      throw new ImageError('too_large', `${info.file_size} bytes declared`)
+    if (typeof info.file_size === 'number' && info.file_size > kind.max) {
+      throw new MediaError('too_large', `${info.file_size} bytes declared`)
     }
-    if (typeof info.mime_type === 'string' && !info.mime_type.startsWith('image/')) {
-      throw new ImageError('unsupported', info.mime_type)
+    if (typeof info.mime_type === 'string' && !info.mime_type.startsWith(kind.mimePrefix)) {
+      throw new MediaError('unsupported', info.mime_type)
     }
     let url: URL
     try {
       url = new URL(String(info.url))
     } catch {
-      throw new ImageError('unavailable', 'no media url')
+      throw new MediaError('unavailable', 'no media url')
     }
     if (url.protocol !== 'https:' || !metaHost.test(url.hostname)) {
-      throw new ImageError('unavailable', `media host ${url.hostname} is not Meta's`)
+      throw new MediaError('unavailable', `media host ${url.hostname} is not Meta's`)
     }
     const res = await doFetch(url.href, { headers, signal: budget, redirect: 'error' })
     if (!res.ok) {
       await res.body?.cancel()
-      throw new ImageError('unavailable', `media download ${res.status}`)
+      throw new MediaError('unavailable', `media download ${res.status}`)
     }
-    return checkImage(await readLimited(res))
+    return kind.check(await readLimited(res, kind.max))
+  }
+
+  /** Any failure but a `MediaError` or the message's own deadline becomes "unavailable". */
+  async function fetchMedia<T>(kind: Kind<T>, mediaId: string, signal?: AbortSignal): Promise<T> {
+    try {
+      return await download(kind, mediaId, signal)
+    } catch (err) {
+      if (err instanceof MediaError || signal?.aborted) throw err
+      throw new MediaError('unavailable', err instanceof Error ? err.message : String(err))
+    }
   }
 
   return {
-    async fetchImage(mediaId, signal) {
-      try {
-        return await download(mediaId, signal)
-      } catch (err) {
-        if (err instanceof ImageError || signal?.aborted) throw err
-        throw new ImageError('unavailable', err instanceof Error ? err.message : String(err))
-      }
-    },
+    fetchImage: (mediaId, signal) => fetchMedia(photo, mediaId, signal),
+    fetchAudio: (mediaId, signal) => fetchMedia(voice, mediaId, signal),
     async markReadAndType(wamid) {
       await post({ status: 'read', message_id: wamid, typing_indicator: { type: 'text' } })
     },

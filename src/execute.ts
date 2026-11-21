@@ -19,6 +19,7 @@ import {
   renderAsk,
   renderCorrection,
   renderDeletion,
+  renderHeard,
   renderHelp,
   renderLog,
   renderQuery,
@@ -47,6 +48,8 @@ export interface ExecuteInput {
   /** What Warren answered earlier in the conversation: the one proof a `reply` may lean on. */
   window: string[]
   render?: RenderOptions
+  /** What was heard in a voice note: the reply starts with it, rendered by code. */
+  heard?: string
 }
 
 /** The label `inbound_message.action` and the latency report use: one tool, or `multi`. */
@@ -204,5 +207,5 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
       ? e
       : { ...e, status: steps[e.action]?.outcome ?? e.status, ...verdicts.get(e.action) },
   )
-  return { reply, ...out, audit }
+  return { reply: i.heard ? `${renderHeard(i.heard)}\n${reply}` : reply, ...out, audit }
 }
