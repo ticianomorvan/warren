@@ -25,6 +25,14 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 src/parse/    parseMessage: schema.ts (command), prompt.ts (frozen system prompt + volatile part),
               models.ts (Haiku/Sonnet configs, prices), validate.ts (code-side checks), index.ts
 src/time.ts   The Argentine calendar day
+src/server.ts Entry point: config, migrate, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
+src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
+src/store.ts  The rules of inbound_message and reply: due predicate, claim, ownership-guarded writes
+src/process.ts  Decide ignored vs reply, read+typing, send at most once, drain on shutdown; the sweep
+src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts (Graph API client)
+src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
+src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
+src/latency.ts  `pnpm latency` report
 evals/        cases.jsonl (dev/test split), grade.ts, run.ts, results/ (gitignored but summary.md)
 docs/spec.md  Source of truth for what is built and in which order
 ```
@@ -35,7 +43,9 @@ docs/spec.md  Source of truth for what is built and in which order
 pnpm install --frozen-lockfile
 pnpm lint          # Biome
 pnpm typecheck
-pnpm test          # Vitest, no network
+pnpm test          # Vitest, no network; real SQL on in-process PGlite, Graph API injected
+pnpm start         # the server; needs DATABASE_URL and the WhatsApp variables (see src/config.ts)
+pnpm latency [--last N]   # p50/p95 per stage from DATABASE_URL (Railway: the Postgres public URL)
 pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # calls the API, needs .env
 ```
 
@@ -53,3 +63,31 @@ model at the end. CI never calls the Anthropic API.
 - pnpm refuses releases younger than `minimumReleaseAge` and install scripts outside
   `allowBuilds` (`pnpm-workspace.yaml`). Do not widen either without a reason in the commit.
 - Node 24 (`.nvmrc`), TypeScript strict, Biome formatting, Zod 4 for schemas.
+
+## Deploy
+
+- Railway project `warren` (US East, Virginia: `us-east4-eqdc4a`), services `warren` (the app) and
+  `Postgres`. Deploy by hand with `railway up -s warren` from the repo; there is no GitHub integration yet.
+- Railway settings live in `.railway/railway.ts` (Infrastructure as Code, npm `railway` SDK): build, start
+  `pnpm start`, healthcheck `/health` (60 s), restart on failure, 1 replica in US East, the domain, and the
+  Postgres TCP proxy. Variables are unmanaged, so the file never holds secrets; set them with
+  `railway variables`. Change the file, run `railway config plan`, then `railway config apply`. A plan that
+  is not "already up to date" means someone changed the service by hand.
+- **Single replica, single process.** The recovery sweep and the in-process worker assume it. The atomic
+  claim stops a double send, but do not scale out without revisiting the sweep.
+- The app reaches Postgres on the private network (`DATABASE_URL=${{Postgres.DATABASE_URL}}`). For
+  `pnpm latency` from a laptop, build the URL from the Postgres service's `RAILWAY_TCP_PROXY_*` and `PG*`
+  variables (a TCP proxy is enabled on that service). Never print it.
+- Webhook host `wa.heywarren.app` (CNAME and TXT in Vercel DNS). The Meta subscription is set by API
+  (`/{app-id}/subscriptions`, `/{waba-id}/subscribed_apps`), not in the dashboard.
+- `ALLOWED_WA_IDS` (comma-separated, `+` and spaces ignored) is who gets a reply. `*` answers everyone (dev
+  mode); empty or unset answers nobody. Every message is stored; the others end as `ignored`.
+- **Meta test number:** it only delivers to its recipient list, matched exactly. Meta saves Argentine
+  mobiles there without the `9` (and Mexican ones without the `1`), even when typed with it, while
+  webhooks give `549…` / `521…`. `sendText` in `src/whatsapp/graph.ts` sends to the `wa_id` and, only
+  after a 131030 (nothing was sent), retries once with the short form and remembers it for that number. A list entry typed with the local `15` is saved with it and
+  never matches; re-add the number as `+54 9 <area> <number>`. The symptom is `131030 Recipient phone number
+  not in allowed list` on every send while read and typing still work.
+- Sends are at most once. `send_started_at` is committed before the Graph call; a row that dies after that
+  (timeout, 5xx, killed worker) ends as `unknown` and is never sent again. Only an HTTP 4xx answer, which
+  proves nothing was sent, goes back to `pending` (retryable codes) or `failed` (permanent codes).

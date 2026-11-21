@@ -11,8 +11,10 @@ The earlier mail-ledger version lives on as the tag `v0-mail-ledger`.
 
 ## Status
 
-Fresh start, slice 1 of 4 done: the message parser (`src/parse`), a 131-message eval set and the
-model choice. No webhook, database or deploy yet.
+Fresh start, slices 1 and 2 of 4 done. Slice 1: the message parser (`src/parse`), a 131-message eval
+set and the model choice. Slice 2: the WhatsApp webhook on Railway (`https://wa.heywarren.app`), which
+verifies the signature, stores each message once, shows the typing indicator and replies "recibido",
+with per-stage timings (`pnpm latency`). The parser is not wired in yet (slice 3).
 
 **Model choice: `claude-haiku-5-5`** at effort `low`, thinking off. On the held-out test split
 (25 messages) both Haiku and Sonnet 5.5 are 25/25 fully correct with no silently wrong amount, so
