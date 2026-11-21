@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
+import { estimateCostUsd, type ModelKey, type Usage } from '../../src/agent'
 import type { Sql } from '../../src/db'
-import { estimateCostUsd, type ModelKey, type Usage } from '../../src/parse'
 import { fakeGraph, messageBody, post, setup } from '../../src/test-harness'
 import { gradeTurn, type Row, type TurnGrade } from './grade'
 import type { Scenario } from './schema'
@@ -46,7 +46,7 @@ export interface CallRecord {
 }
 
 /**
- * The real Anthropic client seen through the meter: every `messages.parse` is counted, and one that
+ * The real Anthropic client seen through the meter: every `messages.create` is counted, and one that
  * would break the budget never starts. `calls` is this scenario's own list, so a turn's cost is the
  * calls made during it.
  */
@@ -56,11 +56,11 @@ export function meteredClient(
   calls: CallRecord[],
   model: ModelKey,
 ): Anthropic {
-  const parse = async (params: never, options?: never) => {
+  const create = async (params: never, options?: never) => {
     meter.begin()
     let cost: number | null = null
     try {
-      const response = await real.messages.parse(params, options)
+      const response = await real.messages.create(params, options)
       const usage: Usage = {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
@@ -74,10 +74,10 @@ export function meteredClient(
       meter.end(cost)
     }
   }
-  return { messages: { parse } } as unknown as Anthropic
+  return { messages: { create } } as unknown as Anthropic
 }
 
-export type Action = 'log' | 'correct' | 'delete' | 'query' | 'ask' | 'other'
+export type Action = 'log' | 'correct' | 'delete' | 'query' | 'ask' | 'multi' | 'other'
 
 export interface TurnResult {
   text: string
@@ -86,11 +86,15 @@ export interface TurnResult {
   grade: TurnGrade
   /** Post to reply recorded, in the process (fake Graph, in-process database). */
   wallMs: number
-  /** Time inside `parseMessage`, as the pipeline stores it. */
+  /** Time inside the agent loop (model calls and reads), as the pipeline stores it. */
   modelMs: number | null
+  /** Model calls the turn used. */
+  modelTurns: number | null
   action: Action
-  /** What the model returned (`parsed`), for the failure list. */
+  /** What the model asked for (`parsed`), for the failure list. */
   parsed: unknown
+  /** Why the message failed (the failure notice's reason), if it did. */
+  error: string | null
   costUsd: number
 }
 
@@ -150,14 +154,19 @@ async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<stri
   return refs
 }
 
-const actionOf = (commandType: string | null, reply: string): Action => {
+const actionOf = (action: string | null, reply: string): Action => {
   if (reply.trim().startsWith('¿')) return 'ask'
-  return commandType === 'log' ||
-    commandType === 'correct' ||
-    commandType === 'delete' ||
-    commandType === 'query'
-    ? commandType
-    : 'other'
+  switch (action) {
+    case 'log':
+    case 'correct':
+    case 'delete':
+    case 'multi':
+      return action
+    case 'summarize':
+      return 'query'
+    default:
+      return 'other'
+  }
 }
 
 /**
@@ -175,7 +184,11 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
   const app = await setup({
     sql: env.sql,
     fake: fakeGraph(),
-    model: { client: meteredClient(env.client, env.meter, calls, env.model), calls: { n: 0 } },
+    model: {
+      client: meteredClient(env.client, env.meter, calls, env.model),
+      calls: { n: 0 },
+      requests: [],
+    },
     // Production's own limits: a model that is too slow ends in the failure notice here as there.
     interimMs: 10_000,
     deadlineMs: 30_000,
@@ -207,10 +220,12 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
       if (env.meter.exhausted)
         return { ...base, status: 'budget', turns, failedTurn: null, error: null }
 
-      if (stored.command?.type === 'log') {
-        // New movements are stamped with the clock of the turn, not the real one.
+      if (stored.action === 'log' || stored.action === 'multi') {
+        // New movements are stamped with the clock of the turn, not the real one. A corrected row
+        // keeps the time of the one it replaced, so only rows that replace nothing are restamped.
         await env.sql`UPDATE movement SET created_at = ${new Date(epoch(turn.now)).toISOString()}
-          WHERE inbound_message_id = ${stored.id}`
+          WHERE inbound_message_id = ${stored.id}
+            AND NOT EXISTS (SELECT 1 FROM movement o WHERE o.superseded_by = movement.id)`
       }
       const failed = stored.status !== 'done' || stored.reply_text === null
       const reply = stored.reply_text ?? app.calls.sent.at(-1)?.body ?? ''
@@ -223,7 +238,7 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         refs,
         reply,
         failed,
-        commandType: stored.command?.type ?? null,
+        commandType: stored.command?.some((c) => c.tool === 'summarize') ? 'query' : stored.action,
       })
       refs.clear()
       for (const [ref, id] of grade.refs) refs.set(ref, id)
@@ -234,8 +249,10 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         grade,
         wallMs,
         modelMs: stored.model_ms,
-        action: actionOf(stored.command?.type ?? null, reply),
+        modelTurns: stored.model_turns,
+        action: actionOf(stored.action, reply),
         parsed: stored.parsed,
+        error: stored.error,
         costUsd: calls.slice(callsBefore).reduce((sum, c) => sum + c.costUsd, 0),
       })
       previous = { id: stored.id, at: epoch(turn.now) }
@@ -256,9 +273,12 @@ interface Stored {
   id: number
   status: string
   reply_text: string | null
-  command: { type: string } | null
+  action: string | null
+  command: { tool: string }[] | null
   parsed: unknown
+  error: string | null
   model_ms: number | null
+  model_turns: number | null
 }
 
 /** Waits until the message has left the processor: replied, failed or given up. */
@@ -266,7 +286,7 @@ async function waitFor(sql: Sql, wamid: string, timeoutMs = 60_000): Promise<Sto
   const end = Date.now() + timeoutMs
   for (;;) {
     const [row] = await sql<Stored[]>`
-      SELECT id::int AS id, status, reply_text, command, parsed, model_ms
+      SELECT id::int AS id, status, reply_text, action, command, parsed, error, model_ms, model_turns
       FROM inbound_message WHERE wamid = ${wamid}`
     if (row && ['done', 'failed', 'unknown', 'ignored'].includes(row.status)) return row
     if (Date.now() > end) throw new Error(`timed out waiting for ${wamid}`)

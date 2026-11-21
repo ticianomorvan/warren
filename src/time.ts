@@ -1,4 +1,4 @@
-import type { Period } from './parse/schema'
+import type { Period } from './agent/schema'
 
 const WEEKDAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
 
@@ -9,6 +9,16 @@ export function argentinaToday(now: Date = new Date()): string {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
+  }).format(now)
+}
+
+/** The Argentine wall clock (HH:MM) of an instant. */
+export function argentinaTime(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
   }).format(now)
 }
 

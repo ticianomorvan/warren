@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Command, Movement } from '../src/parse/schema'
+import type { Movement } from '../src/agent'
+import type { Command } from './command'
 import { canonicalAmount, type EvalCase, grade, similarText } from './grade'
 
 const want: Movement = {

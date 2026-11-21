@@ -28,7 +28,7 @@ export interface Summary {
   turns: number
   /** Post to stored reply; includes the model call. */
   turnMs: Latency
-  /** Only the model call, as `parseMessage` measured it. */
+  /** Only the agent loop (model calls and reads), as the pipeline stored it. */
   modelMs: Latency
   byAction: Partial<Record<Action, Latency>>
   costUsd: number
@@ -57,7 +57,7 @@ export function summarize(results: ScenarioResult[]): Summary {
     }
   }
   const byAction: Summary['byAction'] = {}
-  for (const action of ['log', 'correct', 'delete', 'query', 'ask', 'other'] as const) {
+  for (const action of ['log', 'correct', 'delete', 'query', 'ask', 'multi', 'other'] as const) {
     const of = turns.filter((t) => t.action === action)
     if (of.length > 0) byAction[action] = latency(of.map((t) => t.wallMs))
   }
@@ -127,7 +127,7 @@ export function failureLines(results: ScenarioResult[]): string[] {
     const silent = t.grade.silentWrong ? ' SILENT WRONG CHANGE;' : ''
     const reply = t.reply.replace(/\s+/g, ' ').slice(0, 90)
     return [
-      `- ${r.id} [${r.tags.join(', ')}] turn ${r.failedTurn + 1} "${t.text}":${silent} ${t.grade.problems.join('; ')} → reply "${reply}"`,
+      `- ${r.id} [${r.tags.join(', ')}] turn ${r.failedTurn + 1} "${t.text}":${silent} ${t.grade.problems.join('; ')} → reply "${reply}" ← ${JSON.stringify(t.parsed ?? null).slice(0, 320)}${t.error ? ` ERROR ${t.error.slice(0, 200)}` : ''}`,
     ]
   })
 }

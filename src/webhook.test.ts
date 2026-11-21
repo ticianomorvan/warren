@@ -9,10 +9,12 @@ import {
   fakeGraph,
   fakeModel,
   gate,
+  logCall,
   messageBody,
   movement,
   movements,
   post,
+  replyCall,
   row,
   SECRET,
   seed,
@@ -430,7 +432,9 @@ describe('logging', () => {
     ])
     const r = await row('wamid.LOG1')
     expect(r).toMatchObject({ status: 'done', reply_text: '✓ Café $3.500 (visa)' })
-    expect(r?.command).toMatchObject({ type: 'log' })
+    expect(r?.command).toMatchObject([{ tool: 'log_movements' }])
+    expect(r?.action).toBe('log')
+    expect(r?.model_turns).toBe(1)
     expect(r?.model_ms).toBeTypeOf('number')
     expect(r?.interim_sent_at).toBeNull()
     expect(r?.failure_sent_at).toBeNull()
@@ -441,9 +445,8 @@ describe('logging', () => {
   })
 
   it('stores several movements in order and lists them in one reply', async () => {
-    const model = fakeModel(() => ({
-      type: 'log',
-      movements: [
+    const model = fakeModel(() => [
+      logCall(
         movement({ payment: 'visa' }),
         movement({
           description: 'súper',
@@ -458,8 +461,8 @@ describe('logging', () => {
           currency: 'USD',
           payment: null,
         }),
-      ],
-    }))
+      ),
+    ])
     const app = await setup({ model })
     await post(app.base, messageBody('wamid.LOG3'))
     await until(() => doneCount(1))
@@ -475,27 +478,22 @@ describe('logging', () => {
     app.close()
   })
 
-  it('passes the account context to the parser: today and its last movements', async () => {
-    const seen: unknown[] = []
-    const model = fakeModel(() => cafe)
-    const parse = model.client.messages as unknown as { parse: (p: unknown) => Promise<unknown> }
-    const original = parse.parse
-    parse.parse = (p, ...rest) => {
-      seen.push(p)
-      return (original as (...a: unknown[]) => Promise<unknown>)(p, ...rest)
-    }
-    const app = await setup({ model })
+  it('passes the account context to the agent: today, its last movements with ids and the conversation', async () => {
+    const app = await setup({ model: fakeModel(() => cafe) })
     await post(app.base, messageBody('wamid.CTX1'))
     await until(() => doneCount(1))
     await post(app.base, messageBody('wamid.CTX2'))
     await until(() => doneCount(2))
-    const content = (i: number) =>
-      (seen[i] as { messages: { content: string }[] }).messages[0]?.content
-    expect(content(0)).toContain(`Hoy es`)
+    const content = (i: number) => String(app.requests[i]?.messages[0]?.content)
+    expect(content(0)).toContain('Hoy es')
     expect(content(0)).toContain('(ninguno)')
+    expect(content(0)).not.toContain('Conversación reciente')
     expect(content(1)).toMatch(
-      new RegExp(`1\\. out 3500 ARS ${TODAY} \\d\\d:\\d\\d café \\[restaurantes\\] \\(visa\\)`),
+      new RegExp(
+        `1\\. id=1 out 3500 ARS ${TODAY} \\d\\d:\\d\\d café \\[restaurantes\\] \\(visa\\)`,
+      ),
     )
+    expect(content(1)).toContain('(Warren) ✓ Café $3.500 (visa)')
     app.close()
   })
 
@@ -580,7 +578,7 @@ describe('logging', () => {
 
   it('output that cannot be stored fails the message instead of guessing', async () => {
     const app = await setup({
-      model: fakeModel(() => ({ type: 'log', movements: [movement({ amount: '3.500' })] })),
+      model: fakeModel(() => [logCall(movement({ amount: '3.500' }))]),
     })
     await post(app.base, messageBody('wamid.INV'))
     await until(() => app.calls.sent.length === 1)
@@ -772,7 +770,7 @@ describe('logging', () => {
   })
 
   it('answers help (with and without a contact) and off_topic', async () => {
-    const without = await setup({ model: fakeModel(() => ({ type: 'help' })) })
+    const without = await setup({ model: fakeModel(() => [replyCall('help')]) })
     await post(without.base, messageBody('wamid.H1'))
     await until(() => without.calls.sent.length === 1)
     const plain = bodies(without.calls)[0] as string
@@ -781,7 +779,7 @@ describe('logging', () => {
     without.close()
 
     const withContact = await setup({
-      model: fakeModel(() => ({ type: 'help' })),
+      model: fakeModel(() => [replyCall('help')]),
       helpContact: 'hola@heywarren.app',
     })
     await post(withContact.base, messageBody('wamid.H2'))
@@ -791,7 +789,7 @@ describe('logging', () => {
     )
     withContact.close()
 
-    const off = await setup({ model: fakeModel(() => ({ type: 'off_topic' })) })
+    const off = await setup({ model: fakeModel(() => [replyCall('off_topic')]) })
     await post(off.base, messageBody('wamid.O1'))
     await until(() => off.calls.sent.length === 1)
     expect(bodies(off.calls)).toEqual(['Solo puedo ayudarte con tus gastos e ingresos.'])

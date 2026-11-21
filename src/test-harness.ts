@@ -4,9 +4,9 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { PGlite } from '@electric-sql/pglite'
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket'
 import { afterAll, beforeAll, beforeEach } from 'vitest'
+import type { Movement } from './agent'
 import { createApp } from './app'
 import { connect, migrate, type Sql } from './db'
-import type { Command, Movement } from './parse'
 import { createProcessor } from './process'
 import { createStore, type Store } from './store'
 import { argentinaToday } from './time'
@@ -99,27 +99,59 @@ export const cafeMovement: Movement = {
   payment: 'visa',
   confidence: 'high',
 }
-export const cafe: Command = { type: 'log', movements: [cafeMovement] }
+/** One tool call a scripted model makes. */
+export type ToolCall = { name: string; input: unknown }
+export const logCall = (...movements: Movement[]): ToolCall => ({
+  name: 'log_movements',
+  input: { movements },
+})
+export const replyCall = (
+  kind: 'help' | 'off_topic' | 'smalltalk' | 'nothing_logged',
+): ToolCall => ({
+  name: 'reply',
+  input: { kind },
+})
+/** What a model returns for "café 3500". */
+export const cafe: ToolCall[] = [logCall(cafeMovement)]
 
-export type ModelFn = (signal: AbortSignal | undefined) => Promise<Command> | Command
+/** What a scripted model sees of one request: its number (from 1) and the params the loop sent. */
+export type ModelRequest = { n: number; params: Anthropic.MessageCreateParamsNonStreaming }
+/** One model turn: the tool calls it makes. */
+export type ModelFn = (
+  signal: AbortSignal | undefined,
+  request: ModelRequest,
+) => Promise<ToolCall[]> | ToolCall[]
 
-/** An Anthropic double: `messages.parse` returns what `model` gives, or throws what it throws. */
+/**
+ * An Anthropic double: `messages.create` answers each request with the tool calls `model` gives, or
+ * throws what it throws. `requests` keeps every request the loop sent, to look at its context.
+ */
 export function fakeModel(model: ModelFn = () => cafe) {
   const calls = { n: 0 }
+  const requests: Anthropic.MessageCreateParamsNonStreaming[] = []
   const client = {
     messages: {
-      parse: async (_params: unknown, options?: { signal?: AbortSignal }) => {
+      create: async (
+        params: Anthropic.MessageCreateParamsNonStreaming,
+        options?: { signal?: AbortSignal },
+      ) => {
         calls.n++
-        const parsed_output = await model(options?.signal)
+        requests.push(structuredClone(params))
+        const turn = await model(options?.signal, { n: calls.n, params })
         return {
-          parsed_output,
-          stop_reason: 'end_turn',
+          content: turn.map((c, k) => ({
+            type: 'tool_use',
+            id: `toolu_${calls.n}_${k}`,
+            name: c.name,
+            input: c.input,
+          })),
+          stop_reason: 'tool_use',
           usage: { input_tokens: 10, output_tokens: 10 },
         }
       },
     },
   } as unknown as Anthropic
-  return { client, calls }
+  return { client, calls, requests }
 }
 
 export async function setup(
@@ -167,6 +199,7 @@ export async function setup(
     makeProcessor,
     calls: fake.calls,
     model: model.calls,
+    requests: model.requests,
     close: () => server.close(),
   }
 }

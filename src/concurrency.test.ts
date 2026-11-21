@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import type { Action } from './agent'
 import { correct, history, logOf, movement, remove, script, seed, WA } from './command-fixtures'
 import type { Sql } from './db'
 import { execute } from './execute'
-import { recentMovements } from './ledger'
 import { REPLY_GONE } from './render'
 import { createStore } from './store'
 import { bodies, messageBody, post, setup, sql, TODAY, until, useDatabase } from './test-harness'
@@ -18,23 +18,24 @@ if (url) useDatabase({ url, max: 12 })
 describe.skipIf(!url)('real Postgres: concurrency', () => {
   it('concurrent corrections and deletes of one movement apply once, the rest get a reply', async () => {
     const store = createStore(sql, { staleMs: 60_000, maxAttempts: 3 })
-    const commands = [
-      ...[3800, 3900, 4000, 4100, 4200].map((n) => correct({ changes: { amount: String(n) } })),
-      remove(),
-      remove(),
-      remove(),
+    const actions: Action[][] = [
+      ...[3800, 3900, 4000, 4100, 4200].map((n): Action[] => [
+        { tool: 'correct_movement', input: { id: 0, changes: { amount: String(n) } } },
+      ]),
+      ...[0, 1, 2].map((): Action[] => [{ tool: 'delete_movement', input: { id: 0 } }]),
     ]
     // The race is a few statements wide, so each round can miss it; several rounds do not.
     const ROUNDS = 6
     let corrections = 0
     for (let round = 0; round < ROUNDS; round++) {
-      await seed([{ on: TODAY, amount: '3500', description: 'café', category: 'restaurantes' }])
+      const [target] = await seed([
+        { on: TODAY, amount: '3500', description: 'café', category: 'restaurantes' },
+      ])
       const [account] = await sql`SELECT id FROM account`
       const accountId = Number(account?.id)
-      const snapshot = await recentMovements(sql, accountId)
       const inbound = await sql`
         INSERT INTO inbound_message ${sql(
-          commands.map((_, k) => ({
+          actions.map((_, k) => ({
             wamid: `race.${round}.${k}`,
             wa_id: WA,
             kind: 'text',
@@ -46,9 +47,15 @@ describe.skipIf(!url)('real Postgres: concurrency', () => {
         )}
         RETURNING id::int AS id`
       const replies = await Promise.all(
-        commands.map((command, k) =>
-          store.commit({ id: inbound[k]?.id ?? 0, attempts: 1 } as never, {
-            command,
+        actions.map((calls, k) => {
+          const aimed = calls.map(
+            (a) => ({ ...a, input: { ...a.input, id: target ?? 0 } }) as Action,
+          )
+          return store.commit({ id: inbound[k]?.id ?? 0, attempts: 1 } as never, {
+            parsed: aimed,
+            command: aimed,
+            action: 'multi',
+            turns: 1,
             modelMs: 1,
             execute: async (tx: Sql) => {
               // Every transaction is open and past its guard before any of them touches the movement.
@@ -56,22 +63,18 @@ describe.skipIf(!url)('real Postgres: concurrency', () => {
               return execute(tx, {
                 accountId,
                 inboundId: inbound[k]?.id ?? 0,
-                command,
+                actions: aimed,
+                audit: [],
                 today: TODAY,
-                text: '',
-                recent: snapshot,
               })
             },
-          }),
-        ),
+          })
+        }),
       )
       const applied = replies.filter((r) => r?.startsWith('✓'))
       expect(applied, `round ${round}`).toHaveLength(1)
       corrections += applied.filter((r) => r?.startsWith('✓ Corregido')).length
-      for (const r of replies.filter((r) => !r?.startsWith('✓'))) {
-        // Either it lost the lock race (gone) or it ran after the winner committed (the list moved: asked).
-        expect(r === REPLY_GONE || r?.startsWith('¿Cuál?'), String(r)).toBe(true)
-      }
+      for (const r of replies.filter((r) => !r?.startsWith('✓'))) expect(r).toBe(REPLY_GONE)
     }
     const rows = await history()
     expect(rows.filter((r) => r.deleted || r.superseded_by !== null)).toHaveLength(ROUNDS)
@@ -82,9 +85,9 @@ describe.skipIf(!url)('real Postgres: concurrency', () => {
     const app = await setup({
       model: script(
         logOf(movement()),
-        correct({ changes: { amount: '3800' } }),
-        correct({ changes: { amount: '4200' } }),
-        remove(),
+        correct(1, { amount: '3800' }),
+        correct(2, { amount: '4200' }),
+        remove(3),
       ),
     })
     for (const k of [1, 2, 3, 4]) await post(app.base, messageBody(`wamid.BURST${k}`, WA))

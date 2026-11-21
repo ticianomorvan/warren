@@ -1,4 +1,4 @@
-import type { Changes, RecentMovement } from './parse'
+import type { Changes, RecentMovement } from './agent'
 
 /** Lowercase without accents: how code compares what a person wrote with what is stored. */
 export const normalizeText = (value: string) =>

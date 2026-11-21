@@ -10,7 +10,7 @@ Thank you for helping. Warren is maintained by one person, so please read this f
 ## The rules
 
 A change must keep the four rules in [`AGENTS.md`](AGENTS.md): code does the arithmetic, the
-model only parses, corrections keep history, secrets stay in `.env`.
+model only acts through guarded tools, corrections keep history, secrets stay in `.env`.
 
 ## Eval
 
