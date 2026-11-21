@@ -26,8 +26,8 @@ describe('CommandSchema', () => {
     }
     const commands = [
       { type: 'log', movements: [movement] },
-      { type: 'correct', target: 'last', changes, confidence: 'high' },
-      { type: 'delete', target: 'last', confidence: 'low' },
+      { type: 'correct', target: 'last', target_index: null, changes, confidence: 'high' },
+      { type: 'delete', target: 'last', target_index: null, confidence: 'low' },
       { type: 'query', period: 'this_month', direction: 'out', category: null, payment: null },
       { type: 'help' },
       { type: 'off_topic' },

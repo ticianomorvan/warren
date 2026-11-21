@@ -1,7 +1,8 @@
 # Eval summary
 
 Last run 2026-11-20, prompt as committed. Full results go to `evals/results/*.json` (gitignored).
-Gate: at least 97% fully correct and 0 silently wrong amounts.
+Gate: at least 97% fully correct, 0 silently wrong amounts and 0 silently wrong targets (a confident wrong
+`target_index` that `resolveTarget` would still apply; see Slice 4 notes in `docs/spec.md`).
 
 | Model                                         | Split    | Fully correct | Silent | p50 / p95 (ms, from a Mac in Argentina) | Mean in / out / cache read tokens | Cost      |
 | --------------------------------------------- | -------- | ------------- | ------ | --------------------------------------- | --------------------------------- | --------- |
@@ -22,3 +23,14 @@ Soft fields (description, category, payment, target, query fields) were 99 to 10
 100% on test for both models.
 
 Chosen: claude-haiku-5-5.
+
+Slice 4 (2026-11-21): claude-haiku-5-5, split all, 139 cases: **138/139 fully correct, 0 silent wrong amounts,
+0 silent wrong targets**, p50 / p95 1,466 / 2,090 ms, US$0.0251. Miss: c132 (ambiguous target; the model picks
+number 1, code asks).
+
+Slice 4, after live use (2026-11-21): claude-haiku-5-5, split all, 146 cases: **146/146 fully correct, 0 silent wrong
+amounts, 0 silent wrong targets**, p50 / p95 1,159 / 1,706 ms, US$0.0279. Ambiguous targets now expect the newest
+match; 7 cases carry a previous exchange.
+
+Slice 4 review fixes (2026-11-21): claude-haiku-5-5, split all, 154 cases: **151/154 fully correct, 0 silent wrong
+amounts, 0 silent wrong targets**, p50 / p95 1,216 / 1,807 ms, US$0.0311.

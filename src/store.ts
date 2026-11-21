@@ -1,5 +1,6 @@
 import type { Sql } from './db'
-import type { Command, Movement, RecentMovement } from './parse'
+import { type MovementRow, recentMovements } from './ledger'
+import type { Command, PreviousExchange } from './parse'
 
 /** What a worker holds after claiming a row. Every later write checks `id` and `attempts`. */
 export interface Claim {
@@ -22,12 +23,29 @@ export interface Claim {
 
 /** What the commit point stores, in one transaction. */
 export interface Commit {
-  accountId: number
   command: Command
   modelMs: number
+  /**
+   * Applies the command to the ledger inside the commit transaction and returns the reply to
+   * store. It only runs once the guard has passed, so it can never run twice for a message.
+   */
+  execute: (tx: Sql) => Promise<Executed>
+}
+
+/** What running a command gives back: the reply, and what to store with it. */
+export interface Executed {
   reply: string
-  /** Only for `log`. `date` is the Argentine day, yyyy-mm-dd. */
-  movements: Movement[]
+  /** The options a `¿Cuál?` reply showed, number and movement id; stored so the next message can answer it. */
+  asked?: { number: number; id: number }[]
+  /** The command that was really run, when it is not the model's (an answer to a question). */
+  command?: Command
+}
+
+/** The sender's previous exchange, with what code needs to answer a question it asked. */
+export interface Previous extends PreviousExchange {
+  command: Command | null
+  /** The options that exchange's question offered, if it was one. */
+  asked: { number: number; id: number }[] | null
 }
 
 export type Settled = 'done' | 'failed' | 'pending' | 'unknown' | 'ignored'
@@ -132,48 +150,72 @@ export function createStore(sql: Sql, o: StoreOptions) {
       return Number(row?.id)
     },
 
-    /** The account's last `limit` movements that no correction replaced, newest first. */
-    async recentMovements(accountId: number, limit = 5): Promise<RecentMovement[]> {
-      return sql<RecentMovement[]>`
-        SELECT direction, amount::text AS amount, currency, to_char(occurred_on, 'YYYY-MM-DD') AS date,
-               description, category, payment
-        FROM movement
-        WHERE account_id = ${accountId} AND superseded_by IS NULL
-        ORDER BY id DESC LIMIT ${limit}`
+    /** The account's newest live movements (not replaced, not deleted), newest first. */
+    recentMovements(accountId: number): Promise<MovementRow[]> {
+      return recentMovements(sql, accountId)
     },
 
     /**
-     * The commit point, one transaction: the parsed command, the movements (unique on
-     * `(inbound_message_id, position)`: the guarded UPDATE means a conflict is a bug, so it raises) and the rendered reply. False, with nothing written, when
-     * the claim was lost, the point was already passed, or a failure notice was already started.
+     * The sender's message just before this one and the reply it was given, if that reply was
+     * committed and the message arrived at most `windowMs` before this one. Short-term memory for
+     * answers like "2" after a question; nothing older, and nothing from a message that failed.
      */
-    async commit(c: Claim, m: Commit): Promise<boolean> {
+    async previousExchange(c: Claim, windowMs = 10 * 60_000): Promise<Previous | null> {
+      const [row] = await sql<
+        {
+          text: string | null
+          reply: string | null
+          command: Command | null
+          askedNumbers: number[] | null
+          askedIds: number[] | null
+        }[]
+      >`
+        SELECT p.body AS text, p.reply_text AS reply, p.command,
+          p.asked_numbers AS "askedNumbers", p.asked_ids::int[] AS "askedIds"
+        FROM inbound_message cur
+        JOIN LATERAL (
+          SELECT body, reply_text, received_at, kind, command, asked_numbers, asked_ids FROM inbound_message
+          WHERE wa_id = cur.wa_id AND id < cur.id
+          ORDER BY id DESC LIMIT 1) p ON true
+        WHERE cur.id = ${c.id} AND p.kind = 'text'
+          AND p.received_at > cur.received_at - make_interval(secs => ${windowMs / 1000})`
+      return row?.text && row.reply
+        ? {
+            text: row.text,
+            reply: row.reply,
+            command: row.command,
+            asked:
+              row.askedNumbers && row.askedIds
+                ? row.askedNumbers.map((number, k) => ({ number, id: row.askedIds?.[k] ?? 0 }))
+                : null,
+          }
+        : null
+    },
+
+    /**
+     * The commit point, one transaction: the guard, the command's effects on the ledger, and the
+     * stored reply. The guard row stays locked until the end, so two workers cannot both pass it.
+     * Returns the stored reply, or null, with nothing written, when the claim was lost, the point
+     * was already passed, or a failure notice was already started.
+     */
+    async commit(c: Claim, m: Commit): Promise<string | null> {
       return sql.begin(async (tx) => {
-        const rows = await tx`
-          UPDATE inbound_message
-          SET command = ${tx.json(m.command as never)}, model_ms = ${Math.round(m.modelMs)},
-              reply_text = ${m.reply}, updated_at = now()
+        const held = await tx`
+          SELECT id FROM inbound_message
           WHERE ${owned(c)} AND reply_text IS NULL AND failure_sent_at IS NULL
-          RETURNING id`
-        if (rows.length === 0) return false
-        if (m.movements.length > 0) {
-          const values = m.movements.map((x, position) => ({
-            account_id: m.accountId,
-            inbound_message_id: c.id,
-            position,
-            direction: x.direction,
-            amount: x.amount,
-            currency: x.currency,
-            occurred_on: x.date,
-            description: x.description.trim(),
-            category: x.category,
-            payment: x.payment?.trim() || null,
-            confidence: x.confidence,
-          }))
-          await tx`
-            INSERT INTO movement ${tx(values)}`
-        }
-        return true
+          FOR UPDATE`
+        if (held.length === 0) return null
+        const done = await m.execute(tx as unknown as Sql)
+        await tx`
+          UPDATE inbound_message
+          SET command = ${tx.json((done.command ?? m.command) as never)},
+              parsed = ${tx.json(m.command as never)},
+              model_ms = ${Math.round(m.modelMs)}, reply_text = ${done.reply},
+              asked_numbers = ${done.asked?.length ? done.asked.map((a) => a.number) : null}::int[],
+              asked_ids = ${done.asked?.length ? done.asked.map((a) => a.id) : null}::bigint[],
+              updated_at = now()
+          WHERE id = ${c.id}`
+        return done.reply
       })
     },
 

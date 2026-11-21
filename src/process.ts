@@ -1,7 +1,8 @@
 import type Anthropic from '@anthropic-ai/sdk'
+import { execute } from './execute'
 import { log } from './log'
 import { type ModelKey, parseMessage } from './parse'
-import { REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT, renderReply } from './render'
+import { REPLY_BAD_CHANGE, REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
 import type { Claim, Store } from './store'
 import { argentinaToday } from './time'
 import { type Graph, GraphError } from './whatsapp/graph'
@@ -146,7 +147,7 @@ export function createProcessor(o: ProcessorOptions) {
    * no await in between, so no commit starts after it. A deadline that fires while the commit is
    * running loses: committed means the reply is sent, late if need be.
    */
-  async function parseAndAnswer(c: Claim, age: number): Promise<void> {
+  async function parseAndAnswer(c: Claim, age: number, release: () => void): Promise<void> {
     const deadline = AbortSignal.timeout(Math.max(0, Math.ceil(deadlineMs - age)))
     const signal = AbortSignal.any([deadline, shutdown.signal])
     const aborted = new Promise<'aborted'>((resolve) => {
@@ -187,16 +188,20 @@ export function createProcessor(o: ProcessorOptions) {
     const today = argentinaToday(c.messageAt)
     const parsing = (async () => {
       const accountId = await store.upsertAccount(c.wa_id)
-      const recentMovements = await store.recentMovements(accountId)
+      const [recentMovements, previous] = await Promise.all([
+        store.recentMovements(accountId),
+        store.previousExchange(c),
+      ])
       const result = await parseMessage({
         text: c.body ?? '',
         today,
         recentMovements,
+        previous,
         model: o.model ?? 'haiku',
         client: o.client,
         signal,
       })
-      return { accountId, result }
+      return { accountId, result, recentMovements, previous }
     })().then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
@@ -214,33 +219,46 @@ export function createProcessor(o: ProcessorOptions) {
       if (outcome === 'aborted') return
       if ('error' in outcome) return await fail(c, `parse failed: ${errorText(outcome.error)}`)
 
-      const { accountId, result } = outcome.value
+      const { accountId, result, recentMovements, previous } = outcome.value
       const { command } = result
-      if (result.fatal.length > 0) {
+      // A correction's value that cannot be stored is the person's to rewrite: say so, change nothing.
+      const badChange = command.type === 'correct' && result.fatal.length > 0
+      if (result.fatal.length > 0 && !badChange) {
         const detail = result.fatal.map((i) => `${i.path}: ${i.message}`).join('; ')
         return await fail(c, `invalid model output: ${detail}`)
       }
-      const reply = renderReply(command, today, { helpContact: o.helpContact })
 
       // The commit point. Nothing awaits between the signal check above and this call.
-      let committed: boolean
+      let reply: string | null
       try {
-        committed = await store.commit(c, {
-          accountId,
+        reply = await store.commit(c, {
           command,
           modelMs: result.latencyMs,
-          reply,
-          movements: command.type === 'log' ? command.movements : [],
+          execute: (tx) =>
+            badChange
+              ? Promise.resolve({ reply: REPLY_BAD_CHANGE })
+              : execute(tx, {
+                  accountId,
+                  inboundId: c.id,
+                  command,
+                  today,
+                  text: c.body ?? '',
+                  recent: recentMovements,
+                  previous,
+                  render: { helpContact: o.helpContact },
+                }),
         })
       } catch (err) {
         return await fail(c, `commit failed: ${errorText(err)}`)
       }
-      if (!committed) {
+      if (reply === null) {
         log('claim_lost', { wamid: c.wamid, attempt: c.attempts })
         return
       }
       const model_ms = Math.round(result.latencyMs)
       log('committed', { wamid: c.wamid, command: command.type, model_ms })
+      // What this message changed is stored: the sender's next message may start its parse.
+      release()
       await closeInterim()
       await deliver(c, reply, { typing_ms: await typing, model_ms })
     } finally {
@@ -249,7 +267,7 @@ export function createProcessor(o: ProcessorOptions) {
     }
   }
 
-  async function work(c: Claim): Promise<void> {
+  async function work(c: Claim, release: () => void): Promise<void> {
     if (!isAllowed(o.allowed, c.wa_id)) {
       await store.settle(c, 'ignored', 'sender not allowed')
       log('message_ignored', { wamid: c.wamid })
@@ -257,12 +275,14 @@ export function createProcessor(o: ProcessorOptions) {
     }
 
     if (c.kind !== 'text') {
+      release() // stores nothing the sender's next message could depend on
       const typing_ms = await showTyping(c)
       await deliver(c, REPLY_NON_TEXT, { typing_ms })
       return
     }
     if (c.replyText !== null) {
       // Committed earlier, send never started: the stored reply goes out, the model is not called.
+      release()
       const typing_ms = c.typingSent ? undefined : await showTyping(c)
       await deliver(c, c.replyText, { typing_ms })
       return
@@ -273,15 +293,45 @@ export function createProcessor(o: ProcessorOptions) {
       await fail(c, 'deadline passed before the commit point')
       return
     }
-    await parseAndAnswer(c, age)
+    await parseAndAnswer(c, age, release)
   }
 
-  async function run(c: Claim): Promise<void> {
+  async function runNow(c: Claim, release: () => void): Promise<void> {
     try {
-      await work(c)
+      if (shutdown.signal.aborted) {
+        // Queued behind another message of the same sender when the shutdown came: nothing started.
+        await store.settle(c, 'pending', 'shutdown before the work started')
+        log('message_released', { wamid: c.wamid })
+        return
+      }
+      await work(c, release)
     } catch (err) {
       log('process_crash', { wamid: c.wamid, error: errorText(err) }, 'error')
     }
+  }
+
+  /** The tail of each sender's chain of work. */
+  const lanes = new Map<string, Promise<void>>()
+
+  /**
+   * One sender's messages are handled in the order they were handed in (kick and sweep alike). A
+   * message reads its context before the parse, so it must not start until the previous one has
+   * stored what it changed ("café 3500", then "uy, era 3800" must find the café). The turn passes
+   * at that commit, not at the send, so a burst does not also wait on each reply's send. Different
+   * senders run in parallel. Single process, so a promise chain is enough.
+   */
+  function run(c: Claim): Promise<void> {
+    let release!: () => void
+    const turn = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const previous = lanes.get(c.wa_id) ?? Promise.resolve()
+    lanes.set(c.wa_id, turn)
+    void turn.then(() => {
+      if (lanes.get(c.wa_id) === turn) lanes.delete(c.wa_id)
+    })
+    // Every path ends the turn: a failure, a lost claim or a crash releases it in `finally`.
+    return previous.then(() => runNow(c, release)).finally(release)
   }
 
   function track<T>(p: Promise<T>): Promise<T> {
