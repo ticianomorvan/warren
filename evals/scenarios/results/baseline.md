@@ -7,6 +7,10 @@ with the existing prompt and rules, `pnpm eval:scenarios --split all --budget 0.
 scenario or two (s061, for one, failed at turn 1 in the first run and at turn 2 in this one), so read
 the numbers to about ±2 scenarios.
 
+> Note (2026-11-21, after this run): s059 was changed to expect acting on the newest café, per the
+> act-when-confident decision (agent-spec Decisions 2). The pipeline already does that, so the baseline
+> is about one scenario better than the table below: roughly 83 fully right and 5 silent.
+
 Gate (`docs/agent-spec.md`): at least 95% of scenarios fully right, 0 silent wrong changes, 0 invented
 numbers. **The baseline fails it**, as expected: it is the number slice B has to beat.
 
