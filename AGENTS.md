@@ -68,10 +68,11 @@ model at the end. CI never calls the Anthropic API.
 
 - Railway project `warren` (US East, Virginia: `us-east4-eqdc4a`), services `warren` (the app) and
   `Postgres`. Deploy by hand with `railway up -s warren` from the repo; there is no GitHub integration yet.
-- Service settings live on the Railway service itself, not in the repo: start `pnpm start`, healthcheck
-  `/health` (timeout 60 s), restart on failure, 1 replica. The legacy `railway.json` was never applied to this
-  service and is removed. Moving to `.railway/railway.ts` (Infrastructure as Code) needs the npm package
-  `railway` as a devDependency, which needs Ticiano's approval first.
+- Railway settings live in `.railway/railway.ts` (Infrastructure as Code, npm `railway` SDK): build, start
+  `pnpm start`, healthcheck `/health` (60 s), restart on failure, 1 replica in US East, the domain, and the
+  Postgres TCP proxy. Variables are unmanaged, so the file never holds secrets; set them with
+  `railway variables`. Change the file, run `railway config plan`, then `railway config apply`. A plan that
+  is not "already up to date" means someone changed the service by hand.
 - **Single replica, single process.** The recovery sweep and the in-process worker assume it. The atomic
   claim stops a double send, but do not scale out without revisiting the sweep.
 - The app reaches Postgres on the private network (`DATABASE_URL=${{Postgres.DATABASE_URL}}`). For
