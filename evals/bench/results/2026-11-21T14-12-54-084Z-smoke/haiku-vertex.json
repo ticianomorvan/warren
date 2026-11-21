@@ -1,0 +1,338 @@
+{
+  "startedAt": "2026-11-21T14:12:54.084Z",
+  "summary": {
+    "candidate": "haiku-vertex",
+    "label": "Claude Haiku 5.5 via OpenRouter, Google Vertex",
+    "model": "anthropic/claude-haiku-5.5",
+    "provider": "google-vertex",
+    "servedBy": ["Google"],
+    "wrapped": false,
+    "cases": 5,
+    "dev": {
+      "n": 4,
+      "full": 4
+    },
+    "test": {
+      "n": 1,
+      "full": 1
+    },
+    "all": {
+      "n": 5,
+      "full": 5,
+      "accuracy": 1
+    },
+    "typeAccuracy": 1,
+    "silentWrongAmounts": 0,
+    "errorsTotal": 0,
+    "httpErrors": 0,
+    "schemaFailures": 0,
+    "budgetSkipped": 0,
+    "latencyMs": {
+      "n": 5,
+      "p50": 2450.811834,
+      "p95": 3578.303333,
+      "p99": 3578.303333,
+      "mean": 2442.2848334
+    },
+    "retries": 0,
+    "costUsd": {
+      "total": 0.0034712700000000003,
+      "perMessage": 0.000694254
+    },
+    "meanPromptTokens": 8210,
+    "meanCompletionTokens": 75.2,
+    "reasoningTokens": {
+      "total": 0,
+      "casesWithReasoning": 0
+    },
+    "cache": {
+      "casesWithHit": 2,
+      "hitRate": 0.4,
+      "meanCachedTokens": 3130.4,
+      "casesWithWrite": 3
+    },
+    "gradedCases": 5,
+    "gate": {
+      "accuracyAtLeast97": true,
+      "noSilentWrongAmounts": true
+    }
+  },
+  "candidate": {
+    "key": "haiku-vertex",
+    "label": "Claude Haiku 5.5 via OpenRouter, Google Vertex",
+    "via": "openrouter",
+    "model": "anthropic/claude-haiku-5.5",
+    "provider": "google-vertex",
+    "reasoning": {
+      "enabled": false
+    },
+    "explicitCache": true
+  },
+  "cases": [
+    {
+      "id": "c001",
+      "split": "dev",
+      "latencyMs": 3578.303333,
+      "error": null,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "soft": {
+        "description": {
+          "ok": 1,
+          "total": 1
+        },
+        "category": {
+          "ok": 1,
+          "total": 1
+        },
+        "payment": {
+          "ok": 1,
+          "total": 1
+        }
+      },
+      "reasons": [],
+      "promptTokens": 8207,
+      "completionTokens": 75,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 7826,
+      "reasoningTokens": 0,
+      "costUsd": 0.00105385,
+      "servedBy": "Google",
+      "attempts": 1,
+      "actual": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "3500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "café",
+            "category": "restaurantes",
+            "payment": null,
+            "confidence": "high"
+          }
+        ]
+      },
+      "text": "cafe 3500",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "3500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "café",
+            "category": "restaurantes",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c002",
+      "split": "dev",
+      "latencyMs": 2543.3012089999993,
+      "error": null,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "soft": {
+        "description": {
+          "ok": 1,
+          "total": 1
+        },
+        "category": {
+          "ok": 1,
+          "total": 1
+        },
+        "payment": {
+          "ok": 1,
+          "total": 1
+        }
+      },
+      "reasons": [],
+      "promptTokens": 8212,
+      "completionTokens": 74,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 7826,
+      "reasoningTokens": 0,
+      "costUsd": 0.00105385,
+      "servedBy": "Google",
+      "attempts": 1,
+      "actual": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "12000",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "luz",
+            "category": "servicios",
+            "payment": null,
+            "confidence": "high"
+          }
+        ]
+      },
+      "text": "Pague 12.000 de luz",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "12000",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "luz",
+            "category": "servicios",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c003",
+      "split": "dev",
+      "latencyMs": 2450.811834,
+      "error": null,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "soft": {
+        "description": {
+          "ok": 1,
+          "total": 1
+        },
+        "category": {
+          "ok": 1,
+          "total": 1
+        },
+        "payment": {
+          "ok": 1,
+          "total": 1
+        }
+      },
+      "reasons": [],
+      "promptTokens": 8214,
+      "completionTokens": 75,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 7826,
+      "reasoningTokens": 0,
+      "costUsd": 0.00105455,
+      "servedBy": "Google",
+      "attempts": 1,
+      "actual": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "8500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "farmacia",
+            "category": "salud",
+            "payment": null,
+            "confidence": "high"
+          }
+        ]
+      },
+      "text": "gasté 8500 en la farmacai",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "8500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "farmacia",
+            "category": "salud",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c004",
+      "split": "dev",
+      "latencyMs": 1349.4823749999996,
+      "error": null,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "soft": {
+        "description": {
+          "ok": 1,
+          "total": 1
+        },
+        "category": {
+          "ok": 1,
+          "total": 1
+        },
+        "payment": {
+          "ok": 1,
+          "total": 1
+        }
+      },
+      "reasons": [],
+      "promptTokens": 8206,
+      "completionTokens": 74,
+      "cachedTokens": 7826,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0.00015326,
+      "servedBy": "Google",
+      "attempts": 1,
+      "actual": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "1200",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "subte",
+            "category": "transporte",
+            "payment": null,
+            "confidence": "high"
+          }
+        ]
+      },
+      "text": "subte 1200",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "1200",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "subte",
+            "category": "transporte",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c005",
+      "split": "test",
+      "latencyMs": 2289.5254160000004,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "promptTokens": 8211,
+      "completionTokens": 78,
+      "cachedTokens": 7826,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0.00015576,
+      "servedBy": "Google",
+      "attempts": 1,
+      "error": null
+    }
+  ]
+}

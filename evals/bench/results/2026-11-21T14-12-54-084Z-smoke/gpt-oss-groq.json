@@ -1,0 +1,244 @@
+{
+  "startedAt": "2026-11-21T14:12:54.084Z",
+  "summary": {
+    "candidate": "gpt-oss-groq",
+    "label": "gpt-oss-120b (Groq), reasoning low",
+    "model": "openai/gpt-oss-120b",
+    "provider": "groq",
+    "servedBy": [],
+    "wrapped": false,
+    "cases": 5,
+    "dev": {
+      "n": 4,
+      "full": 0
+    },
+    "test": {
+      "n": 1,
+      "full": 0
+    },
+    "all": {
+      "n": 5,
+      "full": 0,
+      "accuracy": 0
+    },
+    "typeAccuracy": 0,
+    "silentWrongAmounts": 0,
+    "errorsTotal": 5,
+    "httpErrors": 5,
+    "schemaFailures": 0,
+    "budgetSkipped": 0,
+    "latencyMs": {
+      "n": 0,
+      "p50": 0,
+      "p95": 0,
+      "p99": 0,
+      "mean": 0
+    },
+    "retries": 0,
+    "costUsd": {
+      "total": 0,
+      "perMessage": 0
+    },
+    "meanPromptTokens": 0,
+    "meanCompletionTokens": 0,
+    "reasoningTokens": {
+      "total": 0,
+      "casesWithReasoning": 0
+    },
+    "cache": {
+      "casesWithHit": 0,
+      "hitRate": 0,
+      "meanCachedTokens": 0,
+      "casesWithWrite": 0
+    },
+    "gradedCases": 0,
+    "gate": {
+      "accuracyAtLeast97": false,
+      "noSilentWrongAmounts": true
+    }
+  },
+  "candidate": {
+    "key": "gpt-oss-groq",
+    "label": "gpt-oss-120b (Groq), reasoning low",
+    "via": "openrouter",
+    "model": "openai/gpt-oss-120b",
+    "provider": "groq",
+    "reasoning": {
+      "effort": "low"
+    },
+    "maxTokens": 4096
+  },
+  "cases": [
+    {
+      "id": "c001",
+      "split": "dev",
+      "latencyMs": 282.7280000000028,
+      "error": {
+        "kind": "http",
+        "message": "http 400: Provider returned error"
+      },
+      "full": false,
+      "typeOk": false,
+      "silentWrongAmount": false,
+      "soft": {},
+      "reasons": [],
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "servedBy": null,
+      "attempts": 1,
+      "actual": null,
+      "text": "cafe 3500",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "3500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "café",
+            "category": "restaurantes",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c002",
+      "split": "dev",
+      "latencyMs": 270.55229099999997,
+      "error": {
+        "kind": "http",
+        "message": "http 400: Provider returned error"
+      },
+      "full": false,
+      "typeOk": false,
+      "silentWrongAmount": false,
+      "soft": {},
+      "reasons": [],
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "servedBy": null,
+      "attempts": 1,
+      "actual": null,
+      "text": "Pague 12.000 de luz",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "12000",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "luz",
+            "category": "servicios",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c003",
+      "split": "dev",
+      "latencyMs": 402.83087499999965,
+      "error": {
+        "kind": "http",
+        "message": "http 400: Provider returned error"
+      },
+      "full": false,
+      "typeOk": false,
+      "silentWrongAmount": false,
+      "soft": {},
+      "reasons": [],
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "servedBy": null,
+      "attempts": 1,
+      "actual": null,
+      "text": "gasté 8500 en la farmacai",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "8500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "farmacia",
+            "category": "salud",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c004",
+      "split": "dev",
+      "latencyMs": 339.5856249999997,
+      "error": {
+        "kind": "http",
+        "message": "http 400: Provider returned error"
+      },
+      "full": false,
+      "typeOk": false,
+      "silentWrongAmount": false,
+      "soft": {},
+      "reasons": [],
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "servedBy": null,
+      "attempts": 1,
+      "actual": null,
+      "text": "subte 1200",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "1200",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "subte",
+            "category": "transporte",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c005",
+      "split": "test",
+      "latencyMs": 279.40829099999974,
+      "full": false,
+      "typeOk": false,
+      "silentWrongAmount": false,
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0,
+      "servedBy": null,
+      "attempts": 1,
+      "error": {
+        "kind": "http"
+      }
+    }
+  ]
+}

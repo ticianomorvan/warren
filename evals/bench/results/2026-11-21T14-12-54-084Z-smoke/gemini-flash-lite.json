@@ -1,0 +1,337 @@
+{
+  "startedAt": "2026-11-21T14:12:54.084Z",
+  "summary": {
+    "candidate": "gemini-flash-lite",
+    "label": "Gemini 3.1 Flash-Lite (Google AI Studio), thinking off",
+    "model": "google/gemini-3.1-flash-lite",
+    "provider": "google-ai-studio",
+    "servedBy": ["Google AI Studio"],
+    "wrapped": false,
+    "cases": 5,
+    "dev": {
+      "n": 4,
+      "full": 4
+    },
+    "test": {
+      "n": 1,
+      "full": 1
+    },
+    "all": {
+      "n": 5,
+      "full": 5,
+      "accuracy": 1
+    },
+    "typeAccuracy": 1,
+    "silentWrongAmounts": 0,
+    "errorsTotal": 0,
+    "httpErrors": 0,
+    "schemaFailures": 0,
+    "budgetSkipped": 0,
+    "latencyMs": {
+      "n": 5,
+      "p50": 1756.4103329999998,
+      "p95": 1847.6559589999997,
+      "p99": 1847.6559589999997,
+      "mean": 1585.5843583999995
+    },
+    "retries": 0,
+    "costUsd": {
+      "total": 0.0036454,
+      "perMessage": 0.00072908
+    },
+    "meanPromptTokens": 4476.8,
+    "meanCompletionTokens": 95,
+    "reasoningTokens": {
+      "total": 0,
+      "casesWithReasoning": 0
+    },
+    "cache": {
+      "casesWithHit": 4,
+      "hitRate": 0.8,
+      "meanCachedTokens": 2367.2,
+      "casesWithWrite": 0
+    },
+    "gradedCases": 5,
+    "gate": {
+      "accuracyAtLeast97": true,
+      "noSilentWrongAmounts": true
+    }
+  },
+  "candidate": {
+    "key": "gemini-flash-lite",
+    "label": "Gemini 3.1 Flash-Lite (Google AI Studio), thinking off",
+    "via": "openrouter",
+    "model": "google/gemini-3.1-flash-lite",
+    "provider": "google-ai-studio",
+    "reasoning": {
+      "effort": "none"
+    }
+  },
+  "cases": [
+    {
+      "id": "c001",
+      "split": "dev",
+      "latencyMs": 1292.3311670000003,
+      "error": null,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "soft": {
+        "description": {
+          "ok": 1,
+          "total": 1
+        },
+        "category": {
+          "ok": 1,
+          "total": 1
+        },
+        "payment": {
+          "ok": 1,
+          "total": 1
+        }
+      },
+      "reasons": [],
+      "promptTokens": 4474,
+      "completionTokens": 105,
+      "cachedTokens": 0,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0.001276,
+      "servedBy": "Google AI Studio",
+      "attempts": 1,
+      "actual": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "3500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "café",
+            "category": "restaurantes",
+            "payment": null,
+            "confidence": "high"
+          }
+        ]
+      },
+      "text": "cafe 3500",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "3500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "café",
+            "category": "restaurantes",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c002",
+      "split": "dev",
+      "latencyMs": 1847.6559589999997,
+      "error": null,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "soft": {
+        "description": {
+          "ok": 1,
+          "total": 1
+        },
+        "category": {
+          "ok": 1,
+          "total": 1
+        },
+        "payment": {
+          "ok": 1,
+          "total": 1
+        }
+      },
+      "reasons": [],
+      "promptTokens": 4479,
+      "completionTokens": 105,
+      "cachedTokens": 2959,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0.000611475,
+      "servedBy": "Google AI Studio",
+      "attempts": 1,
+      "actual": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "12000",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "luz",
+            "category": "servicios",
+            "payment": null,
+            "confidence": "high"
+          }
+        ]
+      },
+      "text": "Pague 12.000 de luz",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "12000",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "luz",
+            "category": "servicios",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c003",
+      "split": "dev",
+      "latencyMs": 1756.4103329999998,
+      "error": null,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "soft": {
+        "description": {
+          "ok": 1,
+          "total": 1
+        },
+        "category": {
+          "ok": 1,
+          "total": 1
+        },
+        "payment": {
+          "ok": 1,
+          "total": 1
+        }
+      },
+      "reasons": [],
+      "promptTokens": 4479,
+      "completionTokens": 55,
+      "cachedTokens": 2959,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0.000536475,
+      "servedBy": "Google AI Studio",
+      "attempts": 1,
+      "actual": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "8500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "farmacia",
+            "category": "salud",
+            "payment": null,
+            "confidence": "high"
+          }
+        ]
+      },
+      "text": "gasté 8500 en la farmacai",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "8500",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "farmacia",
+            "category": "salud",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c004",
+      "split": "dev",
+      "latencyMs": 1785.4287499999991,
+      "error": null,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "soft": {
+        "description": {
+          "ok": 1,
+          "total": 1
+        },
+        "category": {
+          "ok": 1,
+          "total": 1
+        },
+        "payment": {
+          "ok": 1,
+          "total": 1
+        }
+      },
+      "reasons": [],
+      "promptTokens": 4475,
+      "completionTokens": 104,
+      "cachedTokens": 2959,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0.000608975,
+      "servedBy": "Google AI Studio",
+      "attempts": 1,
+      "actual": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "1200",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "subte",
+            "category": "transporte",
+            "payment": null,
+            "confidence": "high"
+          }
+        ]
+      },
+      "text": "subte 1200",
+      "expected": {
+        "type": "log",
+        "movements": [
+          {
+            "direction": "out",
+            "amount": "1200",
+            "currency": "ARS",
+            "date": "2026-11-20",
+            "description": "subte",
+            "category": "transporte",
+            "payment": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "c005",
+      "split": "test",
+      "latencyMs": 1246.0955829999984,
+      "full": true,
+      "typeOk": true,
+      "silentWrongAmount": false,
+      "promptTokens": 4477,
+      "completionTokens": 106,
+      "cachedTokens": 2959,
+      "cacheWriteTokens": 0,
+      "reasoningTokens": 0,
+      "costUsd": 0.000612475,
+      "servedBy": "Google AI Studio",
+      "attempts": 1,
+      "error": null
+    }
+  ]
+}
