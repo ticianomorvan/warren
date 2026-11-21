@@ -1,6 +1,6 @@
 import type { Sql } from './db'
 import { type MovementRow, recentMovements } from './ledger'
-import type { Command } from './parse'
+import type { Command, PreviousExchange } from './parse'
 
 /** What a worker holds after claiming a row. Every later write checks `id` and `attempts`. */
 export interface Claim {
@@ -137,6 +137,24 @@ export function createStore(sql: Sql, o: StoreOptions) {
     /** The account's newest live movements (not replaced, not deleted), newest first. */
     recentMovements(accountId: number): Promise<MovementRow[]> {
       return recentMovements(sql, accountId)
+    },
+
+    /**
+     * The sender's message just before this one and the reply it was given, if that reply was
+     * committed and the message arrived at most `windowMs` before this one. Short-term memory for
+     * answers like "2" after a question; nothing older, and nothing from a message that failed.
+     */
+    async previousExchange(c: Claim, windowMs = 10 * 60_000): Promise<PreviousExchange | null> {
+      const [row] = await sql<{ text: string | null; reply: string | null }[]>`
+        SELECT p.body AS text, p.reply_text AS reply
+        FROM inbound_message cur
+        JOIN LATERAL (
+          SELECT body, reply_text, received_at, kind FROM inbound_message
+          WHERE wa_id = cur.wa_id AND id < cur.id
+          ORDER BY id DESC LIMIT 1) p ON true
+        WHERE cur.id = ${c.id} AND p.kind = 'text'
+          AND p.received_at > cur.received_at - make_interval(secs => ${windowMs / 1000})`
+      return row?.text && row.reply ? { text: row.text, reply: row.reply } : null
     },
 
     /**

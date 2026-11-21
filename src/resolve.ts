@@ -94,32 +94,56 @@ function details(text: string, today: string, m: MovementRow): Set<string> {
   return fits
 }
 
-/** The person gave a position that is the picked row's: "el 3", "el último", "el primero". */
-function explicitPosition(text: string, pickedNumber: number): boolean {
+const NUMBER_WORDS: Record<string, number> = {
+  uno: 1,
+  dos: 2,
+  tres: 3,
+  cuatro: 4,
+  cinco: 5,
+  seis: 6,
+  siete: 7,
+  ocho: 8,
+  nueve: 9,
+  diez: 10,
+}
+
+/**
+ * The positions the person's own message names: "el 2", "la tres", "el último", a bare "2". Not
+ * "el 15 de octubre", "el 3 mil" or "el 20 lucas" (dates and amounts). "primero" and "anterior"
+ * name a position only the model can place, so they are reported as 0 ("use the model's number").
+ */
+export function positionsIn(text: string): number[] {
   const norm = normalizeText(text)
-  const numbers = [...norm.matchAll(/\b(?:el|la|lo|del)\s+(\d{1,2})\b(?!\s*(?:de|mil|lucas|k)\b)/g)]
-  if (numbers.length > 0) return numbers.some((m) => Number(m[1]) === pickedNumber)
-  if (/\bultim[oa]/.test(norm)) return pickedNumber === 1
-  return /\b(primer[oa]?|anterior)\b/.test(norm)
+  const found: number[] = []
+  const numbered =
+    /\b(?:el|la|lo|del|numero|nro|n°|#)\s*(\d{1,2}|[a-z]+)\b(?!\s*(?:de|mil|lucas|k)\b)/g
+  for (const m of norm.matchAll(numbered)) {
+    const word = m[1] ?? ''
+    const n = /^\d+$/.test(word) ? Number(word) : NUMBER_WORDS[word]
+    if (n !== undefined) found.push(n)
+  }
+  const bare = norm.match(/^\s*#?(\d{1,2})\s*[.!]?\s*$/)
+  if (bare) found.push(Number(bare[1]))
+  if (/\bultim[oa]/.test(norm)) found.push(1)
+  if (/\b(primer[oa]?|anterior)\b/.test(norm)) found.push(0)
+  return [...new Set(found)]
 }
 
-/** The person's text says something that fits the picked row and none of the other matches. */
-function setsApart(text: string, today: string, picked: Numbered, others: Numbered[]): boolean {
-  const mine = details(text, today, picked.movement)
-  const theirs = others.map((o) => details(text, today, o.movement))
-  return [...mine].some((d) => theirs.every((t) => !t.has(d)))
-}
-
-/** How many candidates a question lists when nothing narrower is known. */
+/** How many candidates a question lists when nothing is known. */
 const ASK_FALLBACK = 3
 
 /**
  * Turns the model's pointer into one stored movement, or into a question. `recent` is the list the
- * model saw, newest first. A wrong row is worse than a question, so it asks whenever it is not
- * sure: low confidence, nothing named, a number that its words contradict, or words that fit
- * several movements with nothing in the person's own message (a position, or a detail such as
- * the payment, the old amount or the day) that points at one of them. The question's answer
- * carries a number, so it never loops.
+ * model saw, newest first. In order:
+ * 1. A position in the person's own message ("el 2", "el último") wins, whatever the model's words
+ *    say: the model's `target` only echoes the row it chose and has been wrong while its number was
+ *    right. If the model's number is one of the positions named, it is used; else the first named.
+ * 2. Otherwise the rows the words name are the candidates; the person's details (payment, old
+ *    amount, hoy/ayer, dd/mm) narrow them, and the newest one left wins: a correction almost
+ *    always means the movement just mentioned. The reply shows the choice (the old values and, when
+ *    it is not from today, its date).
+ * 3. Nothing named asks. "Last" is number 1; a different number alongside it is a contradiction and
+ *    asks, and so does a low-confidence "last".
  */
 export function resolveTarget(
   command: Targeting,
@@ -127,33 +151,35 @@ export function resolveTarget(
   ctx: ResolveContext,
 ): Resolution {
   const numbered = recent.map((movement, i) => ({ number: i + 1, movement }))
-  const isLast = LAST.test(normalizeText(command.target))
-  const named = isLast ? [] : numbered.filter((n) => namesMovement(command.target, n.movement))
-  const ask = (): Resolution => ({
-    kind: 'ask',
-    candidates: named.length >= 1 ? named : numbered.slice(0, ASK_FALLBACK),
-  })
+  const ask = (): Resolution => ({ kind: 'ask', candidates: numbered.slice(0, ASK_FALLBACK) })
   const [newest] = numbered
-  if (command.confidence === 'low' || !newest) return ask()
+  if (!newest) return ask()
 
   const index = command.target_index
-  if (isLast) {
-    // "Last" is number 1; a different number is a contradiction, not a hint.
+  const modelPick =
+    index !== null && Number.isInteger(index) && index >= 1 && index <= recent.length
+      ? index
+      : undefined
+
+  const positions = positionsIn(ctx.text).filter((n) => n <= recent.length)
+  const said = positions.filter((n) => n >= 1)
+  if (said.length > 0) {
+    const n = modelPick !== undefined && said.includes(modelPick) ? modelPick : (said[0] ?? 1)
+    return { kind: 'found', movement: (numbered[n - 1] ?? newest).movement }
+  }
+  if (positions.includes(0) && modelPick !== undefined) {
+    return { kind: 'found', movement: (numbered[modelPick - 1] ?? newest).movement }
+  }
+
+  if (LAST.test(normalizeText(command.target))) {
+    if (command.confidence === 'low') return ask()
     return index === null || index === 1 ? { kind: 'found', movement: newest.movement } : ask()
   }
 
-  const picked =
-    index !== null && Number.isInteger(index) && index >= 1 && index <= recent.length
-      ? numbered[index - 1]
-      : undefined
-  if (picked && namesMovement(command.target, picked.movement)) {
-    const others = named.filter((n) => n !== picked)
-    const sure =
-      others.length === 0 ||
-      explicitPosition(ctx.text, picked.number) ||
-      setsApart(ctx.text, ctx.today, picked, others)
-    return sure ? { kind: 'found', movement: picked.movement } : ask()
-  }
-  const [only] = named
-  return named.length === 1 && only ? { kind: 'found', movement: only.movement } : ask()
+  const named = numbered.filter((n) => namesMovement(command.target, n.movement))
+  const [first] = named
+  if (!first) return ask()
+  const narrowed = named.filter((n) => details(ctx.text, ctx.today, n.movement).size > 0)
+  const [winner = first] = narrowed.length > 0 ? narrowed : named
+  return { kind: 'found', movement: winner.movement }
 }

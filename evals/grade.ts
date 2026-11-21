@@ -7,6 +7,8 @@ export type EvalCase = {
   today: string
   text: string
   recent: RecentMovement[]
+  /** The sender's previous message and our reply to it, when the case needs them. */
+  previous?: { text: string; reply: string }
   /** An ambiguous message passes by coming back low-confidence, or by being exactly right. */
   ambiguous: boolean
   expected: Command

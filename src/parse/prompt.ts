@@ -1,5 +1,5 @@
 import { addDays, weekdayName } from '../time'
-import type { RecentMovement } from './schema'
+import type { PreviousExchange, RecentMovement } from './schema'
 
 /**
  * Frozen system prompt. It is the cached prefix: keep it byte-identical between requests, and put
@@ -78,7 +78,11 @@ Today's date and a calendar of the last 14 days are given after the message pref
 The numbered list "Últimos movimientos" is given after the message prefix, newest first: number 1 is the most recent. Point at the movement with two fields:
 - target_index: the number of that movement in the list.
 - target: the word "last" when they mean the most recent movement or give no hint, otherwise the short description of the chosen movement exactly as the list shows it (for example "super"). Always describe the movement you chose; never copy a word that does not name it.
-Use target_index null (and put what they said in target) when you cannot tell which one they mean: the list is empty, nothing in it fits what they said, or the words they used fit more than one movement of the list ("el cafe" when the list has two cafes) and nothing else in the message tells them apart (a number, an amount, a date, "el ultimo"). In that case never pick the newest or the first: use null with confidence "low". Code then asks the person. If the message names a number from the list ("borra el 2"), use that number. Never guess: a wrong movement is worse than asking, so use confidence "low" when unsure.
+When the words they used fit more than one movement of the list ("el cafe" with two cafes), choose the most recent of them (the lowest number): a correction almost always means the one just mentioned. If they give a number ("borra el 2", "el 3 fue 4500"), use that number even if its description is not the word they used. If the message gives a detail (the payment, the old amount, "ayer"), choose the movement that detail fits. Use target_index null (and put what they said in target) only when nothing in the list fits what they said or the list is empty, with confidence "low". Code then asks the person.
+
+# Short answers (previous exchange)
+
+After the message prefix you may be given "Intercambio anterior": the person's previous message and the reply they got. When that reply is a question starting with "¿Cuál?" and the new message is only a short answer ("2", "el 2", "la 3", "dale", "sí", "el primero"), it answers that question: return the same command the person asked in the previous message (the same changes, or the same delete), aimed at the number they chose; "sí" or "dale" chooses the first or only option listed. Never read a short answer as an amount. Use the previous exchange for nothing else: a message that records an expense or asks something new is parsed on its own, and never takes anything from the previous exchange.
 
 # Queries
 
@@ -149,11 +153,11 @@ Message: eso fue con la master y ayer
 
 Recent: 1. out 2400 ARS <today> café [restaurantes] (sin medio) / 2. out 7300 ARS <today> cena [restaurantes] (débito) / 3. out 2700 ARS <2 days ago> café [restaurantes] (efectivo)
 Message: no, el cafe fue 4000
-{"type":"correct","target":"café","target_index":null,"changes":{"direction":null,"amount":"4000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"low"}
+{"type":"correct","target":"café","target_index":1,"changes":{"direction":null,"amount":"4000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
 Recent: 1. out 15400 ARS <today> súper [supermercado] (crédito visa) / 2. out 7300 ARS <today> cena [restaurantes] (débito) / 3. out 6800 ARS <2 days ago> súper [supermercado] (efectivo)
 Message: el super fueron 9500
-{"type":"correct","target":"súper","target_index":null,"changes":{"direction":null,"amount":"9500","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"low"}
+{"type":"correct","target":"súper","target_index":1,"changes":{"direction":null,"amount":"9500","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
 
 Recent: 1. out 15400 ARS <today> súper [supermercado] (crédito visa) / 2. out 7300 ARS <today> cena [restaurantes] (débito) / 3. out 6800 ARS <2 days ago> súper [supermercado] (efectivo)
 Message: el super que pague en efectivo era 8500
@@ -170,6 +174,26 @@ Message: saca lo de la farmacia
 Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa) / 3. out 6200 ARS <2 days ago> farmacia [salud] (sin medio)
 Message: elimina el 2
 {"type":"delete","target":"súper","target_index":2,"confidence":"high"}
+
+Previous: (persona) cambiame lo del almuerzo a 5000 / (Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400 · 3. Farmacia $6.200
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa) / 3. out 6200 ARS <2 days ago> farmacia [salud] (sin medio)
+Message: la 3
+{"type":"correct","target":"farmacia","target_index":3,"changes":{"direction":null,"amount":"5000","currency":null,"date":null,"description":null,"category":null,"payment":null},"confidence":"high"}
+
+Previous: (persona) borrá lo del taxi / (Warren) ¿Cuál? 1. Café $2.900 · 2. Súper $15.400
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio) / 2. out 15400 ARS <yesterday> súper [supermercado] (crédito visa)
+Message: dale el 2
+{"type":"delete","target":"súper","target_index":2,"confidence":"high"}
+
+Previous: (persona) borra lo de la nafta / (Warren) ¿Cuál? 1. Café $2.900
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio)
+Message: dale
+{"type":"delete","target":"café","target_index":1,"confidence":"high"}
+
+Previous: (persona) cuanto gaste hoy / (Warren) Hoy gastaste $2.900 (1 movimiento).
+Recent: 1. out 2900 ARS <today> café [restaurantes] (sin medio)
+Message: remis 6000
+{"type":"log","movements":[{"direction":"out","amount":"6000","currency":"ARS","date":"<today>","description":"remis","category":"transporte","payment":null,"confidence":"high"}]}
 
 Recent: (ninguno)
 Message: sacame lo ultimo
@@ -199,6 +223,7 @@ export function renderVolatile(input: {
   text: string
   today: string
   recentMovements: RecentMovement[]
+  previous?: PreviousExchange | null
 }): string {
   const { today, recentMovements } = input
   // The message sits between delimiters, so it must not be able to close them: no raw angle
@@ -219,10 +244,19 @@ export function renderVolatile(input: {
               `${i + 1}. ${m.direction} ${m.amount} ${m.currency} ${m.date} ${oneLine(m.description)} [${m.category}] (${oneLine(m.payment ?? 'sin medio')})`,
           )
           .join('\n')
+  // One line each, bounded, and no raw angle brackets: this is data, like the message.
+  const clip = (value: string) =>
+    oneLine(value).replaceAll('<', '&lt;').replaceAll('>', '&gt;').slice(0, 400)
+  const previous = input.previous
+    ? [
+        `Intercambio anterior, de hace pocos minutos:\n(persona) ${clip(input.previous.text)}\n(Warren) ${clip(input.previous.reply)}`,
+      ]
+    : []
   return [
     `Hoy es ${weekdayName(today)} ${today} (America/Argentina/Buenos_Aires).`,
     `Calendario, del más reciente al más antiguo:\n${calendar.join('\n')}`,
     `Últimos movimientos de la persona, el más reciente primero:\n${recent}`,
+    ...previous,
     `<mensaje>\n${text}\n</mensaje>`,
   ].join('\n\n')
 }

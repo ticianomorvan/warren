@@ -100,6 +100,7 @@ async function runCase(testCase: EvalCase): Promise<CaseResult> {
       text: testCase.text,
       today: testCase.today,
       recentMovements: testCase.recent,
+      previous: testCase.previous,
       model: modelKey,
     })
     spent += estimateCostUsd(modelKey, result.usage)

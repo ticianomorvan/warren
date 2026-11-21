@@ -18,7 +18,8 @@ import type { Sql } from './db'
 import { execute } from './execute'
 import type { MovementRow } from './ledger'
 import type { Command } from './parse'
-import { REPLY_BAD_CHANGE, REPLY_NO_CHANGES, REPLY_NO_MOVEMENTS } from './render'
+import { REPLY_BAD_CHANGE, REPLY_NO_CHANGES, REPLY_NO_MOVEMENTS, REPLY_ONE_THING } from './render'
+import { createStore } from './store'
 import {
   bodies,
   fakeGraph,
@@ -112,22 +113,116 @@ describe('correct', () => {
     app.close()
   })
 
-  it('asks and changes nothing when the words fit two movements and there is no number', async () => {
+  it('the newest of several matches is corrected, and the reply shows which', async () => {
+    // Two cafés, no number from the model or the person: the one just mentioned is the newest.
     const app = await setup({
       model: script(
         logOf(
+          movement({ description: 'café', amount: '3100', date: '2025-10-08' }),
           movement({ description: 'café', amount: '2800' }),
-          movement({ description: 'café', amount: '3100' }),
         ),
         correct({ target: 'café', index: null, changes: { amount: '4000' } }),
       ),
     })
     await say(app)
-    const reply = await say(app)
-    expect(reply).toBe(`¿Cuál? 1. Café $3.100 · 2. Café $2.800${HOW(1)}`)
-    expect(await history()).toHaveLength(2)
-    expect((await history()).every((r) => r.superseded_by === null && !r.deleted)).toBe(true)
-    expect(await row(lastWamid)).toMatchObject({ status: 'done', reply_text: reply })
+    expect(await say(app, { text: 'uh perdón, el café fueron 4000' })).toBe(
+      '✓ Corregido: Café $4.000 (antes $2.800)',
+    )
+    expect((await history()).filter((r) => r.superseded_by === null && !r.deleted)).toHaveLength(2)
+    app.close()
+  })
+
+  it('an older match is named by its date in the reply, and picked by a detail of the message', async () => {
+    const app = await setup({
+      model: script(
+        logOf(
+          movement({ description: 'café', amount: '3100', date: '2025-10-08' }),
+          movement({ description: 'café', amount: '2800' }),
+        ),
+        correct({ target: 'café', index: 1, changes: { amount: '4000' } }),
+        remove('café', 1),
+      ),
+    })
+    await say(app)
+    expect(await say(app, { text: 'el café de ayer fue 4000' })).toBe(
+      '✓ Corregido: Café $4.000 · ayer (antes $3.100)',
+    )
+    // The corrected one is the newest now; deleting "el café" of yesterday again names the date.
+    expect(await say(app, { text: 'borrá el café de ayer' })).toBe('✓ Borré: Café $4.000 · ayer')
+    app.close()
+  })
+
+  it('a position in the message wins over the words of the model ("el 2 fue 4500")', async () => {
+    // List: 1 nafta, 2 café, 3 súper, 4 súper. The model pointed at number 2 but wrote "súper".
+    const app = await setup({
+      model: script(
+        logOf(
+          movement({ description: 'súper', amount: '9000', category: 'supermercado' }),
+          movement({ description: 'súper', amount: '8000', category: 'supermercado' }),
+          movement({ description: 'café', amount: '3500' }),
+          movement({ description: 'nafta', amount: '20000', category: 'combustible' }),
+        ),
+        // The log stores them in order, so the newest is the last one logged.
+        correct({ target: 'súper', index: 2, changes: { amount: '4500' } }),
+      ),
+    })
+    await say(app)
+    expect(await say(app, { text: 'el 2 fue 4500' })).toBe(
+      '✓ Corregido: Café $4.500 (antes $3.500)',
+    )
+    app.close()
+  })
+
+  it('two actions in one message are not done, and the reply says so', async () => {
+    const app = await setup({
+      model: script(
+        logOf(movement({ amount: '2800' }), movement({ description: 'súper', amount: '9000' })),
+        remove('súper', 1),
+        correct({ index: 2, changes: {} }),
+      ),
+    })
+    await say(app)
+    const text = 'el dos bórralo, cambiame el primero'
+    expect(await say(app, { text })).toBe(REPLY_ONE_THING)
+    expect(await say(app, { text })).toBe(REPLY_ONE_THING)
+    expect((await history()).some((r) => r.deleted || r.superseded_by !== null)).toBe(false)
+    app.close()
+  })
+
+  it('a short answer after a question is read with the previous exchange', async () => {
+    await seed([
+      { on: TODAY, amount: '2300', description: 'kiosco' },
+      { on: TODAY, amount: '7400', description: 'verdulería' },
+      { on: TODAY, amount: '18000', description: 'gimnasio' },
+    ])
+    const seen: string[] = []
+    const model = script(
+      correct({ target: 'almuerzo', index: null, changes: { amount: '5000' } }),
+      correct({ target: 'verdulería', index: 2, changes: { amount: '5000' } }),
+      logOf(movement()),
+    )
+    const parse = model.client.messages as unknown as {
+      parse: (p: { messages: { content: string }[] }) => Promise<unknown>
+    }
+    const original = parse.parse
+    parse.parse = (p) => {
+      seen.push(p.messages[0]?.content ?? '')
+      return original(p)
+    }
+    const app = await setup({ model })
+    const question = await say(app, { text: 'cambiame el almuerzo a 5000' })
+    expect(question).toBe(
+      `¿Cuál? 1. Gimnasio $18.000 · 2. Verdulería $7.400 · 3. Kiosco $2.300${HOW(1)}`,
+    )
+    expect(seen[0]).not.toContain('Intercambio anterior')
+    expect(await say(app, { text: '2' })).toBe('✓ Corregido: Verdulería $5.000 (antes $7.400)')
+    expect(seen[1]).toContain('Intercambio anterior')
+    expect(seen[1]).toContain('(persona) cambiame el almuerzo a 5000')
+    expect(seen[1]).toContain('(Warren) ¿Cuál? 1. Gimnasio $18.000')
+    // The next message sees the correction exchange, not the question before it.
+    await say(app, { text: 'café 3500' })
+    expect(seen[2]).toContain('(Warren) ✓ Corregido: Verdulería')
+    expect(seen[2]).not.toContain('¿Cuál?')
     app.close()
   })
 
@@ -183,27 +278,6 @@ describe('correct', () => {
     expect(await say(app)).toBe(REPLY_BAD_CHANGE)
     expect(await row(lastWamid)).toMatchObject({ status: 'done', reply_text: REPLY_BAD_CHANGE })
     expect(await history()).toHaveLength(1)
-    app.close()
-  })
-
-  it('applies a guess among equal matches only when the person said which: a position, or a detail', async () => {
-    // The model picks number 1 with high confidence for "el café", a guess the words cannot back.
-    const two = logOf(
-      movement({ amount: '2800' }),
-      movement({ amount: '3100', payment: 'efectivo' }),
-    )
-    const guess = correct({ target: 'café', index: 1, changes: { amount: '4100' } })
-    const app = await setup({ model: script(two, guess, guess, guess) })
-    await say(app)
-    // List is [3100 efectivo, 2800]: number 1 is the efectivo one.
-    expect(await say(app, { text: 'perdón, el café salió 4100' })).toBe(
-      `¿Cuál? 1. Café $3.100 (efectivo) · 2. Café $2.800${HOW(1)}`,
-    )
-    expect(await history()).toHaveLength(2)
-    expect(await say(app, { text: 'el último café fue 4100' })).toBe(
-      '✓ Corregido: Café $4.100 (efectivo) (antes $3.100)',
-    )
-    expect(await history()).toHaveLength(3)
     app.close()
   })
 
@@ -437,13 +511,16 @@ describe('delete', () => {
     app.close()
   })
 
-  it('asks, and deletes nothing, when the target is ambiguous', async () => {
+  it('deletes the newest of several matches and names it', async () => {
     const app = await setup({
-      model: script(logOf(movement(), movement({ amount: '2800' })), remove('café', null)),
+      model: script(
+        logOf(movement({ amount: '3100', date: '2025-10-08' }), movement({ amount: '2800' })),
+        remove('café', null),
+      ),
     })
     await say(app)
-    expect(await say(app)).toBe(`¿Cuál? 1. Café $2.800 · 2. Café $3.500${HOW(1)}`)
-    expect((await history()).some((r) => r.deleted)).toBe(false)
+    expect(await say(app)).toBe('✓ Borré: Café $2.800')
+    expect((await history()).filter((r) => r.deleted)).toHaveLength(1)
     app.close()
   })
 })
@@ -642,5 +719,48 @@ describe('periods in Argentine time', () => {
     expect(await sum(`occurred_on BETWEEN '2026-11-01' AND '2026-11-30'`)).toBe('120')
     expect(await sum(`occurred_on BETWEEN '2026-11-30' AND '2026-12-06'`)).toBe('448')
     expect(await sum(`occurred_on BETWEEN '2026-01-01' AND '2026-12-31'`)).toBe('510')
+  })
+})
+
+describe('previous exchange', () => {
+  const store = () => createStore(sql, { staleMs: 60_000, maxAttempts: 3 })
+  const message = async (o: {
+    wamid: string
+    ago: string
+    reply?: string | null
+    waId?: string
+    kind?: string
+    body?: string
+  }) => {
+    const [r] = await sql`
+      INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, reply_text, received_at)
+      VALUES (${o.wamid}, ${o.waId ?? WA}, ${o.kind ?? 'text'}, ${o.body ?? 'hola'}, '{}'::jsonb,
+        ${o.reply === undefined ? 'respuesta' : o.reply}, now() - ${o.ago}::interval)
+      RETURNING id::int AS id`
+    return { id: r?.id ?? 0 } as never
+  }
+
+  it("is the sender's message just before, with its reply, if recent and answered", async () => {
+    await message({ wamid: 'p.old', ago: '30 minutes', body: 'viejo' })
+    await message({ wamid: 'p.other', ago: '1 minute', waId: '5491100000099', body: 'de otro' })
+    await message({ wamid: 'p.prev', ago: '2 minutes', body: 'café 3500', reply: '✓ Café $3.500' })
+    const current = await message({ wamid: 'p.cur', ago: '0 seconds', reply: null })
+    expect(await store().previousExchange(current)).toEqual({
+      text: 'café 3500',
+      reply: '✓ Café $3.500',
+    })
+  })
+
+  it('is nothing when the previous message is older than 10 minutes, unanswered or not text', async () => {
+    const old = await message({ wamid: 'q.old', ago: '11 minutes' })
+    const current1 = await message({ wamid: 'q.c1', ago: '0 seconds', reply: null })
+    expect(await store().previousExchange(current1)).toBeNull()
+    expect(old).toBeTruthy()
+    await message({ wamid: 'q.fail', ago: '1 minute', reply: null }) // failed: no reply was committed
+    const current2 = await message({ wamid: 'q.c2', ago: '0 seconds', reply: null })
+    expect(await store().previousExchange(current2)).toBeNull()
+    await message({ wamid: 'q.img', ago: '30 seconds', kind: 'image' })
+    const current3 = await message({ wamid: 'q.c3', ago: '0 seconds', reply: null })
+    expect(await store().previousExchange(current3)).toBeNull()
   })
 })

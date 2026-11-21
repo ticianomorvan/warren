@@ -98,3 +98,6 @@ export type RecentMovement = Pick<
   Movement,
   'direction' | 'amount' | 'currency' | 'date' | 'description' | 'category' | 'payment'
 >
+
+/** The sender's previous message and the reply it got: context for a short answer ("2", "sí"). */
+export type PreviousExchange = { text: string; reply: string }

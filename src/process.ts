@@ -188,11 +188,15 @@ export function createProcessor(o: ProcessorOptions) {
     const today = argentinaToday(c.messageAt)
     const parsing = (async () => {
       const accountId = await store.upsertAccount(c.wa_id)
-      const recentMovements = await store.recentMovements(accountId)
+      const [recentMovements, previous] = await Promise.all([
+        store.recentMovements(accountId),
+        store.previousExchange(c),
+      ])
       const result = await parseMessage({
         text: c.body ?? '',
         today,
         recentMovements,
+        previous,
         model: o.model ?? 'haiku',
         client: o.client,
         signal,

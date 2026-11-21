@@ -304,10 +304,10 @@ describe('silent wrong targets', () => {
     expect(g.silentWrongTarget).toBe(true)
   })
 
-  it('does not count a wrong number that code turns into a question (the model misses, nothing breaks)', () => {
-    const g = grade(deleting('borrá el café', null, true), del('café', 1))
+  it('does not count a wrong number that code turns into the right movement (the newest match)', () => {
+    const g = grade(deleting('borrá el café', 1), del('café', 3))
     expect(g.full).toBe(false) // the model was wrong
-    expect(g.silentWrongTarget).toBe(false) // two cafés and no position in the message: code asks
+    expect(g.silentWrongTarget).toBe(false) // two cafés, no position: code takes the newest, number 1
   })
 
   it('does not count a right number, or a low-confidence answer', () => {

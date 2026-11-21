@@ -13,6 +13,7 @@ import type { Command } from './parse'
 import {
   REPLY_GONE,
   REPLY_NO_CHANGES,
+  REPLY_ONE_THING,
   type RenderOptions,
   renderCorrection,
   renderDeletion,
@@ -21,7 +22,7 @@ import {
   renderReply,
   renderUnchanged,
 } from './render'
-import { type Numbered, resolveTarget } from './resolve'
+import { type Numbered, positionsIn, resolveTarget } from './resolve'
 import { periodRange } from './time'
 
 export interface ExecuteInput {
@@ -59,6 +60,8 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<string> {
       return renderReply(command, today, i.render)
     case 'correct':
     case 'delete': {
+      // Two positions in one message ("el 2 bórralo, cambiame el primero") are two actions.
+      if (positionsIn(i.text).length >= 2) return REPLY_ONE_THING
       if (command.type === 'correct' && Object.values(command.changes).every((v) => v === null)) {
         return REPLY_NO_CHANGES
       }

@@ -128,12 +128,14 @@ model at the end. CI never calls the Anthropic API.
   slow; each names its own movements). A shutdown hands queued messages back as `pending`
   like the one in flight. The parser sees the account's last 10 live movements (`RECENT_LIMIT`, the most one
   message can log) as a numbered list and returns `target_index` plus `target`. Code (`resolveTarget`) reads
-  the person's own message too, since `target` only echoes the row the model chose: "last" is number 1 (any
-  other number with it asks); a number is trusted when the words name that row (description stems, or the
-  whole category name, never a stem of a category or payment); when the words fit several movements it is
-  trusted only if the message gives a position ("el 3", "el último") or a detail that fits that row and no
-  other match (its payment, old amount, hoy/ayer, dd/mm). Otherwise, and for low confidence or no match, the
-  reply is `¿Cuál? 1. … · 2. …` plus how to answer, and nothing changes. Inside the transaction the live
+  the person's own message too, since `target` only echoes the row the model chose. A position the person
+  wrote ("el 2", a bare "2", "el último") wins over the model's words and number; two positions in one
+  message are two actions and get "una cosa por mensaje". Otherwise the rows whose description the words name
+  (4-letter stems, or a whole category name, never a stem of a category or payment) are the candidates, the
+  message's details (payment, old amount, hoy/ayer, dd/mm) narrow them, and the newest left wins; the reply
+  shows the old values and, if not from today, the date. Nothing named asks `¿Cuál? 1. … · 2. …` plus how to
+  answer and changes nothing. The parser also gets the sender's previous exchange (last message and its
+  committed reply, at most 10 minutes old) so a bare "2" after a question works. Inside the transaction the live
   list is read again: if it differs from the one the model saw, the same question is asked. The target row is
   locked (`FOR UPDATE`) and must still be live, else the reply says it was already corrected or deleted. A
   corrected movement is a new row, so it counts as the newest. A `correct` whose new value cannot be stored

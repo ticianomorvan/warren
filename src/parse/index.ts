@@ -2,12 +2,19 @@ import Anthropic from '@anthropic-ai/sdk'
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod'
 import { MODELS, type ModelKey, type Usage } from './models'
 import { renderVolatile, SYSTEM_PROMPT } from './prompt'
-import { type Command, CommandSchema, type RecentMovement } from './schema'
+import { type Command, CommandSchema, type PreviousExchange, type RecentMovement } from './schema'
 import { type Issue, validateCommand } from './validate'
 
 export type { ModelKey, Usage } from './models'
 export { estimateCostUsd, MODELS } from './models'
-export type { Changes, Command, Movement, Period, RecentMovement } from './schema'
+export type {
+  Changes,
+  Command,
+  Movement,
+  Period,
+  PreviousExchange,
+  RecentMovement,
+} from './schema'
 export { CATEGORIES, CommandSchema } from './schema'
 export type { Issue } from './validate'
 
@@ -36,6 +43,8 @@ export async function parseMessage(input: {
   /** The Argentine calendar day, yyyy-mm-dd. */
   today: string
   recentMovements: RecentMovement[]
+  /** The sender's previous exchange, when it was recent and answered. */
+  previous?: PreviousExchange | null
   model: ModelKey
   client?: Anthropic
   /** Aborts the call and the SDK's retries. */
@@ -59,6 +68,7 @@ export async function parseMessage(input: {
             text: input.text,
             today: input.today,
             recentMovements: input.recentMovements,
+            previous: input.previous,
           }),
         },
       ],

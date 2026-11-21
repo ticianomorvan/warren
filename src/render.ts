@@ -12,6 +12,8 @@ export const REPLY_GONE =
   'Ese movimiento ya fue corregido o borrado. Fijate cómo quedó y mandame de nuevo qué querés cambiar.'
 export const REPLY_NO_CHANGES =
   'No entendí qué cambiar. Incluí el cambio, por ejemplo: "el 2 fue 3800".'
+export const REPLY_ONE_THING =
+  'Por ahora hago una cosa por mensaje. Mandame primero una, por ejemplo: "borrá el 2"; después la otra.'
 export const REPLY_BAD_CHANGE =
   'No entendí el valor nuevo. Probá con un monto o una fecha clara, por ejemplo: "el 2 fue 3800" o "el 1 fue ayer".'
 export const REPLY_OFF_TOPIC = 'Solo puedo ayudarte con tus gastos e ingresos.'
