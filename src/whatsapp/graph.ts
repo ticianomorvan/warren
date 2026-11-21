@@ -1,4 +1,4 @@
-import { Agent, request } from 'node:https'
+import { Agent, fetch as undiciFetch } from 'undici'
 
 // Graph `error.code` values, from Meta's error-code reference.
 const PERMANENT = new Set([100, 131026, 131030, 131047, 131051])
@@ -65,36 +65,12 @@ export interface GraphOptions {
  * Meta answers the first request on a new connection about 0.4 s slower than later ones, and
  * Node's global fetch drops idle connections after 4 s, so a reply a few seconds after the last
  * one paid that every time. Meta kept an idle connection for at least 70 s when measured
- * (2026-11-21); 60 s stays inside that, so a burst of messages reuses one connection. Node's
- * agent also drops a socket early when the server closes it or sends a shorter `Keep-Alive`.
+ * (2026-11-21); 60 s stays inside that, so a burst of messages reuses one connection. undici
+ * also drops a socket early when the server closes it or sends a shorter `Keep-Alive`.
  */
-const agent = new Agent({ keepAlive: true, timeout: 60_000 })
-
-/** The slice of `fetch` the client uses, over `node:https` with the agent above. */
+const agent = new Agent({ keepAliveTimeout: 60_000, keepAliveMaxTimeout: 60_000 })
 const keptAliveFetch = ((url: string, init: RequestInit) =>
-  new Promise<Response>((resolve, reject) => {
-    const req = request(
-      url,
-      {
-        method: init.method,
-        headers: init.headers as Record<string, string>,
-        agent,
-        signal: init.signal ?? undefined,
-      },
-      (res) => {
-        const chunks: Buffer[] = []
-        res.on('data', (c: Buffer) => chunks.push(c))
-        res.on('error', reject)
-        res.on('end', () => {
-          const status = res.statusCode ?? 502
-          const body = [204, 205, 304].includes(status) ? null : Buffer.concat(chunks)
-          resolve(new Response(body, { status }))
-        })
-      },
-    )
-    req.on('error', reject)
-    req.end(init.body as string)
-  })) as typeof fetch
+  undiciFetch(url, { ...(init as object), dispatcher: agent })) as unknown as typeof fetch
 
 export function createGraph(o: GraphOptions): Graph {
   const doFetch = o.fetch ?? keptAliveFetch
