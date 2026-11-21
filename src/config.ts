@@ -19,6 +19,12 @@ const schema = z.object({
   // Comma-separated WhatsApp ids that get a reply. `*` answers everyone (dev mode). Empty or unset
   // answers nobody: messages are still stored, as `ignored`.
   ALLOWED_WA_IDS: list,
+  ANTHROPIC_API_KEY: z.string().min(1),
+  // A human contact line for "ayuda" (Meta's messaging policy asks for one). No default.
+  HELP_CONTACT: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() || undefined),
 })
 
 export type Config = z.infer<typeof schema>

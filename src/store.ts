@@ -1,4 +1,5 @@
 import type { Sql } from './db'
+import type { Command, Movement, RecentMovement } from './parse'
 
 /** What a worker holds after claiming a row. Every later write checks `id` and `attempts`. */
 export interface Claim {
@@ -7,6 +8,23 @@ export interface Claim {
   wa_id: string
   kind: string
   attempts: number
+  body: string | null
+  /** Ms since `received_at` when the row was claimed (database clock). The deadlines count from it. */
+  ageMs: number
+  /** The reply stored at the commit point; set means the model must not be called again. */
+  replyText: string | null
+  interimSent: boolean
+  typingSent: boolean
+}
+
+/** What the commit point stores, in one transaction. */
+export interface Commit {
+  accountId: number
+  command: Command
+  modelMs: number
+  reply: string
+  /** Only for `log`. `date` is the Argentine day, yyyy-mm-dd. */
+  movements: Movement[]
 }
 
 export type Settled = 'done' | 'failed' | 'pending' | 'unknown' | 'ignored'
@@ -88,7 +106,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
         SET status = 'failed', updated_at = now(),
             error = COALESCE(error, 'attempts exhausted')
         WHERE attempts >= ${o.maxAttempts} AND (status = 'pending' OR (${stale})) ${only}`
-      return sql<Claim[]>`
+      const rows = await sql<(Omit<Claim, 'ageMs'> & { ageMs: string })[]>`
         UPDATE inbound_message
         SET status = 'processing', attempts = attempts + 1, claimed_at = now(), updated_at = now()
         WHERE id IN (
@@ -96,7 +114,110 @@ export function createStore(sql: Sql, o: StoreOptions) {
           WHERE attempts < ${o.maxAttempts} AND (status = 'pending' OR (${stale})) ${only}
           ORDER BY id LIMIT ${opts.limit}
           FOR UPDATE SKIP LOCKED)
-        RETURNING id, wamid, wa_id, kind, attempts`
+        RETURNING id, wamid, wa_id, kind, attempts, body, reply_text AS "replyText",
+          interim_sent_at IS NOT NULL AS "interimSent", typing_sent_at IS NOT NULL AS "typingSent",
+          extract(epoch FROM now() - received_at) * 1000 AS "ageMs"`
+      return rows.map((r) => ({ ...r, ageMs: Number(r.ageMs) }))
+    },
+
+    /** The account for a WhatsApp id, created on the first allowed message. */
+    async upsertAccount(waId: string): Promise<number> {
+      const [row] = await sql<{ id: number }[]>`
+        INSERT INTO account (wa_id) VALUES (${waId})
+        ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id
+        RETURNING id`
+      return Number(row?.id)
+    },
+
+    /** The account's last `limit` movements that no correction replaced, newest first. */
+    async recentMovements(accountId: number, limit = 5): Promise<RecentMovement[]> {
+      return sql<RecentMovement[]>`
+        SELECT direction, amount::text AS amount, currency, occurred_on::text AS date,
+               description, category, payment
+        FROM movement
+        WHERE account_id = ${accountId} AND superseded_by IS NULL
+        ORDER BY id DESC LIMIT ${limit}`
+    },
+
+    /**
+     * The commit point, one transaction: the parsed command, the movements (idempotent on
+     * `(inbound_message_id, position)`) and the rendered reply. False, with nothing written, when
+     * the claim was lost, the point was already passed, or a failure notice was already started.
+     */
+    async commit(c: Claim, m: Commit): Promise<boolean> {
+      return sql.begin(async (tx) => {
+        const rows = await tx`
+          UPDATE inbound_message
+          SET command = ${tx.json(m.command as never)}, model_ms = ${Math.round(m.modelMs)},
+              reply_text = ${m.reply}, account_id = ${m.accountId}, updated_at = now()
+          WHERE ${owned(c)} AND reply_text IS NULL AND failure_sent_at IS NULL
+          RETURNING id`
+        if (rows.length === 0) return false
+        if (m.movements.length > 0) {
+          const values = m.movements.map((x, position) => ({
+            account_id: m.accountId,
+            inbound_message_id: c.id,
+            position,
+            direction: x.direction,
+            amount: x.amount,
+            currency: x.currency,
+            occurred_on: x.date,
+            description: x.description.trim(),
+            category: x.category,
+            payment: x.payment?.trim() || null,
+            confidence: x.confidence,
+          }))
+          await tx`
+            INSERT INTO movement ${tx(values)}
+            ON CONFLICT (inbound_message_id, position) DO NOTHING`
+        }
+        return true
+      })
+    },
+
+    /**
+     * Committed before the interim note is sent, so it goes out at most once. False when it was
+     * already sent, the reply send has started, or the failure path has: then do not send it.
+     */
+    async recordInterim(c: Claim): Promise<boolean> {
+      const rows = await sql`
+        UPDATE inbound_message SET interim_sent_at = now(), updated_at = now()
+        WHERE ${owned(c)} AND interim_sent_at IS NULL AND send_started_at IS NULL
+          AND failure_sent_at IS NULL
+        RETURNING id`
+      return rows.length > 0
+    },
+
+    /**
+     * Ends the message as `failed` and commits to sending the failure notice, which then goes out at
+     * most once. False when the reply send has started or the notice was already started: say nothing.
+     */
+    async recordFailure(c: Claim, error: string): Promise<boolean> {
+      const rows = await sql`
+        UPDATE inbound_message
+        SET status = 'failed', error = ${error}, failure_sent_at = now(), updated_at = now()
+        WHERE ${owned(c)} AND send_started_at IS NULL AND failure_sent_at IS NULL
+        RETURNING id`
+      return rows.length > 0
+    },
+
+    /** Keeps the failure notice's wamid for its delivery status. The message stays `failed`. */
+    async recordFailureSent(c: Claim, outboundWamid: string): Promise<void> {
+      await sql`
+        INSERT INTO reply (outbound_wamid, inbound_id, sent_at)
+        VALUES (${outboundWamid}, ${c.id}, now())
+        ON CONFLICT (outbound_wamid) DO UPDATE
+          SET inbound_id = EXCLUDED.inbound_id, sent_at = EXCLUDED.sent_at`
+    },
+
+    /** Committed before the done mark is sent: it is never retried. False means do not send it. */
+    async recordReaction(c: Claim): Promise<boolean> {
+      const rows = await sql`
+        UPDATE inbound_message SET reaction_sent_at = now(), updated_at = now()
+        WHERE id = ${c.id} AND attempts = ${c.attempts} AND status = 'done'
+          AND reaction_sent_at IS NULL
+        RETURNING id`
+      return rows.length > 0
     },
 
     /** Stamps the typing indicator. Returns ms since received (database clock), null if not owned. */
