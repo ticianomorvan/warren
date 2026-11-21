@@ -268,10 +268,16 @@ export function createStore(sql: Sql, o: StoreOptions) {
      * Ends the message as `failed` and commits to sending the failure notice, which then goes out at
      * most once. False when the reply send has started or the notice was already started: say nothing.
      */
-    async recordFailure(c: Claim, error: string): Promise<boolean> {
+    async recordFailure(
+      c: Claim,
+      error: string,
+      trace?: { audit: unknown[]; turns: number },
+    ): Promise<boolean> {
       const rows = await sql`
         UPDATE inbound_message
-        SET status = 'failed', error = ${error}, failure_sent_at = now(), updated_at = now()
+        SET status = 'failed', error = ${error}, failure_sent_at = now(), updated_at = now(),
+          tool_calls = COALESCE(${trace ? sql.json(trace.audit as never) : null}, tool_calls),
+          model_turns = COALESCE(${trace?.turns ?? null}, model_turns)
         WHERE ${owned(c)} AND send_started_at IS NULL AND reply_text IS NULL
           AND failure_sent_at IS NULL
         RETURNING id`

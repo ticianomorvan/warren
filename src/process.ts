@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import {
   type Action,
+  AgentError,
   type AuditEntry,
   estimateCostUsd,
   type ModelKey,
@@ -93,12 +94,12 @@ export function createProcessor(o: ProcessorOptions) {
   }
 
   /** The failure path: one notice, only if the reply send never started and nothing was committed. */
-  const fail = (c: Claim, reason: string) =>
+  const fail = (c: Claim, reason: string, trace?: { audit: unknown[]; turns: number }) =>
     once(
       'failure_notice',
       c,
       async () => {
-        const ok = await store.recordFailure(c, reason)
+        const ok = await store.recordFailure(c, reason, trace)
         log(ok ? 'message_failed' : 'failure_skipped', { wamid: c.wamid, reason }, 'error')
         return ok
       },
@@ -265,7 +266,12 @@ export function createProcessor(o: ProcessorOptions) {
         return
       }
       if (outcome === 'aborted') return
-      if ('error' in outcome) return await fail(c, `parse failed: ${errorText(outcome.error)}`)
+      if ('error' in outcome) {
+        const e = outcome.error
+        // A failed message keeps what the agent tried; it writes nothing to the ledger.
+        const trace = e instanceof AgentError ? { audit: e.audit, turns: e.turns } : undefined
+        return await fail(c, `parse failed: ${errorText(e)}`, trace)
+      }
 
       const { accountId, actions, parsed, audit, turns, ms, usage } = outcome.value
 

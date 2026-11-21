@@ -10,7 +10,16 @@ import { TOOLS } from './tools'
 export const MAX_TURNS = 3
 
 /** The loop could not end in valid actions: the message fails with the failure notice and writes nothing. */
-export class AgentError extends Error {}
+/** The loop ended with no valid action. Carries what it tried, so a failed message keeps its audit. */
+export class AgentError extends Error {
+  constructor(
+    message: string,
+    readonly audit: AuditEntry[] = [],
+    readonly turns = 0,
+  ) {
+    super(message)
+  }
+}
 
 /** One tool call of the loop, kept on the message row. */
 export interface AuditEntry {
@@ -112,7 +121,8 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     usage.cacheReadTokens += response.usage.cache_read_input_tokens ?? 0
     usage.cacheWriteTokens += response.usage.cache_creation_input_tokens ?? 0
 
-    if (response.stop_reason === 'max_tokens') throw new AgentError(`turn ${turn}: cut off`)
+    if (response.stop_reason === 'max_tokens')
+      throw new AgentError(`turn ${turn}: cut off`, audit, turn)
     const calls = response.content.filter((b) => b.type === 'tool_use')
     if (calls.length === 0) {
       // The model wrote text instead of acting (tool use cannot be forced on every model). Say so once
@@ -133,7 +143,11 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       continue
     }
 
-    const guard: Guard = { today: i.today, seen: i.seen, logged: 0 }
+    // Writes are checked against what the model had seen when this turn began: results of a
+    // find_movements in the same turn reach the model only on the next turn, so an id that appears
+    // there for the first time was guessed, not chosen.
+    const guard: Guard = { today: i.today, seen: new Set(i.seen), logged: 0 }
+    const foundThisTurn: number[] = []
     const actions: Action[] = []
     const checked: {
       call: (typeof calls)[number]
@@ -148,7 +162,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       let status = 'ok'
       if (result.kind === 'read') {
         const rows = await i.env.find(result.filter)
-        for (const row of rows) i.seen.add(row.id)
+        for (const row of rows) foundThisTurn.push(row.id)
         text = FOUND(rows)
       } else if (result.kind === 'action') {
         status = 'accepted'
@@ -168,6 +182,8 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       if (result.kind === 'rejected') entry.detail = result.message
       checked.push({ call, result, entry, text })
     }
+
+    for (const id of foundThisTurn) i.seen.add(id)
 
     const refused = checked.some((c) => c.result.kind === 'rejected')
     for (const c of checked) {
@@ -198,5 +214,5 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       })),
     })
   }
-  throw new AgentError(`no valid action after ${MAX_TURNS} model turns`)
+  throw new AgentError(`no valid action after ${MAX_TURNS} model turns`, audit, MAX_TURNS)
 }

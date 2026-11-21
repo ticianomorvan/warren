@@ -454,7 +454,15 @@ describe('guards at the commit point', () => {
       status: 'failed',
       command: null,
       reply_text: null,
+      model_turns: 3,
     })
+    // The failed message keeps what the agent tried, for debugging.
+    const capped = await row('wamid.CAP')
+    expect(((capped?.tool_calls ?? []) as { tool: string }[]).map((t) => t.tool)).toEqual([
+      'find_movements',
+      'find_movements',
+      'find_movements',
+    ])
     reads.close()
 
     // The deadline lands in the middle of the loop: a read came back, the second turn hangs.

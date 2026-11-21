@@ -88,6 +88,19 @@ const run = (
   })
 
 describe('runAgent', () => {
+  it('refuses a write to an id that first appears in a find_movements of the same turn', async () => {
+    // The model cannot have seen those results yet: an id there was guessed, not chosen.
+    const { c, requests } = client(
+      [find({ text: 'alquiler' }), correct(777, { amount: '1' })],
+      [correct(777, { amount: '250000' })],
+    )
+    const result = await run(c, { seen: [1, 2, 3], find: () => [row(777)] })
+    expect(requests).toHaveLength(2)
+    expect(result.actions).toEqual([
+      { tool: 'correct_movement', input: { id: 777, changes: { amount: '250000' } } },
+    ])
+  })
+
   it('ends on the first turn with valid actions, with a frozen cached prefix', async () => {
     const { c, requests } = client([log(), del(2)])
     const result = await run(c)
