@@ -81,11 +81,12 @@ model at the end. CI never calls the Anthropic API.
   (`/{app-id}/subscriptions`, `/{waba-id}/subscribed_apps`), not in the dashboard.
 - `ALLOWED_WA_IDS` (comma-separated, `+` and spaces ignored) is who gets a reply. `*` answers everyone (dev
   mode); empty or unset answers nobody. Every message is stored; the others end as `ignored`.
-- **Meta test number:** it only delivers to its recipient list, and matches the number exactly as it was
-  entered there. Webhooks give Argentine mobiles as `549` + area + number, so the list entry must be
-  `+54 9 <area> <number>`. An entry with the local `15` (or without the `9`) fails every send with
-  `131030 Recipient phone number not in allowed list`, while read and typing still work. Production numbers
-  have no recipient list.
+- **Meta test number:** it only delivers to its recipient list, matched exactly. Meta saves Argentine
+  mobiles there without the `9` (and Mexican ones without the `1`), even when typed with it, while
+  webhooks give `549…` / `521…`. `recipientFor` in `src/whatsapp/graph.ts` sends to the short form, which
+  production resolves to the same account. A list entry typed with the local `15` is saved with it and
+  never matches; re-add the number as `+54 9 <area> <number>`. The symptom is `131030 Recipient phone number
+  not in allowed list` on every send while read and typing still work.
 - Sends are at most once. `send_started_at` is committed before the Graph call; a row that dies after that
   (timeout, 5xx, killed worker) ends as `unknown` and is never sent again. Only an HTTP 4xx answer, which
   proves nothing was sent, goes back to `pending` (retryable codes) or `failed` (permanent codes).

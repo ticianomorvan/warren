@@ -1,5 +1,5 @@
 // Graph `error.code` values, from Meta's error-code reference.
-const PERMANENT = new Set([100, 131026, 131047, 131051])
+const PERMANENT = new Set([100, 131026, 131030, 131047, 131051])
 const RETRYABLE = new Set([4, 80007, 130429, 131048, 131056, 190])
 
 export class GraphError extends Error {
@@ -31,11 +31,25 @@ export class GraphError extends Error {
   }
 }
 
+/**
+ * The number to send to for a webhook `wa_id`. Webhooks give Argentine mobiles as `549…` and Mexican
+ * ones as `521…`, but Meta saves test-number recipients without that mobile digit and matches sends
+ * against it exactly, so a send to the `wa_id` fails with 131030. The short form reaches the same
+ * account in production too (Meta answers with the long `wa_id`), so it is used everywhere.
+ */
+export function recipientFor(waId: string): string {
+  const ar = /^549(\d{10})$/.exec(waId)
+  if (ar) return `54${ar[1]}`
+  const mx = /^521(\d{10})$/.exec(waId)
+  if (mx) return `52${mx[1]}`
+  return waId
+}
+
 export interface Graph {
   /** Marks the message read and shows the typing indicator. */
   markReadAndType(wamid: string): Promise<void>
-  /** Sends a text message and returns its wamid. */
-  sendText(to: string, body: string): Promise<string>
+  /** Sends a text message to a webhook `wa_id` and returns its wamid. */
+  sendText(waId: string, body: string): Promise<string>
 }
 
 export interface GraphOptions {
@@ -78,7 +92,8 @@ export function createGraph(o: GraphOptions): Graph {
     async markReadAndType(wamid) {
       await post({ status: 'read', message_id: wamid, typing_indicator: { type: 'text' } })
     },
-    async sendText(to, body) {
+    async sendText(waId, body) {
+      const to = recipientFor(waId)
       const res = await post({ recipient_type: 'individual', to, type: 'text', text: { body } })
       const id = res.messages?.[0]?.id
       if (!id) throw new GraphError(200, 'no message id in response')
