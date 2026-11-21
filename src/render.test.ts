@@ -85,8 +85,8 @@ describe('renderReply', () => {
     }
     const notYet = 'Todavía no puedo corregir, borrar ni responder consultas. Llega pronto.'
     const commands: Command[] = [
-      { type: 'correct', target: 'el café', changes, confidence: 'high' },
-      { type: 'delete', target: 'el último', confidence: 'high' },
+      { type: 'correct', target: 'el café', target_index: null, changes, confidence: 'high' },
+      { type: 'delete', target: 'el último', target_index: null, confidence: 'high' },
       { type: 'query', period: 'today', direction: null, category: null, payment: null },
     ]
     for (const c of commands) expect(renderReply(c, TODAY)).toBe(notYet)

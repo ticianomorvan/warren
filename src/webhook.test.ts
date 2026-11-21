@@ -940,9 +940,9 @@ describe('logging', () => {
       payment: null,
     }
     const commands: Command[] = [
-      { type: 'correct', target: 'el café', changes, confidence: 'high' },
-      { type: 'delete', target: 'el último', confidence: 'high' },
-      { type: 'delete', target: '', confidence: 'low' }, // doubtful, not unstorable
+      { type: 'correct', target: 'el café', target_index: null, changes, confidence: 'high' },
+      { type: 'delete', target: 'el último', target_index: null, confidence: 'high' },
+      { type: 'delete', target: '', target_index: null, confidence: 'low' }, // doubtful, not unstorable
       { type: 'query', period: 'today', direction: null, category: null, payment: null },
     ]
     let i = 0

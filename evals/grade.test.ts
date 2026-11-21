@@ -68,9 +68,21 @@ describe('grade', () => {
     }
     const testCase: EvalCase = {
       ...base,
-      expected: { type: 'correct', target: 'café', changes, confidence: 'high' },
+      expected: {
+        type: 'correct',
+        target: 'café',
+        target_index: null,
+        changes,
+        confidence: 'high',
+      },
     }
-    const right: Command = { type: 'correct', target: 'el cafe', changes, confidence: 'high' }
+    const right: Command = {
+      type: 'correct',
+      target: 'el cafe',
+      target_index: null,
+      changes,
+      confidence: 'high',
+    }
     expect(grade(testCase, right).full).toBe(true)
     const wrong: Command = { ...right, changes: { ...changes, amount: '380' } } as Command
     expect(grade(testCase, wrong).silentWrongAmount).toBe(true)
@@ -80,7 +92,7 @@ describe('grade', () => {
 describe('hard fields of the other commands', () => {
   const rec = (target: string): EvalCase => ({
     ...base,
-    expected: { type: 'delete', target, confidence: 'high' },
+    expected: { type: 'delete', target, target_index: null, confidence: 'high' },
   })
   const query = (over: object): Command => ({
     type: 'query',
@@ -93,18 +105,34 @@ describe('hard fields of the other commands', () => {
   const queryCase: EvalCase = { ...base, expected: query({}) }
 
   it('a delete with the wrong target is not fully correct; a fuzzy match is', () => {
-    expect(grade(rec('súper'), { type: 'delete', target: 'nafta', confidence: 'high' }).full).toBe(
-      false,
-    )
-    expect(grade(rec('súper'), { type: 'delete', target: 'last', confidence: 'high' }).full).toBe(
-      false,
-    )
     expect(
-      grade(rec('súper'), { type: 'delete', target: 'el super', confidence: 'high' }).full,
+      grade(rec('súper'), {
+        type: 'delete',
+        target: 'nafta',
+        target_index: null,
+        confidence: 'high',
+      }).full,
+    ).toBe(false)
+    expect(
+      grade(rec('súper'), {
+        type: 'delete',
+        target: 'last',
+        target_index: null,
+        confidence: 'high',
+      }).full,
+    ).toBe(false)
+    expect(
+      grade(rec('súper'), {
+        type: 'delete',
+        target: 'el super',
+        target_index: null,
+        confidence: 'high',
+      }).full,
     ).toBe(true)
-    expect(grade(rec('last'), { type: 'delete', target: 'last', confidence: 'high' }).full).toBe(
-      true,
-    )
+    expect(
+      grade(rec('last'), { type: 'delete', target: 'last', target_index: null, confidence: 'high' })
+        .full,
+    ).toBe(true)
   })
 
   it('a correction with the wrong target is not fully correct', () => {
@@ -119,10 +147,22 @@ describe('hard fields of the other commands', () => {
     }
     const testCase: EvalCase = {
       ...base,
-      expected: { type: 'correct', target: 'café', changes, confidence: 'high' },
+      expected: {
+        type: 'correct',
+        target: 'café',
+        target_index: null,
+        changes,
+        confidence: 'high',
+      },
     }
     expect(
-      grade(testCase, { type: 'correct', target: 'nafta', changes, confidence: 'high' }).full,
+      grade(testCase, {
+        type: 'correct',
+        target: 'nafta',
+        target_index: null,
+        changes,
+        confidence: 'high',
+      }).full,
     ).toBe(false)
   })
 
@@ -179,5 +219,33 @@ describe('similarText', () => {
     expect(similarText('Café', 'cafe')).toBe(true)
     expect(similarText('farmacia del barrio', 'farmacia')).toBe(true)
     expect(similarText('nafta', 'café')).toBe(false)
+  })
+})
+
+describe('which movement a correction or delete points at', () => {
+  const rec = (target_index: number | null, ambiguous = false): EvalCase => ({
+    ...base,
+    ambiguous,
+    expected: { type: 'delete', target: 'súper', target_index, confidence: 'high' },
+  })
+  const del = (target_index: number | null, confidence: 'high' | 'low' = 'high'): Command => ({
+    type: 'delete',
+    target: 'súper',
+    target_index,
+    confidence,
+  })
+
+  it('needs the right number, even when the text is right', () => {
+    expect(grade(rec(2), del(2)).full).toBe(true)
+    const wrong = grade(rec(2), del(3))
+    expect(wrong.full).toBe(false)
+    expect(wrong.reasons[0]).toContain('target_index 3, expected 2')
+    expect(grade(rec(2), del(null)).full).toBe(false)
+  })
+
+  it('passes an ambiguous case by asking (null number) or by low confidence, not by guessing', () => {
+    expect(grade(rec(null, true), del(null)).full).toBe(true)
+    expect(grade(rec(null, true), del(1, 'low')).full).toBe(true)
+    expect(grade(rec(null, true), del(1)).full).toBe(false)
   })
 })

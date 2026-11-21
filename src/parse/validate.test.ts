@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Command, Movement } from './schema'
+import type { Changes, Command, Movement } from './schema'
 import { InvalidCommandError, validateCommand } from './validate'
 
 const today = '2026-11-20'
@@ -47,7 +47,7 @@ describe('validateCommand', () => {
   it('marks only unstorable log values as fatal, never a delete with an empty target', () => {
     const bad: Command = { type: 'log', movements: [{ ...movement, amount: '3.500' }] }
     expect(validateCommand(bad, today).fatal).toHaveLength(1)
-    const empty: Command = { type: 'delete', target: ' ', confidence: 'high' }
+    const empty: Command = { type: 'delete', target: ' ', target_index: null, confidence: 'high' }
     const result = validateCommand(empty, today)
     expect(result.issues).toHaveLength(1)
     expect(result.fatal).toEqual([])
@@ -74,7 +74,7 @@ describe('validateCommand', () => {
     ])
   })
 
-  it('flags a correction that changes nothing or sets a bad amount', () => {
+  it('applies the log rules to the values a correction sets', () => {
     const changes = {
       direction: null,
       amount: null,
@@ -84,21 +84,28 @@ describe('validateCommand', () => {
       category: null,
       payment: null,
     }
-    const empty = validateCommand(
-      { type: 'correct', target: 'last', changes, confidence: 'high' },
-      today,
-    )
-    expect(empty.issues).toHaveLength(1)
-    const bad = validateCommand(
-      {
-        type: 'correct',
-        target: 'last',
-        changes: { ...changes, amount: '-3' },
-        confidence: 'high',
-      },
-      today,
-    )
-    expect(bad.command).toMatchObject({ confidence: 'low' })
+    const correct = (over: Partial<Changes>): Command => ({
+      type: 'correct',
+      target: 'last',
+      target_index: 1,
+      changes: { ...changes, ...over },
+      confidence: 'high',
+    })
+    // Nothing changing is not an unstorable value: the reply says so.
+    expect(validateCommand(correct({}), today)).toMatchObject({ issues: [], fatal: [] })
+    expect(validateCommand(correct({ amount: '3800' }), today).fatal).toEqual([])
+    for (const bad of [
+      { amount: '-3' },
+      { amount: '3.500' },
+      { date: '2026-11-21' },
+      { date: '2026-02-30' },
+      { description: '  ' },
+      { payment: '' },
+    ]) {
+      const result = validateCommand(correct(bad), today)
+      expect(result.fatal, JSON.stringify(bad)).toHaveLength(1)
+      expect(result.command).toMatchObject({ confidence: 'low' })
+    }
   })
 
   it('throws on a log with no movements', () => {
@@ -118,7 +125,10 @@ describe('validateCommand', () => {
   })
 
   it('lowers confidence for an empty target on correct and delete', () => {
-    const del = validateCommand({ type: 'delete', target: '  ', confidence: 'high' }, today)
+    const del = validateCommand(
+      { type: 'delete', target: '  ', target_index: null, confidence: 'high' },
+      today,
+    )
     expect(del.command).toMatchObject({ confidence: 'low' })
     expect(del.issues[0]?.path).toBe('target')
     const changes = {
@@ -130,10 +140,16 @@ describe('validateCommand', () => {
       category: null,
       payment: null,
     }
-    const fix = validateCommand({ type: 'correct', target: '', changes, confidence: 'high' }, today)
+    const fix = validateCommand(
+      { type: 'correct', target: '', target_index: null, changes, confidence: 'high' },
+      today,
+    )
     expect(fix.command).toMatchObject({ confidence: 'low' })
     expect(
-      validateCommand({ type: 'delete', target: 'last', confidence: 'high' }, today).issues,
+      validateCommand(
+        { type: 'delete', target: 'last', target_index: null, confidence: 'high' },
+        today,
+      ).issues,
     ).toEqual([])
   })
 })

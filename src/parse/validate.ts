@@ -56,10 +56,13 @@ function checkMovement(movement: Movement, today: string, path: string): Issue[]
   return issues
 }
 
-function checkChanges(changes: Changes, today: string, path: string): Issue[] {
+/** Changed values the movement table cannot hold. Same rules as a `log` movement. */
+function checkChangedValues(changes: Changes, today: string, path: string): Issue[] {
   const issues = checkValues(changes, today, path)
-  if (Object.values(changes).every((value) => value === null)) {
-    issues.push({ path, message: 'correction changes nothing' })
+  for (const field of ['description', 'payment'] as const) {
+    if (changes[field] !== null && changes[field].trim() === '') {
+      issues.push({ path: `${path}.${field}`, message: `${field} is empty` })
+    }
   }
   return issues
 }
@@ -68,7 +71,7 @@ function checkChanges(changes: Changes, today: string, path: string): Issue[] {
  * Checks what the schema cannot: amount form, calendar dates, the future. A failure is never
  * repaired. It lowers the confidence of the movement (or correction) and is listed as an issue,
  * so the reply can ask the person instead of storing a guess as sure. `fatal` is the subset that
- * makes a `log` unstorable (bad amount, date or description); only a `log` ever has any.
+ * makes a `log` or a `correct` unstorable (bad amount, date or description); a message with any fails.
  */
 export function validateCommand(
   command: Command,
@@ -94,14 +97,14 @@ export function validateCommand(
     return { command: { ...command, movements }, issues, fatal }
   }
   if (command.type === 'correct') {
-    const issues = [
-      ...checkTarget(command.target),
-      ...checkChanges(command.changes, today, 'changes'),
-    ]
+    // A changed value that cannot be stored is unusable, like the same value in a `log`. Nothing
+    // changing at all is not an error here: the reply says so.
+    const fatal = checkChangedValues(command.changes, today, 'changes')
+    const issues = [...checkTarget(command.target), ...fatal]
     return {
       command: issues.length > 0 ? { ...command, confidence: 'low' } : command,
       issues,
-      fatal: [],
+      fatal,
     }
   }
   if (command.type === 'delete') {

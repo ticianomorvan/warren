@@ -128,11 +128,11 @@ export function grade(testCase: EvalCase, actual: Command): Grade {
     ) {
       silentWrongAmount = true
     }
-    hardTarget(actual.target, expected.target, reasons)
+    hardTarget(testCase, actual, expected, reasons)
     addSoft(soft, 'category', actual.changes.category === expected.changes.category)
     addSoft(soft, 'payment', norm(actual.changes.payment) === norm(expected.changes.payment))
   } else if (expected.type === 'delete' && actual.type === 'delete') {
-    hardTarget(actual.target, expected.target, reasons)
+    hardTarget(testCase, actual, expected, reasons)
   } else if (expected.type === 'query' && actual.type === 'query') {
     if (actual.period !== expected.period)
       reasons.push(`period ${actual.period}, expected ${expected.period}`)
@@ -150,9 +150,21 @@ export function grade(testCase: EvalCase, actual: Command): Grade {
   return { full: reasons.length === 0, typeOk, silentWrongAmount, soft, reasons }
 }
 
-/** Which movement a correction or delete points at is a hard field: a wrong one hits the wrong row. */
-function hardTarget(got: string, want: string, reasons: string[]) {
-  if (!targetOk(got, want)) reasons.push(`target "${got}", expected "${want}"`)
+type Targeting = Extract<Command, { type: 'correct' | 'delete' }>
+
+/**
+ * Which movement a correction or delete points at is a hard field: a wrong one hits the wrong row.
+ * The number in the list decides (the text is only the fallback), so it is checked first. An
+ * ambiguous case also passes by coming back low-confidence, which makes code ask.
+ */
+function hardTarget(testCase: EvalCase, actual: Targeting, expected: Targeting, reasons: string[]) {
+  if (testCase.ambiguous && actual.confidence === 'low') return
+  if (actual.target_index !== expected.target_index) {
+    reasons.push(`target_index ${actual.target_index}, expected ${expected.target_index}`)
+  }
+  if (!targetOk(actual.target, expected.target)) {
+    reasons.push(`target "${actual.target}", expected "${expected.target}"`)
+  }
 }
 
 function targetOk(got: string, want: string): boolean {
