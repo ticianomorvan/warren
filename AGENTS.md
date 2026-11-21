@@ -30,8 +30,9 @@ src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedup
 src/store.ts  The rules of the tables (inbound_message, reply, account, movement): due predicate, claim,
               the commit transaction, ownership-guarded writes
 src/process.ts  Per message: ignored vs reply; for text, typing + parse together, the 10 s interim note, the 30 s
-              deadline, the commit point, the at-most-once send, the done mark; drain on shutdown; the sweep
+              deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
 src/render.ts The reply templates (Argentine money format) and every canned text; pure
+src/http.ts   keepAliveFetch: a fetch with its own 60 s keep-alive pool (Graph and Anthropic)
 src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks), graph.ts (Graph API client)
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
@@ -100,8 +101,7 @@ model at the end. CI never calls the Anthropic API.
   movements (unique on `(inbound_message_id, position)`) and the stored `reply_text`. Before it, a failed
   parse or the deadline ends the message `failed` with one failure notice (`failure_sent_at`, committed
   before the send) and a late model result writes nothing. After it, the stored reply is sent even if late,
-  and the sweep sends it without calling the model. The interim note (`interim_sent_at`) and the ✅ mark (only on
-  messages that stored movements, `reaction_sent_at`) are committed before they are sent and never repeated. A model output with an
+  and the sweep sends it without calling the model. The interim note (`interim_sent_at`) and the failure notice are committed before they are sent and never repeated. There is no done mark (a ✅ reaction was removed 2026-11-21). A model output with an
   unstorable value (bad amount, date or description) is treated as a failed parse, never repaired.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
 - **Shutdown.** On SIGTERM `processor.stop()` aborts parses that have not reached the commit point and settles

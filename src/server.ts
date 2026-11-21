@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { createApp } from './app'
 import { loadConfig } from './config'
 import { connect, migrate } from './db'
+import { keepAliveFetch } from './http'
 import { log } from './log'
 import { createProcessor } from './process'
 import { createStore } from './store'
@@ -23,7 +24,7 @@ const processor = createProcessor({
   graph,
   allowed: config.ALLOWED_WA_IDS,
   maxAttempts: MAX_ATTEMPTS,
-  client: new Anthropic({ apiKey: config.ANTHROPIC_API_KEY }),
+  client: new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, fetch: keepAliveFetch() }),
   helpContact: config.HELP_CONTACT,
 })
 const server = createApp({ store, config, processor })

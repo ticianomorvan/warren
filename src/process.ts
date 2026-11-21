@@ -6,8 +6,6 @@ import type { Claim, Store } from './store'
 import { argentinaToday } from './time'
 import { type Graph, GraphError } from './whatsapp/graph'
 
-const DONE_MARK = '✅'
-
 export interface ProcessorOptions {
   store: Store
   graph: Graph
@@ -35,7 +33,7 @@ export const isAllowed = (allowed: string[], waId: string) =>
  * proves nothing was sent, returns a row to `pending`.
  *
  * A text message runs: parse (with the typing indicator started alongside), then the commit point
- * (command, movements and rendered reply in one transaction), then the send, then the done mark.
+ * (command, movements and rendered reply in one transaction), then the send.
  * Until the commit point the message can fail: a parse that fails for good, or the deadline, ends it
  * as `failed` with one failure notice, and a late model result is dropped. After the commit point
  * the stored reply is always sent, even late, because the movements already exist and a failure
@@ -95,15 +93,6 @@ export function createProcessor(o: ProcessorOptions) {
       },
       async () => store.recordFailureSent(c, await graph.sendText(c.wa_id, REPLY_FAILED)),
       'error',
-    )
-
-  /** The done mark: best effort, never retried. */
-  const react = (c: Claim) =>
-    once(
-      'reaction',
-      c,
-      () => store.recordReaction(c),
-      () => graph.sendReaction(c.wa_id, c.wamid, DONE_MARK),
     )
 
   /** The at-most-once send. True when the reply is out and recorded. */
@@ -253,7 +242,7 @@ export function createProcessor(o: ProcessorOptions) {
       const model_ms = Math.round(result.latencyMs)
       log('committed', { wamid: c.wamid, command: command.type, model_ms })
       await closeInterim()
-      if (await deliver(c, reply, { typing_ms: await typing, model_ms })) await react(c)
+      await deliver(c, reply, { typing_ms: await typing, model_ms })
     } finally {
       await closeInterim()
       await typing
@@ -275,7 +264,7 @@ export function createProcessor(o: ProcessorOptions) {
     if (c.replyText !== null) {
       // Committed earlier, send never started: the stored reply goes out, the model is not called.
       const typing_ms = c.typingSent ? undefined : await showTyping(c)
-      if (await deliver(c, c.replyText, { typing_ms })) await react(c)
+      await deliver(c, c.replyText, { typing_ms })
       return
     }
     // A sweep claims many rows and works them in turn: age each from when its own work starts.

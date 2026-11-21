@@ -52,7 +52,6 @@ function fakeGraph(o: { send?: SendFn; typing?: () => Promise<void> } = {}) {
   const calls = {
     typing: [] as string[],
     sent: [] as { to: string; body: string }[],
-    reactions: [] as { to: string; wamid: string; emoji: string }[],
     attempts: 0,
   }
   const graph: Graph = {
@@ -65,9 +64,6 @@ function fakeGraph(o: { send?: SendFn; typing?: () => Promise<void> } = {}) {
       const id = o.send ? await o.send(calls.attempts) : `wamid.OUT${calls.attempts}`
       calls.sent.push({ to, body })
       return id
-    },
-    async sendReaction(to, wamid, emoji) {
-      calls.reactions.push({ to, wamid, emoji })
     },
   }
   return { graph, calls }
@@ -587,6 +583,8 @@ const until = async (cond: () => boolean | Promise<boolean>, ms = 3000) => {
     await new Promise((r) => setTimeout(r, 10))
   }
 }
+const doneCount = async (n: number) =>
+  Number((await sql`SELECT count(*) AS n FROM inbound_message WHERE status = 'done'`)[0]?.n) === n
 const bodies = (calls: { sent: { body: string }[] }) => calls.sent.map((s) => s.body)
 const movements = () =>
   sql`SELECT direction, amount::text AS amount, currency, occurred_on::text AS on, description,
@@ -601,12 +599,11 @@ const gate = () => {
 const movement = (o: Partial<Movement> = {}): Movement => ({ ...cafeMovement, ...o })
 
 describe('logging', () => {
-  it('stores the movement, replies from the template and reacts once', async () => {
+  it('stores the movement, replies from the template ', async () => {
     const app = await setup()
     await post(app.base, messageBody('wamid.LOG1'))
-    await until(() => app.calls.reactions.length === 1)
+    await until(() => doneCount(1))
     expect(app.calls.sent).toEqual([{ to: '5491100000000', body: '✓ Café $3.500 (visa)' }])
-    expect(app.calls.reactions).toEqual([{ to: '5491100000000', wamid: 'wamid.LOG1', emoji: '✅' }])
     expect(await movements()).toEqual([
       {
         direction: 'out',
@@ -624,7 +621,6 @@ describe('logging', () => {
     expect(r).toMatchObject({ status: 'done', reply_text: '✓ Café $3.500 (visa)' })
     expect(r?.command).toMatchObject({ type: 'log' })
     expect(r?.model_ms).toBeTypeOf('number')
-    expect(r?.reaction_sent_at).toBeInstanceOf(Date)
     expect(r?.interim_sent_at).toBeNull()
     expect(r?.failure_sent_at).toBeNull()
     const [account] = await sql`SELECT * FROM account`
@@ -655,7 +651,7 @@ describe('logging', () => {
     }))
     const app = await setup({ model })
     await post(app.base, messageBody('wamid.LOG3'))
-    await until(() => app.calls.reactions.length === 1)
+    await until(() => doneCount(1))
     expect(bodies(app.calls)).toEqual([
       '✓ Anoté 3:\n• Café $3.500 (visa)\n• Súper $12.000\n• Sueldo +US$ 850.000,50',
     ])
@@ -679,9 +675,9 @@ describe('logging', () => {
     }
     const app = await setup({ model })
     await post(app.base, messageBody('wamid.CTX1'))
-    await until(() => app.calls.reactions.length === 1)
+    await until(() => doneCount(1))
     await post(app.base, messageBody('wamid.CTX2'))
-    await until(() => app.calls.reactions.length === 2)
+    await until(() => doneCount(2))
     const content = (i: number) =>
       (seen[i] as { messages: { content: string }[] }).messages[0]?.content
     expect(content(0)).toContain(`Hoy es`)
@@ -690,16 +686,15 @@ describe('logging', () => {
     app.close()
   })
 
-  it('a replayed webhook adds no rows, no reply and no second reaction', async () => {
+  it('a replayed webhook adds no rows and no second reply', async () => {
     const app = await setup()
     const body = messageBody('wamid.REP')
     await post(app.base, body)
-    await until(() => app.calls.reactions.length === 1)
+    await until(() => doneCount(1))
     await post(app.base, body)
     await settle()
     expect(await movements()).toHaveLength(1)
     expect(app.calls.sent).toHaveLength(1)
-    expect(app.calls.reactions).toHaveLength(1)
     expect(app.model.n).toBe(1)
     app.close()
   })
@@ -725,7 +720,6 @@ describe('logging', () => {
     expect(bodies(app.calls)).toEqual(['✓ Café $3.500 (visa)'])
     expect(app.model.n).toBe(1)
     expect(await movements()).toHaveLength(1)
-    expect(app.calls.reactions).toHaveLength(1)
     expect((await row('wamid.CRASH'))?.status).toBe('done')
     app.close()
   })
@@ -744,7 +738,7 @@ describe('logging', () => {
     expect(bodies(app.calls)).toEqual([REPLY_INTERIM])
     await until(() => app.calls.typing.length === 2) // typing again after the note
     release.open()
-    await until(() => app.calls.reactions.length === 1)
+    await until(() => doneCount(1))
     expect(bodies(app.calls)).toEqual([REPLY_INTERIM, '✓ Café $3.500 (visa)'])
     expect(await movements()).toHaveLength(1)
     expect((await row('wamid.SLOW'))?.interim_sent_at).toBeInstanceOf(Date)
@@ -761,7 +755,6 @@ describe('logging', () => {
     await until(() => app.calls.sent.length === 1)
     expect(bodies(app.calls)).toEqual([REPLY_FAILED])
     expect(await movements()).toHaveLength(0)
-    expect(app.calls.reactions).toHaveLength(0)
     expect(await row('wamid.BAD')).toMatchObject({
       status: 'failed',
       command: null,
@@ -801,7 +794,6 @@ describe('logging', () => {
     expect(bodies(app.calls)).toEqual([REPLY_FAILED])
     expect(await movements()).toHaveLength(0)
     expect(await row('wamid.LATE')).toMatchObject({ command: null, reply_text: null })
-    expect(app.calls.reactions).toHaveLength(0)
     app.close()
   })
 
@@ -823,7 +815,7 @@ describe('logging', () => {
     await inCommit.promise
     await new Promise((r) => setTimeout(r, 650)) // the deadline passes while the commit is held
     proceed.open()
-    await until(() => app.calls.reactions.length === 1)
+    await until(() => doneCount(1))
     expect(bodies(app.calls)).toEqual(['✓ Café $3.500 (visa)'])
     expect(await movements()).toHaveLength(1)
     expect((await row('wamid.MID'))?.failure_sent_at).toBeNull()
@@ -919,12 +911,11 @@ describe('logging', () => {
     )
     await app.processor.sweep()
     expect(app.calls.sent).toHaveLength(0)
-    expect(app.calls.reactions).toHaveLength(0)
     expect((await row('wamid.UNK'))?.status).toBe('unknown')
     app.close()
   })
 
-  it('does not react when the send ends unknown', async () => {
+  it('stores the movements even when the send ends unknown', async () => {
     const fake = fakeGraph({
       send: async () => {
         throw new GraphError(503, 'unavailable')
@@ -934,22 +925,7 @@ describe('logging', () => {
     await post(app.base, messageBody('wamid.NR'))
     await until(async () => (await row('wamid.NR'))?.status === 'unknown')
     await settle()
-    expect(app.calls.reactions).toHaveLength(0)
     expect(await movements()).toHaveLength(1) // stored, and the person is not told to resend
-    app.close()
-  })
-
-  it('a failing reaction is only logged: the message stays done', async () => {
-    const fake = fakeGraph()
-    fake.graph.sendReaction = async () => {
-      throw new GraphError(400, 'nope', 131009)
-    }
-    const app = await setup({ fake })
-    await post(app.base, messageBody('wamid.RF'))
-    await until(async () => (await row('wamid.RF'))?.reaction_sent_at != null)
-    await settle()
-    expect((await row('wamid.RF'))?.status).toBe('done')
-    expect(bodies(app.calls)).toHaveLength(1)
     app.close()
   })
 
@@ -978,7 +954,6 @@ describe('logging', () => {
     )
     expect(await movements()).toHaveLength(0)
     await app.processor.drain(1_000)
-    expect(app.calls.reactions).toHaveLength(0)
     app.close()
   })
 
@@ -1007,7 +982,6 @@ describe('logging', () => {
     await until(() => off.calls.sent.length === 1)
     expect(bodies(off.calls)).toEqual(['Solo puedo ayudarte con tus gastos e ingresos.'])
     await off.processor.drain(1_000)
-    expect(off.calls.reactions).toHaveLength(0)
     off.close()
   })
 
@@ -1032,7 +1006,6 @@ describe('logging', () => {
     await until(() => app.calls.sent.length === 1)
     expect(bodies(app.calls)).toEqual([REPLY_NON_TEXT])
     expect(app.model.n).toBe(0)
-    expect(app.calls.reactions).toHaveLength(0)
     app.close()
   })
 })

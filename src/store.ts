@@ -213,18 +213,6 @@ export function createStore(sql: Sql, o: StoreOptions) {
           SET inbound_id = EXCLUDED.inbound_id, sent_at = EXCLUDED.sent_at`
     },
 
-    /** Committed before the done mark is sent: it is never retried. False means do not send it. */
-    async recordReaction(c: Claim): Promise<boolean> {
-      const rows = await sql`
-        UPDATE inbound_message SET reaction_sent_at = now(), updated_at = now()
-        WHERE id = ${c.id} AND attempts = ${c.attempts} AND status = 'done'
-          AND reaction_sent_at IS NULL
-          -- Only a message that stored movements gets the done mark; a canned reply did nothing.
-          AND EXISTS (SELECT 1 FROM movement WHERE movement.inbound_message_id = ${c.id})
-        RETURNING id`
-      return rows.length > 0
-    },
-
     /** Stamps the typing indicator. Returns ms since received (database clock), null if not owned. */
     async recordTyping(c: Claim): Promise<number | null> {
       const [row] = await sql<{ ms: number }[]>`
