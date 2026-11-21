@@ -20,6 +20,11 @@ const schema = z.object({
   // answers nobody: messages are still stored, as `ignored`.
   ALLOWED_WA_IDS: list,
   ANTHROPIC_API_KEY: z.string().min(1),
+  // Voice notes are transcribed through OpenRouter. Unset, a voice note is answered with a request for text.
+  OPENROUTER_API_KEY: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() || undefined),
   // A human contact line for "ayuda" (Meta's messaging policy asks for one). No default.
   HELP_CONTACT: z
     .string()

@@ -24,6 +24,8 @@ export const TAGS = [
   'typo',
   'time-reference',
   'other',
+  /** A voice note: its latency includes the transcription, so it is kept apart from the other tags. */
+  'voice',
 ] as const
 export type Tag = (typeof TAGS)[number]
 
@@ -100,19 +102,30 @@ export const ReplySchema = z.strictObject({
 })
 export type ReplyExpect = z.infer<typeof ReplySchema>
 
-export const TurnSchema = z.strictObject({
-  now: Now,
-  text: z.string().min(1),
-  /** A file in `evals/scenarios/fixtures` sent as a photo, with `text` as its caption. */
-  image: z
-    .string()
-    .regex(/^[\w.-]+\.(png|jpe?g|webp)$/, 'a file name in evals/scenarios/fixtures')
-    .optional(),
-  ops: z.array(OpSchema).default([]),
-  /** True: the reply must be a question (starts with ¿). With `ops` on the turn it must not be one. */
-  ask: z.boolean().default(false),
-  reply: ReplySchema.default({ has: [], any: [], not: [] }),
-})
+export const TurnSchema = z
+  .strictObject({
+    now: Now,
+    text: z.string().min(1),
+    /** A file in `evals/scenarios/fixtures` sent as a photo, with `text` as its caption. */
+    image: z
+      .string()
+      .regex(/^[\w.-]+\.(png|jpe?g|webp)$/, 'a file name in evals/scenarios/fixtures')
+      .optional(),
+    /**
+     * A file in `evals/scenarios/fixtures` sent as a voice note (`make-voice.sh` makes them): the real
+     * transcription service hears it. `text` is what it says, for the report and for people.
+     */
+    audio: z
+      .string()
+      .regex(/^[\w.-]+\.(ogg|m4a|mp3)$/, 'a file name in evals/scenarios/fixtures')
+      .optional(),
+    ops: z.array(OpSchema).default([]),
+    /** True: the reply must be a question (starts with ¿). With `ops` on the turn it must not be one. */
+    ask: z.boolean().default(false),
+    reply: ReplySchema.default({ has: [], any: [], not: [] }),
+  })
+  .refine((t) => !(t.image && t.audio), 'a turn has an image or an audio, not both')
+
 export type Turn = z.infer<typeof TurnSchema>
 
 export const ScenarioSchema = z.strictObject({

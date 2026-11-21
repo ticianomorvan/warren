@@ -16,7 +16,7 @@ import {
   until,
   useDatabase,
 } from './test-harness'
-import { ImageError, MAX_IMAGE_BYTES } from './whatsapp/graph'
+import { MAX_IMAGE_BYTES, MediaError } from './whatsapp/graph'
 
 useDatabase()
 
@@ -132,7 +132,7 @@ describe('a photo', () => {
   )
 
   it('that cannot be downloaded, or has no media id, is answered too', async () => {
-    const fake = fakeGraph({ media: { gone: new ImageError('unavailable', 'media download 410') } })
+    const fake = fakeGraph({ media: { gone: new MediaError('unavailable', 'media download 410') } })
     const app = await setup({ fake })
     expect(await photo(app, 'wamid.P5', 'gone')).toBe(REPLY_IMAGE.unavailable)
     expect(await photo(app, 'wamid.P6', 'never-stored')).toBe(REPLY_IMAGE.unavailable)

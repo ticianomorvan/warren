@@ -89,6 +89,8 @@ export interface AgentInput {
   env: AgentEnv
   /** Ids the model may act on. The loop adds what `find_movements` returns. */
   seen: Set<number>
+  /** The only option of the pending question, when it has exactly one (see `Guard.sole`). */
+  sole?: number
   /** Aborts the call and the SDK's retries: the message deadline and the shutdown. */
   signal?: AbortSignal
 }
@@ -232,7 +234,13 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     // Ids found in this turn are added to `i.seen` only after every call is checked, so an id that
     // appears in a search of this very turn was guessed, not chosen (and a turn that searched runs no
     // write anyway: it is held).
-    const guard: Guard = { today: i.today, seen: i.seen, logged: 0 }
+    const guard: Guard = {
+      today: i.today,
+      seen: i.seen,
+      logged: 0,
+      sole: i.sole,
+      message: i.message,
+    }
     const foundThisTurn: number[] = []
     const actions: ModelAction[] = []
     const checked: {

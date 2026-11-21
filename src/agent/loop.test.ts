@@ -73,6 +73,18 @@ function client(...turns: (Call[] | string)[]) {
   return { c, requests, signals }
 }
 
+const inputFor = (c: Anthropic) => ({
+  client: c,
+  model: 'haiku' as const,
+  context: 'ctx',
+  facts: [] as string[],
+  window: [] as string[],
+  message: '',
+  today: '2026-11-21',
+  env: { find: async () => [] as MovementRow[] },
+  seen: new Set([1, 2, 3]),
+})
+
 const run = (
   c: Anthropic,
   o: {
@@ -186,9 +198,82 @@ describe('runAgent', () => {
       },
     ]) {
       const { c } = client([bad], [del(1)])
-      const result = await run(c)
+      // a message with an amount: a "correct" with no change left the amount out
+      const result = await run(c, { message: 'cambiame el café a 5000' })
       expect(result.turns, JSON.stringify(bad)).toBe(2)
       expect(result.audit[0]?.status).toBe('rejected')
+    }
+  })
+
+  it('takes an ask_user "correct" with no change as the question what to change when the message has no amount (live #70, #76)', async () => {
+    for (const message of [
+      'cambiemos el gasto de cafe',
+      'Cambiamos el valor de uno de los YPFs.',
+    ]) {
+      for (const changes of [undefined, {}]) {
+        const { c } = client([
+          {
+            name: 'ask_user',
+            input: {
+              question: 'x',
+              movement_ids: [1, 2],
+              after_answer: 'correct',
+              ...(changes ? { changes } : {}),
+            },
+          },
+        ])
+        const result = await run(c, { message })
+        expect(result.turns, message).toBe(1)
+        expect(result.actions[0]).toMatchObject({
+          tool: 'ask_user',
+          input: { movement_ids: [1, 2], after_answer: 'none', changes: undefined },
+        })
+      }
+    }
+    // with an amount (in digits or words) the model left the change out: refused, and the reason says what to send
+    for (const message of [
+      'cambiame el almuerzo a 5000',
+      'ponele tres mil al café',
+      'pasalo a 5 lucas',
+    ]) {
+      const { c, requests } = client(
+        [
+          {
+            name: 'ask_user',
+            input: { question: 'x', movement_ids: [1], after_answer: 'correct' },
+          },
+        ],
+        [del(1)],
+      )
+      const result = await run(c, { message })
+      expect(result.turns, message).toBe(2)
+      const [refusal] = (requests[1]?.messages[2]?.content ??
+        []) as Anthropic.ToolResultBlockParam[]
+      expect(String(refusal?.content)).toContain('send the new value the person gave in changes')
+    }
+  })
+
+  it('takes a change given about the only option of a pending question as the correction, with no second turn (live #78)', async () => {
+    const ask = {
+      name: 'ask_user',
+      input: {
+        question: 'Cuál',
+        movement_ids: [2],
+        after_answer: 'correct',
+        changes: { amount: '3500' },
+      },
+    }
+    const { c } = client([ask])
+    const result = await runAgent({ ...inputFor(c), sole: 2, message: 'a ese ponele 3500' })
+    expect(result.turns).toBe(1)
+    expect(result.actions).toEqual([
+      { tool: 'correct_movement', input: { id: 2, changes: { amount: '3500' }, text: null } },
+    ])
+    // not for another movement, or when the question had no single option: it stays a question
+    for (const sole of [3, undefined]) {
+      const { c: c2 } = client([ask])
+      const r = await runAgent({ ...inputFor(c2), sole, message: 'a ese ponele 3500' })
+      expect(r.actions[0]?.tool, String(sole)).toBe('ask_user')
     }
   })
 

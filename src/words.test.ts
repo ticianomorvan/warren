@@ -83,11 +83,11 @@ describe('the model’s own words', () => {
     await day()
     // "25 lucas" is 25000: the model sends 25000 and code renders $25.000, a figure only the line has
     const app = await setup({
-      model: script(saying(correct(3, { amount: '25000' }), 'Quedó en $25.000.')),
+      model: script(saying(correct(3, { amount: '25000' }), 'Ojo que subió: quedó en $25.000.')),
     })
     const reply = await say(app, { text: 'la nafta fue 25 lucas' })
     expect(reply).toContain('✓ Corregido: Nafta $25.000')
-    expect(reply).toContain('Quedó en $25.000.')
+    expect(reply).toContain('Ojo que subió: quedó en $25.000.')
     app.close()
   })
 
@@ -230,13 +230,15 @@ describe('a claim of a change must be this message’s own (live message 48 agai
     const app = await setup({
       model: insist(
         saying(logOf(movement()), 'Corregí el café.'),
-        saying(remove(1), 'Listo, ya está.'),
+        saying(remove(1), 'Listo, ya está. Avisame si querés otra cosa.'),
       ),
     })
     await say(app, { text: 'cafe 3500' })
     expect((await audit())[0]?.textReason).toMatch(/claims a correction/)
     // the window now has "✓ Café $3.500": still not proof for a delete's "listo"? it is: this one deleted
-    expect(await say(app, { text: 'borra el super' })).toContain('Listo, ya está.')
+    expect(await say(app, { text: 'borra el super' })).toContain(
+      'Listo, ya está. Avisame si querés otra cosa.',
+    )
     app.close()
   })
 

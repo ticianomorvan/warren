@@ -17,6 +17,9 @@ const NUMBER_WORDS: Record<string, number> = {
 const SHAPE =
   /^(?:(?:dale|bueno|ok|si)[,\s]+)?(?:(?:el|la|lo|numero|nro)\s*|#\s*)?(\d{1,2}|[a-z]+)\s*[.!]?$/
 const YES = /^(?:(?:si|dale|ok|bueno)[,\s]*)+[.!]?$/
+/** "ese", "ese mismo", "sí, ese": pointing at the one movement the question offered. */
+const THAT_ONE =
+  /^(?:(?:si|dale|ok|bueno)[,\s]+)?(?:ese|esa|eso|el mismo|la misma|ese mismo|esa misma|ese nomas|esa nomas)[.!]?$/
 const ORDINAL_INDEX: [RegExp, number][] = [
   [/^primer[oa]?$/, 0],
   [/^segund[oa]$/, 1],
@@ -33,7 +36,7 @@ const ORDINAL_INDEX: [RegExp, number][] = [
  */
 export function answerNumber(text: string, asked: number[]): number | null {
   const norm = normalizeText(text)
-  if (YES.test(norm)) return asked.length === 1 ? (asked[0] ?? null) : null
+  if (YES.test(norm) || THAT_ONE.test(norm)) return asked.length === 1 ? (asked[0] ?? null) : null
   const token = SHAPE.exec(norm)?.[1]
   if (token === undefined) return null
   const ordinal = ORDINAL_INDEX.find(([re]) => re.test(token))
@@ -70,7 +73,9 @@ export function answerAction(text: string, question: PendingQuestion | null): Ac
   // A question with nothing behind it ("¿Qué querés cambiar?" over several options): the number picks one,
   // and the follow-up is about that movement alone. (Code asks it, so the options are not listed again.)
   if (!question.pending) {
-    return question.asked.length > 1
+    // One option left: only "sí" or "ese" asks again about it (never other movements); a bare "1" goes to the model.
+    const again = question.asked.length === 1 && /^[^\d]+$/.test(normalizeText(text))
+    return question.asked.length > 1 || again
       ? {
           tool: 'ask_user',
           input: { question: 'Qué querés cambiar', movement_ids: [id], after_answer: 'none' },

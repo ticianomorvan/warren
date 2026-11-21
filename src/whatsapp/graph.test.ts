@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
+  checkAudio,
   checkImage,
   createGraph,
   GraphError,
-  ImageError,
+  MAX_AUDIO_BYTES,
   MAX_IMAGE_BYTES,
+  MediaError,
   shortRecipient,
+  sniffAudio,
   sniffImage,
 } from './graph'
 
@@ -233,7 +236,7 @@ describe('createGraph.fetchImage', () => {
         throw new TypeError('fetch failed')
       },
     })
-    await expect(broken.graph.fetchImage('12345')).rejects.toBeInstanceOf(ImageError)
+    await expect(broken.graph.fetchImage('12345')).rejects.toBeInstanceOf(MediaError)
     const bad = graphWith({})
     for (const id of ['', '../x', '1/2', 'a b', 'x'.repeat(101)]) {
       await expect(bad.graph.fetchImage(id), id).rejects.toMatchObject({ problem: 'unavailable' })
@@ -267,5 +270,125 @@ describe('createGraph.fetchImage', () => {
       },
     })
     await expect(graph.fetchImage('12345', abort.signal)).rejects.toThrow('deadline')
+  })
+})
+
+describe('voice notes', () => {
+  const OGG = Buffer.from([0x4f, 0x67, 0x67, 0x53, 0, 2, 0, 0])
+  const M4A = Buffer.from([0, 0, 0, 0x20, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20])
+  const MP3_ID3 = Buffer.from([0x49, 0x44, 0x33, 4, 0, 0])
+  const MP3_FRAME = Buffer.from([0xff, 0xfb, 0x90, 0x64])
+  const AAC = Buffer.from([0xff, 0xf1, 0x50, 0x80])
+  const AMR = Buffer.from('#!AMR\n')
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
+  it('sniffs Ogg, MP4/M4A and MP3 from the bytes, and nothing else the service would refuse', () => {
+    expect(sniffAudio(OGG)).toEqual({ mediaType: 'audio/ogg', extension: 'ogg' })
+    expect(sniffAudio(M4A)).toEqual({ mediaType: 'audio/mp4', extension: 'm4a' })
+    expect(sniffAudio(MP3_ID3)).toEqual({ mediaType: 'audio/mpeg', extension: 'mp3' })
+    expect(sniffAudio(MP3_FRAME)).toEqual({ mediaType: 'audio/mpeg', extension: 'mp3' })
+    expect(sniffAudio(AAC)).toBeNull() // raw ADTS AAC: the service answers 400
+    expect(sniffAudio(AMR)).toBeNull()
+    expect(sniffAudio(PNG)).toBeNull()
+    expect(sniffAudio(new Uint8Array())).toBeNull()
+  })
+
+  it('caps a note at 3 MB, whatever it claims to be', () => {
+    expect(() => checkAudio(Buffer.concat([OGG, Buffer.alloc(MAX_AUDIO_BYTES)]))).toThrow(
+      expect.objectContaining({ problem: 'too_large' }),
+    )
+    expect(
+      checkAudio(Buffer.concat([OGG, Buffer.alloc(MAX_AUDIO_BYTES - OGG.length)])).mediaType,
+    ).toBe('audio/ogg')
+    expect(() => checkAudio(AMR)).toThrow(expect.objectContaining({ problem: 'unsupported' }))
+  })
+
+  const MEDIA = 'https://graph.facebook.com/v27.0/777'
+  const FILE = 'https://lookaside.fbsbx.com/whatsapp_business/attachments/?mid=7'
+  const lookup = (o: object = {}) =>
+    new Response(JSON.stringify({ url: FILE, mime_type: 'audio/ogg', file_size: 7, ...o }))
+  function graphWith(routes: Record<string, Response | (() => Response)>, extra: object = {}) {
+    const seen: { url: string; authorization: string | null; redirect?: string }[] = []
+    const graph = createGraph({
+      version: 'v27.0',
+      phoneNumberId: '1',
+      token: 'secret-token',
+      ...extra,
+      fetch: async (url, init) => {
+        seen.push({
+          url: String(url),
+          authorization: new Headers(init?.headers).get('authorization'),
+          redirect: init?.redirect,
+        })
+        const route = routes[String(url)]
+        if (!route) return new Response('nope', { status: 404 })
+        return typeof route === 'function' ? route() : route
+      },
+    })
+    return { graph, seen }
+  }
+
+  it('is downloaded with the same host check, token and no redirects as a photo', async () => {
+    const { graph, seen } = graphWith({ [MEDIA]: lookup(), [FILE]: new Response(OGG) })
+    await expect(graph.fetchAudio('777')).resolves.toMatchObject({ mediaType: 'audio/ogg' })
+    expect(seen).toEqual([
+      { url: MEDIA, authorization: 'Bearer secret-token', redirect: 'error' },
+      { url: FILE, authorization: 'Bearer secret-token', redirect: 'error' },
+    ])
+    for (const url of ['http://lookaside.fbsbx.com/x', 'https://evil.example.com/x']) {
+      const bad = graphWith({ [MEDIA]: lookup({ url }) })
+      await expect(bad.graph.fetchAudio('777'), url).rejects.toMatchObject({
+        problem: 'unavailable',
+      })
+      expect(bad.seen).toHaveLength(1)
+    }
+  })
+
+  it('refuses before downloading when the lookup says it is over 3 MB or not audio', async () => {
+    const big = graphWith({ [MEDIA]: lookup({ file_size: MAX_AUDIO_BYTES + 1 }) })
+    await expect(big.graph.fetchAudio('777')).rejects.toMatchObject({ problem: 'too_large' })
+    expect(big.seen).toHaveLength(1)
+    const photo = graphWith({ [MEDIA]: lookup({ mime_type: 'image/jpeg' }) })
+    await expect(photo.graph.fetchAudio('777')).rejects.toMatchObject({ problem: 'unsupported' })
+    expect(photo.seen).toHaveLength(1)
+  })
+
+  it('refuses a body whose bytes are not a supported audio format, or over 3 MB with no content-length', async () => {
+    const png = graphWith({ [MEDIA]: lookup(), [FILE]: new Response(PNG) })
+    await expect(png.graph.fetchAudio('777')).rejects.toMatchObject({ problem: 'unsupported' })
+    let pulled = 0
+    const chunk = new Uint8Array(1024 * 1024).fill(1)
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++
+        controller.enqueue(chunk)
+        if (pulled > 50) controller.close()
+      },
+    })
+    const stream = graphWith({ [MEDIA]: lookup({ file_size: 1 }), [FILE]: new Response(body) })
+    await expect(stream.graph.fetchAudio('777')).rejects.toMatchObject({ problem: 'too_large' })
+    expect(pulled).toBeLessThan(6) // stopped at 3 MB, did not read the stream
+    const declared = graphWith({
+      [MEDIA]: lookup({ file_size: 1 }),
+      [FILE]: new Response(OGG, { headers: { 'content-length': String(MAX_AUDIO_BYTES + 1) } }),
+    })
+    await expect(declared.graph.fetchAudio('777')).rejects.toMatchObject({ problem: 'too_large' })
+  })
+
+  it('gives up on a download that hangs, inside one budget', async () => {
+    const hang = (_url: unknown, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+      })
+    const graph = createGraph({
+      version: 'v27.0',
+      phoneNumberId: '1',
+      token: 't',
+      mediaBudgetMs: 30,
+      fetch: hang as unknown as typeof fetch,
+    })
+    const started = Date.now()
+    await expect(graph.fetchAudio('777')).rejects.toMatchObject({ problem: 'unavailable' })
+    expect(Date.now() - started).toBeLessThan(2000)
   })
 })

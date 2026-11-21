@@ -54,7 +54,7 @@ correct_movement.changes has only the fields the person changes; leave the other
 
 Act when you are confident, even if two movements could fit (take the most recent, as above): the reply shows what changed and they can fix it. Ask only when you cannot act:
 - Nothing in the list or in find_movements fits what they want to change or delete. Ask with the 3 newest movements as movement_ids, after_answer "delete" or "correct" (with the same changes as they asked) so a bare number answers it. question: "Cuál".
-- They want to correct something and gave no change ("me equivoqué en el café"): movement_ids is that movement (or all the movements they named, "uno de los cafés"), after_answer "none", question: "Qué querés cambiar" or "Cuál café y qué cambio".
+- They want to correct something and gave no change ("me equivoqué en el café", "cambiemos el gasto de café"): movement_ids is that movement (or all the movements they named, "uno de los cafés"), after_answer "none", question: "Qué querés cambiar" or "Cuál café y qué cambio".
 - A short answer to a pending question that does not choose ("sí" or "dale" with several options): ask again with the same movement_ids and after_answer.
 - "question" is a phrase of at most 5 words, without a question mark, without punctuation and WITHOUT any digit or amount: exactly "Cuál" when you ask which of several, "Qué querés cambiar" when you ask what to change. Code adds the options and the instructions.
 
@@ -314,6 +314,8 @@ export interface ContextInput {
   conversation: ConversationTurn[]
   /** The message carries a photo (the image itself is a separate block of the request). */
   photo?: boolean
+  /** The message is the transcript of a voice note: it can have been misheard. */
+  voice?: boolean
   /** The options of the question Warren just asked, if the person has not answered it. */
   pending: { asked: { number: number; id: number }[]; action: 'correct' | 'delete' | 'none' } | null
 }
@@ -356,7 +358,17 @@ export function renderContext(i: ContextInput): string {
     `Últimos movimientos de la persona, el más reciente primero:\n${list}`,
     ...(conversation.length > 0 ? [`Conversación reciente:\n${conversation.join('\n')}`] : []),
     ...pending,
+    ...(i.pending?.asked.length === 1
+      ? [
+          `La pregunta pendiente tiene UNA sola opción (id ${i.pending.asked[0]?.id}): "ese", "sí" o "a ese ponele 3500" se refieren a ella. Si este mensaje trae un cambio (un monto, una fecha, un pago): correct_movement con ese id y ese cambio, sin volver a preguntar. Si no trae ningún cambio: ask_user con ese mismo id, after_answer "none", question "Qué querés cambiar"; no ofrezcas otros movimientos.`,
+        ]
+      : []),
     ...(i.photo ? ['La persona envió una foto: es la imagen que va antes de este texto.'] : []),
+    ...(i.voice
+      ? [
+          'La persona envió una nota de voz: <mensaje> es su transcripción automática y puede tener errores de oído.',
+        ]
+      : []),
     // The message sits between delimiters, so it must not be able to close them.
     `<mensaje>\n${(i.text.trim() === '' && i.photo ? '(sin texto)' : i.text).replaceAll('<', '&lt;').replaceAll('>', '&gt;')}\n</mensaje>`,
   ].join('\n\n')

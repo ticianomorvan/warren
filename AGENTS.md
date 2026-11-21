@@ -44,20 +44,24 @@ src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a questi
 src/execute.ts  Runs a message's actions inside the commit transaction and returns the reply to store
 src/process.ts  Per message: ignored vs reply; for text, typing + agent together, the 10 s interim note, the 30 s
               deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
-src/render.ts The reply templates (Argentine money format) and every canned text (help, photo problems, the
-              fallback when the model's words are dropped); pure
+src/render.ts The reply templates (Argentine money format) and every canned text (help, photo and voice-note problems,
+              the 🎙️ line, the fallback when the model's words are dropped); pure
+src/transcribe.ts  Voice notes to text: the OpenRouter client (whisper-large-v3, pinned to Groq), the vocabulary prompt
+              and the confidence gate (`judgeTranscript`)
 src/test-harness.ts  Shared integration-test setup: PGlite (or a real Postgres), fake Graph (with media by id),
-              fake Anthropic client (scripted tool calls), `setup()`, `photoBody()`
+              fake transcription, fake Anthropic client (scripted tool calls), `setup()`, `photoBody()`, `voiceBody()`
 src/command-fixtures.ts  Scripted tool calls, seeded movements and `say()` for the agent tests
 src/http.ts   keepAliveFetch: a fetch with its own 60 s keep-alive pool (Graph and Anthropic)
 src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks, photos included), graph.ts (Graph API client:
-              send, read and typing, and the photo download with its limits)
+              send, read and typing, and the photo and voice-note downloads with their limits)
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
 src/latency.ts  `pnpm latency` report, by action
 evals/        cases.jsonl (dev/test split, one command per message), command.ts (that command shape), agent.ts
               (runs the agent on a case and maps it to a command), grade.ts, run.ts, results/ (gitignored but summary.md)
-evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl (a turn may carry an `image`, a file of fixtures/), schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts (pass rate, latency by action and by tag), run.ts, results/baseline.md
+evals/voice-probe.ts  Local probe: real audio files through the real transcription service, printing the transcript and the gate verdict
+evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl (a turn may carry an `image` or an `audio`, a file of fixtures/;
+              `fixtures/make-voice.sh` makes the synthetic voice notes), schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts (pass rate, latency by action and by tag), run.ts, results/baseline.md
 docs/spec.md  Source of truth for what is built and in which order; docs/agent-spec.md the agent design
 ```
 
@@ -71,10 +75,13 @@ pnpm test          # Vitest, no network; real SQL on in-process PGlite, Graph AP
 PG_TEST_URL=postgres://postgres:test@localhost:55432/postgres pnpm test src/concurrency.test.ts
                    # also runs the real-Postgres concurrency tests (skipped without PG_TEST_URL; CI never sets it).
                    # Throwaway database only, it is truncated. docker run --rm -d --name warren-pg-test -p 55432:5432 -e POSTGRES_PASSWORD=test postgres:17
-pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the WhatsApp variables (see src/config.ts)
+pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the WhatsApp variables (see src/config.ts);
+                   # OPENROUTER_API_KEY turns voice notes on (unset: they are answered with a request for text)
 pnpm latency [--last N]   # p50/p95 per stage, model time, log-only reply time, from DATABASE_URL (Railway: the Postgres public URL)
 pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # one message at a time through the agent, needs .env
 pnpm eval:scenarios [--split dev|test|all] [--budget 0.30] [--only s001,s002]   # multi-turn scenarios, real pipeline and model, needs .env
+                   # (voice scenarios also call the real transcription service: OPENROUTER_API_KEY)
+pnpm tsx evals/voice-probe.ts a.ogg b.ogg   # real voice notes through the real service: transcript, confidence numbers, gate verdict (never commit the audio)
 ```
 
 `pnpm eval` spends money: tune the prompt on `--split dev` only and run `--split test` once per
@@ -128,8 +135,8 @@ wrong changes. Its test split is held out like the other: never print or tune on
   (timeout, 5xx, killed worker) ends as `unknown` and is never sent again. Only an HTTP 4xx answer, which
   proves nothing was sent, goes back to `pending` (retryable codes) or `failed` (permanent codes).
 - **Message flow (slices 3, 4, agent B and B2).** A text or photo message from an allowed sender runs the read receipt plus
-  typing and the agent together (a photo's download runs beside them; a voice note, `audio`, is answered with a
-  request for text, and any other kind with a short reply, and neither calls the model). Deadlines count from `received_at` and are processor options (`interimMs` 10 s,
+  typing and the agent together (a photo's download runs beside them; a voice note, `audio`, is downloaded and transcribed beside them,
+  or answered with a request for text when `OPENROUTER_API_KEY` is not set; any other kind gets a short reply, and neither calls the model). Deadlines count from `received_at` and are processor options (`interimMs` 10 s,
   `deadlineMs` 30 s). The commit point is one transaction (`store.commit`): the actions' effects, the movements (unique on
   `(inbound_message_id, position)`, counted across the whole message), the stored `reply_text` and the audit.
   Before it, a failed agent run (a model error, no valid action in 3 turns) or the deadline ends the message
@@ -146,6 +153,32 @@ wrong changes. Its test split is held out like the other: never print or tune on
   before its context, with the caption in `<mensaje>`. A photo that cannot be read (too big, another type, a
   failed download) is answered with its own text (`REPLY_IMAGE`) through the commit point as a code `notice`,
   with no model call. The next message's conversation window shows it as `[foto] caption`.
+- **Voice notes (agent voice).** An `audio` webhook message keeps its media id in `inbound_message.payload` and, once
+  it is understood, what was heard in `body`; the audio is never stored. `graph.fetchAudio` is the photo's download
+  (Meta https hosts only, no redirects, one 8 s budget, a streaming cap) with a 3 MB cap and the type read from the
+  bytes: Ogg (the voice note, Opus), MP4/M4A or MP3; raw AAC and AMR are refused, as the service refuses them.
+  `transcribe.ts` posts the file to OpenRouter's `/audio/transcriptions` (`openai/whisper-large-v3`, `language=es`,
+  `temperature=0`, `verbose_json`, a vocabulary prompt) with `provider={"order":["groq"],"allow_fallbacks":false}`:
+  unpinned it routes to DeepInfra, which mishears names ("IPEF" for YPF). The call has its own 10 s budget inside the
+  message's 30 s deadline. `judgeTranscript` is the confidence gate on the segments (mean avg_logprob, worst segment,
+  compression_ratio, no_speech_prob, empty or punctuation-only text): a refused note is answered with a code notice
+  ("No te entendí el audio, ¿me lo escribís?") and no model call. Every other failure (download, service, budget)
+  is a code notice too ("No pude procesar el audio, ¿me lo escribís?"), with the cause in the log and the audit; only
+  the 30 s deadline is the failure path. What was heard becomes the message for everything after it (the model's
+  context says it is a transcript, the numbers check counts it as the person's words), a reply with no
+  record of a change (an answer, a summary, a question, the model's own words, or a change that did not apply)
+  starts with `🎙️ "<transcript>"`, cut at 80 characters and rendered by code; when something was logged, corrected or
+  deleted the record already shows what was understood and the line is left out. The next message's window shows
+  `[audio] <transcript>`. A bare answer to
+  our question ("el segundo") by voice goes to the model, never to `answerAction`: code does not delete or correct
+  on what a speech model thought it heard. A reply is held under 4,000 characters (`fitReply`: WhatsApp refuses 4,096
+  after the commit).
+- **A question narrowed to one movement.** After "¿Qué querés cambiar? YPF $3.000 · 11:42" (one option, nothing
+  pending), a typed "ese", "sí" or "ese mismo" is answered by code with the same question, never other options. A message
+  with a change ("a ese ponele 3500") goes to the model, whose context says the question has one option and what to
+  do; and an `ask_user` over that one id with `changes` is run by the guard as `correct_movement` (the person saw that
+  movement: asking again would loop). An `ask_user` with `after_answer: correct` and no `changes` is taken as `none`
+  when the message holds no amount (digits or number words), and refused, with the reason saying what to send, when it does.
 - **Shutdown.** On SIGTERM `processor.stop()` aborts agent runs that have not reached the commit point and settles
   those rows to `pending`, so the next process's startup sweep answers them inside their deadline. The deadline
   is one `AbortSignal` checked right before the commit; a deadline that fires mid-commit loses (committed
@@ -166,7 +199,7 @@ wrong changes. Its test split is held out like the other: never print or tune on
     own words, for what is not a change: a question about what Warren did, thanks, something off topic) and
     `help` (the one canned text, for "ayuda" and greetings).
   - **The model's own words (B2).** Every write tool and `summarize` carry a `text` (a nullable, always present). `text` is null unless it adds
-    something; one that only repeats the person's message is dropped (an echo, not an error). Code sends the record of what changed (and the totals, and the question) first, then the texts, in
+    something; one that only repeats the person's message, or only restates the lines code rendered (every word is filler or already in a line: "Corregí el café de las 11:11" beside "✓ Corregido: Café …· 11:11"), is dropped (not an error; a `reply` is never dropped for this). Code sends the record of what changed (and the totals, and the question) first, then the texts, in
     order. A text goes out only if `checkSay` passes: at most 280 characters, no `✓`, no number in digits or
     in words that was not given by code, no figure made of given pieces ("2 lucas", "12 500", a minus, a
     percent) and no claim of a change ("borré", "corregí", "anoté", "listo") that this message's own outcomes

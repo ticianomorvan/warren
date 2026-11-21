@@ -20,7 +20,7 @@ export interface Claim {
   /** The reply stored at the commit point; set means the model must not be called again. */
   replyText: string | null
   typingSent: boolean
-  /** A photo's media id, to download it (the webhook payload keeps it; the bytes are never stored). */
+  /** A photo's or voice note's media id, to download it (the webhook payload keeps it; the bytes are never stored). */
   mediaId: string | null
 }
 
@@ -40,6 +40,8 @@ export interface Commit {
    * store. It only runs once the guard has passed, so it can never run twice for a message.
    */
   execute: (tx: Sql) => Promise<Executed>
+  /** What was heard in a voice note: stored as the message's `body`, which a voice note has no text in. */
+  heard?: string
 }
 
 /** What running a message's actions gives back: the reply, and what to store with it. */
@@ -156,7 +158,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
           FOR UPDATE SKIP LOCKED)
         RETURNING id, wamid, wa_id, kind, attempts, body, reply_text AS "replyText",
           typing_sent_at IS NOT NULL AS "typingSent",
-          payload->'image'->>'id' AS "mediaId",
+          COALESCE(payload->'image'->>'id', payload->'audio'->>'id') AS "mediaId",
           COALESCE(meta_ts, received_at) AS "messageAt",
           extract(epoch FROM now() - received_at) * 1000 AS "ageMs"`
       const claimedAt = performance.now()
@@ -189,12 +191,15 @@ export function createStore(sql: Sql, o: StoreOptions) {
     async conversation(c: Claim): Promise<Conversation> {
       const [turns, [previous]] = await Promise.all([
         sql<ConversationTurn[]>`
-          SELECT CASE WHEN p.kind = 'image' THEN trim('[foto] ' || COALESCE(p.body, '')) ELSE p.body END AS text,
+          SELECT CASE p.kind
+              WHEN 'image' THEN trim('[foto] ' || COALESCE(p.body, ''))
+              WHEN 'audio' THEN trim('[audio] ' || COALESCE(p.body, ''))
+              ELSE p.body END AS text,
             p.reply_text AS reply, p.asked_numbers IS NOT NULL AS asked,
             floor(extract(epoch FROM cur.received_at - p.received_at) / 60)::int AS "minutesAgo"
           FROM inbound_message cur
           JOIN inbound_message p ON p.wa_id = cur.wa_id AND p.id < cur.id
-          WHERE cur.id = ${c.id} AND p.kind IN ('text', 'image') AND p.reply_text IS NOT NULL
+          WHERE cur.id = ${c.id} AND p.kind IN ('text', 'image', 'audio') AND p.reply_text IS NOT NULL
             AND p.received_at > cur.received_at - make_interval(secs => ${CONVERSATION_WINDOW_MS / 1000})
           ORDER BY p.id DESC LIMIT ${CONVERSATION_TURNS}`,
         sql<
@@ -207,7 +212,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
             FROM inbound_message
             WHERE wa_id = cur.wa_id AND id < cur.id
             ORDER BY id DESC LIMIT 1) p ON true
-          WHERE cur.id = ${c.id} AND p.kind IN ('text', 'image') AND p.reply_text IS NOT NULL
+          WHERE cur.id = ${c.id} AND p.kind IN ('text', 'image', 'audio') AND p.reply_text IS NOT NULL
             AND p.received_at > cur.received_at - make_interval(secs => ${ANSWER_WINDOW_MS / 1000})`,
       ])
       return {
@@ -241,7 +246,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
         const done = await m.execute(tx as unknown as Sql)
         await tx`
           UPDATE inbound_message
-          SET command = ${tx.json(m.command as never)},
+          SET body = COALESCE(${m.heard ?? null}, body), command = ${tx.json(m.command as never)},
               parsed = ${m.parsed === null ? null : tx.json(m.parsed as never)},
               action = ${m.action}, tool_calls = ${tx.json(done.audit as never)},
               model_turns = ${m.turns},

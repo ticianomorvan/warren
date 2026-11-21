@@ -452,10 +452,62 @@ describe('composeReply', () => {
       composeReply({
         ...base,
         lines,
-        says: [{ action: 0, text: 'Anoté el de $3.500.' }],
+        says: [{ action: 0, text: 'Anoté el de $3.500, ojo con el gasto.' }],
         steps: [step('log_movements')],
       }).verdicts.get(0),
     ).toEqual({ text: 'sent' })
+  })
+
+  it('drops a text that only restates the lines (live message 72), and keeps one that adds something', () => {
+    const lines = ['✓ Corregido: Café $1.500 (antes $3.500) · 11:11']
+    const run = (text: string) =>
+      composeReply({
+        ...base,
+        lines,
+        says: [{ action: 0, text }],
+        steps: [step('correct_movement')],
+      })
+    const restated = run('Corregí el café de las 11:11.')
+    expect(restated.reply).toBe(lines[0])
+    expect(restated.verdicts.get(0)).toEqual({
+      text: 'dropped',
+      textReason: 'only restates the lines',
+    })
+    expect(run('Listo, quedó en $1.500.').verdicts.get(0)?.text).toBe('dropped')
+    const added = run('Corregí el café, pero ojo: era el de las 11:11.')
+    expect(added.verdicts.get(0)).toEqual({ text: 'sent' })
+    expect(added.reply).toBe(`${lines[0]}\nCorregí el café, pero ojo: era el de las 11:11.`)
+  })
+
+  it('holds the reply under what WhatsApp accepts, voice or typed, and keeps the record', () => {
+    const lines = [
+      `✓ Anoté 60:\n${Array.from({ length: 60 }, (_, k) => `• Café ${k} $${1000 + k}`).join('\n')}`,
+    ]
+    const typed = composeReply({ ...base, lines, says: [], steps: [step('log_movements')] })
+    expect(typed.reply.length).toBeLessThanOrEqual(4096)
+    const heard = composeReply({
+      ...base,
+      heard: 'palabra '.repeat(400),
+      lines: [...lines, ...lines],
+      says: [{ action: 0, text: 'Anotados, ojo con el gasto.' }],
+      steps: [step('log_movements')],
+    })
+    expect(heard.reply.length).toBeLessThanOrEqual(4096)
+    expect(heard.reply.startsWith('🎙️ "palabra')).toBe(true)
+    expect(heard.reply.split('\n')[0]?.length).toBeLessThanOrEqual(80 + '🎙️ ""'.length)
+    expect(heard.reply).toContain('✓ Anoté 60:')
+    expect(heard.reply).toContain('• Café 0 $1000')
+  })
+
+  it('never drops a reply as a restatement: its words are the whole answer', () => {
+    const lines = ['Hoy gastaste $3.500 (1 movimiento).']
+    const r = composeReply({
+      ...base,
+      lines,
+      says: [{ action: 0, text: 'Hoy gastaste $3.500.' }],
+      steps: [step('reply')],
+    })
+    expect(r.verdicts.get(0)?.text).not.toBe('dropped')
   })
 })
 

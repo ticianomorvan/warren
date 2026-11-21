@@ -10,7 +10,15 @@ import { connect, migrate, type Sql } from './db'
 import { createProcessor } from './process'
 import { createStore, type Store } from './store'
 import { argentinaToday } from './time'
-import { checkImage, type Graph, type Image, ImageError } from './whatsapp/graph'
+import type { Segment, Transcriber, Transcript } from './transcribe'
+import {
+  type Audio,
+  checkAudio,
+  checkImage,
+  type Graph,
+  type Image,
+  MediaError,
+} from './whatsapp/graph'
 
 export const SECRET = 'app-secret'
 export const VERIFY = 'verify-token-123'
@@ -65,7 +73,7 @@ export const sign = (raw: string, secret: string) =>
 
 export type SendFn = (n: number) => Promise<string>
 
-/** A photo the fake Graph serves under a media id: its bytes, or the error its download raises. */
+/** A photo or voice note the fake Graph serves under a media id: its bytes, or the error its download raises. */
 export type FakeMedia = Uint8Array | Error
 
 /**
@@ -85,6 +93,8 @@ export function fakeGraph(
     typing: [] as string[],
     sent: [] as { to: string; body: string }[],
     downloads: [] as string[],
+    /** The abort signal each download was given: the message's own deadline. */
+    signals: [] as (AbortSignal | undefined)[],
     attempts: 0,
   }
   const graph: Graph = {
@@ -96,9 +106,18 @@ export function fakeGraph(
       calls.downloads.push(mediaId)
       await o.download?.()
       const media = o.media?.[mediaId]
-      if (media === undefined) throw new ImageError('unavailable', 'no such media')
+      if (media === undefined) throw new MediaError('unavailable', 'no such media')
       if (media instanceof Error) throw media
       return checkImage(media)
+    },
+    async fetchAudio(mediaId, signal): Promise<Audio> {
+      calls.downloads.push(mediaId)
+      calls.signals.push(signal)
+      await o.download?.()
+      const media = o.media?.[mediaId]
+      if (media === undefined) throw new MediaError('unavailable', 'no such media')
+      if (media instanceof Error) throw media
+      return checkAudio(media)
     },
     async sendText(to, body) {
       calls.attempts++
@@ -108,6 +127,42 @@ export function fakeGraph(
     },
   }
   return { graph, calls }
+}
+
+/** The bytes of a tiny Ogg file: enough to pass the fake Graph's limits (`checkAudio` reads the type from them). */
+export const OGG = new Uint8Array([0x4f, 0x67, 0x67, 0x53, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0])
+
+/** One segment the way the service measures a good, clear one (Ticiano's real notes: -0.18 to -0.25, 0.76 to 1.06). */
+export const CLEAR: Segment = {
+  start: 0,
+  end: 4,
+  avg_logprob: -0.2,
+  compression_ratio: 1,
+  no_speech_prob: 0.005,
+}
+/** What the service gives for a note: the text and its one segment, clear unless `segment` says otherwise. */
+export const heard = (text: string, segment: Partial<Segment> = {}): Transcript => ({
+  text: ` ${text}`,
+  segments: [{ ...CLEAR, ...segment }],
+})
+
+/** A transcription answer: what is heard, an error to throw, or a function (to hold or inspect the call). */
+export type FakeHeard = Transcript | Error | ((signal?: AbortSignal) => Promise<Transcript>)
+
+/** A transcription double that records what it was given. A list answers call by call, the last one for the rest. */
+export function fakeTranscriber(answer: FakeHeard | FakeHeard[] = heard('café 3500')) {
+  const calls: { audio: Audio }[] = []
+  const transcriber: Transcriber = {
+    async transcribe(audio, signal) {
+      calls.push({ audio })
+      const now = Array.isArray(answer) ? (answer[calls.length - 1] ?? answer.at(-1)) : answer
+      const result = typeof now === 'function' ? await now(signal) : now
+      if (result === undefined) throw new Error('no answer scripted')
+      if (result instanceof Error) throw result
+      return result
+    },
+  }
+  return { transcriber, calls }
 }
 
 // The day comes from the message's own time (meta_ts), as in the processor, so midnight cannot flake.
@@ -184,6 +239,7 @@ export async function setup(
     interimMs?: number
     deadlineMs?: number
     helpContact?: string
+    transcriber?: Transcriber
     /** The store the processor sees; the app keeps the real one. */
     processorStore?: (store: Store) => Store
     /** A database other than the one `useDatabase` set (the scenario eval owns its own). */
@@ -201,6 +257,7 @@ export async function setup(
       maxAttempts: 3,
       client,
       helpContact: opts.helpContact,
+      transcriber: opts.transcriber,
       interimMs: opts.interimMs ?? 60_000,
       deadlineMs: opts.deadlineMs ?? 120_000,
     })
@@ -238,6 +295,20 @@ export const photoBody = (
     timestamp,
     text: undefined,
     image: { id: mediaId, mime_type: 'image/jpeg', ...(caption ? { caption } : {}) },
+  })
+
+/** A webhook with one voice note: its media id and type, no bytes. */
+export const voiceBody = (
+  wamid: string,
+  mediaId: string,
+  from = '5491100000000',
+  timestamp = '1760000000',
+) =>
+  messageBody(wamid, from, {
+    type: 'audio',
+    timestamp,
+    text: undefined,
+    audio: { id: mediaId, mime_type: 'audio/ogg; codecs=opus', voice: true },
   })
 
 export const messageBody = (wamid: string, from = '5491100000000', extra: object = {}) =>
