@@ -1,49 +1,54 @@
-import type { Changes, Command, Movement } from './parse'
+import type { Changes, Movement } from './agent'
 import {
   movement as base,
   bodies,
   fakeModel,
+  logCall,
   messageBody,
   post,
+  replyCall,
   row,
   type setup,
   sql,
+  type ToolCall,
   until,
 } from './test-harness'
 
-/** Fixtures for the command tests: scripted models, seeded movements, one message in and its reply out. */
+/** Fixtures for the agent tests: scripted models, seeded movements, one message in and its reply out. */
 export const WA = '5491100000000'
 /** The harness café, with no payment unless a test gives one. */
 export const movement = (o: Partial<Movement> = {}) => base({ payment: null, ...o })
-export const NONE: Changes = {
-  direction: null,
-  amount: null,
-  currency: null,
-  date: null,
-  description: null,
-  category: null,
-  payment: null,
-}
-export const logOf = (...movements: Movement[]): Command => ({ type: 'log', movements })
-export const correct = (
-  o: { target?: string; index?: number | null; changes?: Partial<Changes>; low?: boolean } = {},
-): Command => ({
-  type: 'correct',
-  target: o.target ?? 'last',
-  target_index: o.index === undefined ? 1 : o.index,
-  changes: { ...NONE, ...o.changes },
-  confidence: o.low ? 'low' : 'high',
+export const NONE: Changes = {}
+export const logOf = (...movements: Movement[]): ToolCall => logCall(...movements)
+export const correct = (id: number, changes: Partial<Changes>): ToolCall => ({
+  name: 'correct_movement',
+  input: { id, changes: { ...NONE, ...changes } },
 })
-export const remove = (target = 'last', index: number | null = 1): Command => ({
-  type: 'delete',
-  target,
-  target_index: index,
-  confidence: 'high',
+export const remove = (id: number): ToolCall => ({ name: 'delete_movement', input: { id } })
+export const summarize = (
+  period: string,
+  o: { direction?: 'in' | 'out' | null; category?: string | null; payment?: string | null } = {},
+): ToolCall => ({
+  name: 'summarize',
+  input: { period, direction: 'out', category: null, payment: null, ...o },
+})
+export const find = (o: Record<string, unknown> = {}): ToolCall => ({
+  name: 'find_movements',
+  input: o,
 })
 export const ask = (
-  period: Extract<Command, { type: 'query' }>['period'],
-  o: Partial<Extract<Command, { type: 'query' }>> = {},
-): Command => ({ type: 'query', period, direction: 'out', category: null, payment: null, ...o })
+  ids: number[],
+  o: { question?: string; after?: 'none' | 'correct' | 'delete'; changes?: Partial<Changes> } = {},
+): ToolCall => ({
+  name: 'ask_user',
+  input: {
+    question: o.question ?? 'Cuál',
+    movement_ids: ids,
+    after_answer: o.after ?? 'none',
+    ...(o.after === 'correct' ? { changes: o.changes } : {}),
+  },
+})
+export { replyCall }
 
 export type App = Awaited<ReturnType<typeof setup>>
 
@@ -63,10 +68,10 @@ export async function say(app: App, o: { at?: string; text?: string } = {}): Pro
   return bodies(app.calls)[before] ?? ''
 }
 
-/** A model that answers each call with the next command. */
-export const script = (...commands: Command[]) => {
+/** A model that answers each call with the next turn: a list of tool calls. A bare call is a turn of one. */
+export const script = (...turns: (ToolCall | ToolCall[])[]) => {
   let i = 0
-  return fakeModel(() => commands[i++] as Command)
+  return fakeModel(() => [turns[i++] ?? []].flat())
 }
 
 export type Seed = {
@@ -77,10 +82,12 @@ export type Seed = {
   category?: Movement['category']
   payment?: string | null
   description?: string
+  /** When it was logged, Argentine HH:MM on its day. */
+  at?: string
 }
 let seeds = 0
-/** Stores movements straight in the table, as if earlier messages had logged them. */
-export async function seed(rows: Seed[]): Promise<void> {
+/** Stores movements straight in the table, as if earlier messages had logged them. Returns their ids, in order. */
+export async function seed(rows: Seed[]): Promise<number[]> {
   const [account] = await sql`
     INSERT INTO account (wa_id) VALUES (${WA})
     ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id RETURNING id`
@@ -99,8 +106,12 @@ export async function seed(rows: Seed[]): Promise<void> {
     category: r.category ?? 'otros',
     payment: r.payment ?? null,
     confidence: 'high',
+    ...(r.at ? { created_at: new Date(`${r.on}T${r.at}:00-03:00`) } : {}),
   }))
-  await sql`INSERT INTO movement ${sql(values)}`
+  const inserted = await sql<
+    { id: number }[]
+  >`INSERT INTO movement ${sql(values)} RETURNING id::int AS id`
+  return inserted.map((r) => r.id)
 }
 
 export const history = () =>

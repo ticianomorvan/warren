@@ -1,10 +1,19 @@
-import type Anthropic from '@anthropic-ai/sdk'
-import { execute } from './execute'
+import Anthropic from '@anthropic-ai/sdk'
+import {
+  type Action,
+  type AuditEntry,
+  estimateCostUsd,
+  type ModelKey,
+  renderContext,
+  runAgent,
+  type Usage,
+} from './agent'
+import { actionLabel, execute } from './execute'
 import { log } from './log'
-import { type ModelKey, parseMessage } from './parse'
-import { REPLY_BAD_CHANGE, REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
+import { REPLY_FAILED, REPLY_INTERIM, REPLY_NON_TEXT } from './render'
+import { answerAction } from './resolve'
 import type { Claim, Store } from './store'
-import { argentinaToday } from './time'
+import { argentinaTime, argentinaToday } from './time'
 import { type Graph, GraphError } from './whatsapp/graph'
 
 export interface ProcessorOptions {
@@ -13,7 +22,7 @@ export interface ProcessorOptions {
   /** Normalized ids that get a reply; `*` means everyone. Empty answers nobody. */
   allowed: string[]
   maxAttempts: number
-  /** Parser model. Defaults to Haiku, the slice 1 choice. */
+  /** The agent's model. Defaults to Haiku, the slice 1 choice. */
   model?: ModelKey
   /** The Anthropic client; the shared keep-alive client when omitted. Tests inject a fake. */
   client?: Anthropic
@@ -33,9 +42,10 @@ export const isAllowed = (allowed: string[], waId: string) =>
  * row that dies after that is `unknown` and is never sent again. Only an HTTP 4xx answer, which
  * proves nothing was sent, returns a row to `pending`.
  *
- * A text message runs: parse (with the typing indicator started alongside), then the commit point
- * (command, movements and rendered reply in one transaction), then the send.
- * Until the commit point the message can fail: a parse that fails for good, or the deadline, ends it
+ * A text message runs: the agent (with the typing indicator started alongside), then the commit point
+ * (actions, movements and rendered reply in one transaction), then the send.
+ * Until the commit point the message can fail: an agent run that fails for good (a model error, no
+ * valid action in 3 turns), or the deadline, ends it
  * as `failed` with one failure notice, and a late model result is dropped. After the commit point
  * the stored reply is always sent, even late, because the movements already exist and a failure
  * notice would make the person resend them.
@@ -49,7 +59,7 @@ export function createProcessor(o: ProcessorOptions) {
   const interimMs = o.interimMs ?? 10_000
   const deadlineMs = o.deadlineMs ?? 30_000
   const inflight = new Set<Promise<unknown>>()
-  /** Aborted by `shutdown`: parses that have not reached the commit point give their rows back. */
+  /** Aborted by `shutdown`: runs that have not reached the commit point give their rows back. */
   const shutdown = new AbortController()
   let sweeping = false
 
@@ -141,7 +151,7 @@ export function createProcessor(o: ProcessorOptions) {
   }
 
   /**
-   * Parses a text message that has no stored reply yet, commits it, and answers. `age` is how long
+   * Runs the agent on a text message that has no stored reply yet, commits it, and answers. `age` is how long
    * ago the message was received. One signal ends the wait before the commit point: the 30 s
    * deadline, or the shutdown of this process. It is checked right before the commit starts, with
    * no await in between, so no commit starts after it. A deadline that fires while the commit is
@@ -186,29 +196,67 @@ export function createProcessor(o: ProcessorOptions) {
 
     const typing = c.typingSent ? Promise.resolve(undefined) : showTyping(c)
     const today = argentinaToday(c.messageAt)
-    const parsing = (async () => {
+    const text = c.body ?? ''
+    const working = (async (): Promise<Worked> => {
       const accountId = await store.upsertAccount(c.wa_id)
-      const [recentMovements, previous] = await Promise.all([
+      const [movements, conversation] = await Promise.all([
         store.recentMovements(accountId),
-        store.previousExchange(c),
+        store.conversation(c),
       ])
-      const result = await parseMessage({
-        text: c.body ?? '',
-        today,
-        recentMovements,
-        previous,
+      // A bare answer to the question we just asked is code's job: no model call at all.
+      const answer = answerAction(text, conversation.question)
+      if (answer) {
+        const entry = {
+          turn: 0,
+          tool: answer.tool,
+          input: answer.input,
+          status: 'answered',
+          ms: 0,
+          action: 0,
+        }
+        return {
+          accountId,
+          actions: [answer],
+          parsed: null,
+          audit: [entry],
+          turns: 0,
+          ms: 0,
+          usage: null,
+        }
+      }
+      const seen = new Set([
+        ...movements.map((m) => m.id),
+        ...(conversation.question?.asked.map((a) => a.id) ?? []),
+      ])
+      const result = await runAgent({
+        client: o.client ?? defaultClient(),
         model: o.model ?? 'haiku',
-        client: o.client,
+        context: renderContext({
+          text,
+          today,
+          time: argentinaTime(c.messageAt),
+          movements,
+          conversation: conversation.turns,
+          pending: conversation.question
+            ? {
+                asked: conversation.question.asked,
+                action: conversation.question.pending?.action ?? 'none',
+              }
+            : null,
+        }),
+        today,
+        env: { find: (filter) => store.find(accountId, filter) },
+        seen,
         signal,
       })
-      return { accountId, result, recentMovements, previous }
+      return { accountId, parsed: result.actions, ...result }
     })().then(
       (value) => ({ value }),
       (error: unknown) => ({ error }),
     )
 
     try {
-      const outcome = await Promise.race([parsing, aborted])
+      const outcome = await Promise.race([working, aborted])
       if (deadline.aborted) return await fail(c, 'deadline passed before the commit point')
       if (shutdown.signal.aborted) {
         // Nothing was committed and no send started: hand the row to the next process at once.
@@ -219,34 +267,26 @@ export function createProcessor(o: ProcessorOptions) {
       if (outcome === 'aborted') return
       if ('error' in outcome) return await fail(c, `parse failed: ${errorText(outcome.error)}`)
 
-      const { accountId, result, recentMovements, previous } = outcome.value
-      const { command } = result
-      // A correction's value that cannot be stored is the person's to rewrite: say so, change nothing.
-      const badChange = command.type === 'correct' && result.fatal.length > 0
-      if (result.fatal.length > 0 && !badChange) {
-        const detail = result.fatal.map((i) => `${i.path}: ${i.message}`).join('; ')
-        return await fail(c, `invalid model output: ${detail}`)
-      }
+      const { accountId, actions, parsed, audit, turns, ms, usage } = outcome.value
 
       // The commit point. Nothing awaits between the signal check above and this call.
       let reply: string | null
       try {
         reply = await store.commit(c, {
-          command,
-          modelMs: result.latencyMs,
+          parsed,
+          command: actions,
+          action: actionLabel(actions),
+          turns,
+          modelMs: ms,
           execute: (tx) =>
-            badChange
-              ? Promise.resolve({ reply: REPLY_BAD_CHANGE })
-              : execute(tx, {
-                  accountId,
-                  inboundId: c.id,
-                  command,
-                  today,
-                  text: c.body ?? '',
-                  recent: recentMovements,
-                  previous,
-                  render: { helpContact: o.helpContact },
-                }),
+            execute(tx, {
+              accountId,
+              inboundId: c.id,
+              actions,
+              audit,
+              today,
+              render: { helpContact: o.helpContact },
+            }),
         })
       } catch (err) {
         return await fail(c, `commit failed: ${errorText(err)}`)
@@ -255,8 +295,16 @@ export function createProcessor(o: ProcessorOptions) {
         log('claim_lost', { wamid: c.wamid, attempt: c.attempts })
         return
       }
-      const model_ms = Math.round(result.latencyMs)
-      log('committed', { wamid: c.wamid, command: command.type, model_ms })
+      const model_ms = Math.round(ms)
+      log('committed', {
+        wamid: c.wamid,
+        action: actionLabel(actions),
+        turns,
+        model_ms,
+        ...(usage
+          ? { ...usage, cost_usd: Number(estimateCostUsd(o.model ?? 'haiku', usage).toFixed(6)) }
+          : {}),
+      })
       // What this message changed is stored: the sender's next message may start its parse.
       release()
       await closeInterim()
@@ -398,6 +446,25 @@ export function createProcessor(o: ProcessorOptions) {
 }
 
 export type Processor = ReturnType<typeof createProcessor>
+
+/** What the agent half of a message gives the commit point. */
+interface Worked {
+  accountId: number
+  actions: Action[]
+  parsed: unknown
+  audit: AuditEntry[]
+  turns: number
+  ms: number
+  usage: Usage | null
+}
+
+let shared: Anthropic | undefined
+
+/** One client per process, reading ANTHROPIC_API_KEY from the environment; the server injects its own. */
+function defaultClient(): Anthropic {
+  shared ??= new Anthropic()
+  return shared
+}
 
 function errorText(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).slice(0, 500)

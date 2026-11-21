@@ -1,6 +1,6 @@
+import { MAX_FOUND, type Movement, type RecentMovement } from './agent/schema'
 import type { Sql } from './db'
 import { normalizeText } from './movement'
-import type { Movement, RecentMovement } from './parse'
 import type { DateRange } from './time'
 
 /** How many live movements the model is shown. 10 is the most one message can log, so a whole message can always be addressed. */
@@ -43,12 +43,19 @@ export function recentMovements(sql: Sql, accountId: number, limit = RECENT_LIMI
 
 export async function insertMovements(
   sql: Sql,
-  o: { accountId: number; inboundId: number; movements: Movement[] },
+  o: {
+    accountId: number
+    inboundId: number
+    movements: Movement[]
+    /** The position of the first one in its message: a message may log, correct and log again. */
+    firstPosition?: number
+  },
 ): Promise<number[]> {
-  const values = o.movements.map((x, position) => ({
+  const first = o.firstPosition ?? 0
+  const values = o.movements.map((x, k) => ({
     account_id: o.accountId,
     inbound_message_id: o.inboundId,
-    position,
+    position: first + k,
     direction: x.direction,
     amount: x.amount,
     currency: x.currency,
@@ -80,14 +87,29 @@ export async function lockLive(
   return row ?? null
 }
 
+/** The live movements among these ids that belong to the account, newest first. */
+export function liveByIds(sql: Sql, accountId: number, ids: number[]) {
+  return sql<MovementRow[]>`
+    SELECT ${columns(sql)} FROM movement
+    WHERE account_id = ${accountId} AND id = ANY(${ids}::bigint[]) AND ${sql.unsafe(LIVE)}
+    ORDER BY id DESC`
+}
+
 /** Inserts the corrected movement, linked to the correcting message, and points the old one at it. */
 export async function supersede(
   sql: Sql,
-  o: { accountId: number; inboundId: number; old: MovementRow; next: RecentMovement },
+  o: {
+    accountId: number
+    inboundId: number
+    old: MovementRow
+    next: RecentMovement
+    position: number
+  },
 ): Promise<void> {
   const [id] = await insertMovements(sql, {
     accountId: o.accountId,
     inboundId: o.inboundId,
+    firstPosition: o.position,
     movements: [{ ...o.next, confidence: 'high' }],
   })
   // The correction keeps the time the movement was first logged: that is how the person tells it apart.
@@ -99,6 +121,52 @@ export async function supersede(
 
 export async function softDelete(sql: Sql, id: number, inboundId: number): Promise<void> {
   await sql`UPDATE movement SET deleted_at = now(), deleted_by = ${inboundId} WHERE id = ${id}`
+}
+
+/** The id of the account's newest live movement, or null when it has none. */
+export async function newestLiveId(sql: Sql, accountId: number): Promise<number | null> {
+  const [row] = await sql<{ id: number | null }[]>`
+    SELECT max(id)::int AS id FROM movement WHERE account_id = ${accountId} AND ${sql.unsafe(LIVE)}`
+  return row?.id ?? null
+}
+
+export interface FindFilter {
+  /** Words of the description or the category, all of them, accents and case ignored. */
+  text: string | null
+  from: string | null
+  to: string | null
+  category: Movement['category'] | null
+  /** Matched loosely, like a query's payment filter. */
+  payment: string | null
+  amount: string | null
+  limit: number
+}
+
+const ACCENTS = ["'áéíóúüñÁÉÍÓÚÜÑ'", "'aeiouunAEIOUUN'"] as const
+const folded = (column: string) =>
+  `lower(translate(coalesce(${column}, ''), ${ACCENTS[0]}, ${ACCENTS[1]}))`
+
+/** The account's live movements that match every filter set, newest first, at most `MAX_FOUND`. */
+export function findMovements(sql: Sql, accountId: number, f: FindFilter) {
+  const words = normalizeText(f.text ?? '')
+    .split(/\s+/)
+    .filter((w) => w.length >= 2)
+  const like = (w: string) => `%${w.replace(/[\\%_]/g, '\\$&')}%`
+  const payment = f.payment ? normalizeText(f.payment) : ''
+  return sql<MovementRow[]>`
+    SELECT ${columns(sql)} FROM movement
+    WHERE account_id = ${accountId} AND ${sql.unsafe(LIVE)}
+      ${f.from ? sql`AND occurred_on >= ${f.from}::date` : sql``}
+      ${f.to ? sql`AND occurred_on <= ${f.to}::date` : sql``}
+      ${f.category ? sql`AND category = ${f.category}` : sql``}
+      ${f.amount ? sql`AND amount = ${f.amount}::numeric` : sql``}
+      ${payment ? sql`AND position(${payment}::text IN ${sql.unsafe(folded('payment'))}) > 0` : sql``}
+      ${
+        words.length > 0
+          ? sql`AND ${sql.unsafe(folded("description || ' ' || replace(category, '_', ' ')"))} LIKE ALL (${words.map(like)}::text[])`
+          : sql``
+      }
+    ORDER BY id DESC LIMIT ${Math.min(Math.max(f.limit, 1), MAX_FOUND)}`
 }
 
 /** Totals per direction and currency, summed by the database. Currencies are never converted. */

@@ -1,7 +1,6 @@
-import type { QueryTotal } from './ledger'
+import type { Movement, Period, RecentMovement, ReplyKind } from './agent'
+import type { MovementRow, QueryTotal } from './ledger'
 import type { ChangedField } from './movement'
-import type { Command, Movement, Period, RecentMovement } from './parse'
-import type { Numbered } from './resolve'
 import { addDays } from './time'
 
 export const REPLY_NON_TEXT = 'por ahora solo entiendo texto'
@@ -10,13 +9,8 @@ export const REPLY_FAILED = 'No pude procesar tu mensaje. Probá de nuevo en un 
 export const REPLY_NO_MOVEMENTS = 'Todavía no tenés movimientos anotados.'
 export const REPLY_GONE =
   'Ese movimiento ya fue corregido o borrado. Fijate cómo quedó y mandame de nuevo qué querés cambiar.'
-export const REPLY_NO_CHANGES =
-  'No entendí qué cambiar. Incluí el cambio, por ejemplo: "el 2 fue 3800".'
-export const REPLY_ONE_THING =
-  'Por ahora hago una cosa por mensaje. Mandame primero una, por ejemplo: "borrá el 2"; después la otra.'
-export const REPLY_BAD_CHANGE =
-  'No entendí el valor nuevo. Probá con un monto o una fecha clara, por ejemplo: "el 2 fue 3800" o "el 1 fue ayer".'
 export const REPLY_OFF_TOPIC = 'Solo puedo ayudarte con tus gastos e ingresos.'
+export const REPLY_SMALLTALK = '¡De nada! Mandame un gasto o un ingreso cuando quieras.'
 const REPLY_HELP =
   'Mandame un gasto o un ingreso y lo anoto. Por ejemplo: "café 3500 con la visa" o "cobré el sueldo 850.000".'
 
@@ -79,16 +73,21 @@ export function renderMovement(m: Movement, today: string): string {
   return `${movementText(m)}${when(m.date, today)}${m.confidence === 'low' ? ' (?)' : ''}`
 }
 
+/** The time the movement was logged, when the movement is not the newest one: how the person tells it from the others. */
+const logged = (time: string | undefined, newest: boolean) => (!newest && time ? ` · ${time}` : '')
+
 /**
  * The reply to a correction: the new movement, then the fields in `changed` as they were. A new
  * date that is today, or a new category, is spelled out because the movement's line would not
- * show it. `changed` comes from `changedFields`; it is never empty.
+ * show it. `changed` comes from `changedFields`; it is never empty. A movement that is not the
+ * newest also shows the time it was logged, so the person can see which one was meant.
  */
 export function renderCorrection(
   before: RecentMovement,
   after: RecentMovement,
   changed: ChangedField[],
   today: string,
+  newest = true,
 ): string {
   const was = {
     money: `${before.direction === 'in' ? '+' : ''}${formatMoney(before.amount, before.currency)}`,
@@ -99,33 +98,43 @@ export function renderCorrection(
   }
   const date = changed.includes('date') && after.date === today ? ' · hoy' : when(after.date, today)
   const category = changed.includes('category') ? ` · ${CATEGORY_LABEL[after.category]}` : ''
-  return `✓ Corregido: ${movementText(after)}${date}${category} (antes ${changed.map((field) => was[field]).join(', ')})`
+  return `✓ Corregido: ${movementText(after)}${date}${category} (antes ${changed.map((field) => was[field]).join(', ')})${logged(before.time, newest)}`
 }
 
 export const renderUnchanged = (m: RecentMovement, today: string) =>
   `Ya figura así: ${movementText(m)}${when(m.date, today)}`
 
-export const renderDeletion = (m: RecentMovement, today: string) =>
-  `✓ Borré: ${movementText(m)}${when(m.date, today)}`
+export const renderDeletion = (m: RecentMovement, today: string, newest = true) =>
+  `✓ Borré: ${movementText(m)}${when(m.date, today)}${logged(m.time, newest)}`
 
-/**
- * `¿Cuál? 1. Café $3.500 de ayer · 2. Súper $12.000 (Visa)` and how to answer. The numbers are the
- * ones the parser sees, so the answer ("el 2 fue 4100") names the movement for certain.
- */
-export function renderQuestion(candidates: Numbered[], today: string): string {
-  if (candidates.length === 0) return REPLY_NO_MOVEMENTS
-  const [first] = candidates
-  return `¿Cuál? ${listOptions(candidates, today)}\nRespondé con el número, por ejemplo "el ${first?.number} fue 4100" o "borrá el ${first?.number}".`
+/** A movement of a question's options, with its number. */
+export interface Numbered {
+  number: number
+  movement: MovementRow
 }
 
 /**
- * `¿Cuál café y qué cambio? 1. … · 3. …`: a correction that names several movements and no change.
- * `what` is the person's word for them ("café"); the answer, "el 3 fue 2500", is a normal correction.
+ * A question from `ask_user`: `¿Cuál? 1. Café $3.500 de ayer · 2. Súper $12.000 (Visa)` and how to
+ * answer. Several options are numbered 1, 2… in the order shown (newest first); `answers` says what
+ * a bare number will do, so the instruction tells the truth. One option is shown as it is.
  */
-export function renderChangeQuestion(what: string, candidates: Numbered[], today: string): string {
-  const [first] = candidates
-  const named = what.trim() ? ` ${what.trim()}` : ''
-  return `¿Cuál${named} y qué cambio? ${listOptions(candidates, today)}\nRespondé por ejemplo "el ${first?.number} fue 2500".`
+export function renderAsk(
+  question: string,
+  options: MovementRow[],
+  answers: 'delete' | 'correct' | 'none',
+  today: string,
+): string {
+  if (options.length === 0) return `¿${question}?`
+  if (options.length === 1) {
+    const [only] = options
+    return `¿${question}? ${movementText(only as MovementRow)}${when((only as MovementRow).date, today)}`
+  }
+  const numbered = options.map((movement, k) => ({ number: k + 1, movement }))
+  const how =
+    answers === 'none'
+      ? 'Respondé con el número y el cambio, por ejemplo "el 1 fue 4100".'
+      : 'Respondé con el número, por ejemplo "el 1".'
+  return `¿${question}? ${listOptions(numbered, today)}\n${how}`
 }
 
 /** The options of a question, with the time logged on those that would otherwise look alike. */
@@ -193,22 +202,25 @@ export interface RenderOptions {
   helpContact?: string
 }
 
-/** The commands whose reply needs nothing from the database. The others are answered by `execute`. */
-export type SimpleCommand = Exclude<Command, { type: 'correct' | 'delete' | 'query' }>
+/** The reply to a `log_movements` call: one line, or a bulleted list. */
+export function renderLog(movements: Movement[], today: string): string {
+  const lines = movements.map((m) => renderMovement(m, today))
+  if (lines.length === 1) return `✓ ${lines[0]}`
+  return [`✓ Anoté ${lines.length}:`, ...lines.map((l) => `• ${l}`)].join('\n')
+}
 
-/** The whole reply to a parsed command, from a template. The model never writes it. */
-export function renderReply(command: SimpleCommand, today: string, o: RenderOptions = {}): string {
-  switch (command.type) {
-    case 'log': {
-      const lines = command.movements.map((m) => renderMovement(m, today))
-      if (lines.length === 1) return `✓ ${lines[0]}`
-      return [`✓ Anoté ${lines.length}:`, ...lines.map((l) => `• ${l}`)].join('\n')
-    }
+/** The canned replies of the `reply` tool. The model picks one; it never writes any of them. */
+export function renderCanned(kind: ReplyKind, o: RenderOptions = {}): string {
+  switch (kind) {
     case 'help':
       return o.helpContact
         ? `${REPLY_HELP}\nSi necesitás hablar con una persona: ${o.helpContact}`
         : REPLY_HELP
     case 'off_topic':
       return REPLY_OFF_TOPIC
+    case 'smalltalk':
+      return REPLY_SMALLTALK
+    case 'nothing_logged':
+      return REPLY_NO_MOVEMENTS
   }
 }

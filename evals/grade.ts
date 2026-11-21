@@ -1,5 +1,5 @@
-import type { Command, RecentMovement } from '../src/parse/schema'
-import { resolveTarget } from '../src/resolve'
+import type { RecentMovement } from '../src/agent'
+import type { Command } from './command'
 
 export type EvalCase = {
   id: string
@@ -23,9 +23,8 @@ export type Grade = {
   /** An amount is wrong while its confidence is high. Must never happen. */
   silentWrongAmount: boolean
   /**
-   * A correction or delete the code would apply to the wrong movement, with no question: the model
-   * was confident with a different number, and `resolveTarget` (which also reads the person's
-   * message) did not catch it. Must never happen.
+   * A correction or delete aimed at the wrong movement, with no question: the agent acted on a
+   * different row than the one expected. Must never happen.
    */
   silentWrongTarget: boolean
   soft: SoftCounts
@@ -164,10 +163,9 @@ type Targeting = Extract<Command, { type: 'correct' | 'delete' }>
 
 /**
  * Which movement a correction or delete points at is a hard field: a wrong one hits the wrong row.
- * The number in the list decides (the text is only the fallback), so it is checked first. An
- * ambiguous case also passes by coming back low-confidence, which makes code ask. Returns whether
- * the code would apply the wrong movement silently: a confident, different number that
- * `resolveTarget` (reading the message too) still turns into a different movement.
+ * The row (its number in the list) decides, so it is checked first. An ambiguous case also passes by
+ * the agent asking instead (the adapter reports an `ask_user` as a low-confidence command). Returns
+ * whether the agent would act on the wrong movement silently: a confident, different row.
  */
 function hardTarget(
   testCase: EvalCase,
@@ -180,16 +178,11 @@ function hardTarget(
   if (differs) {
     reasons.push(`target_index ${actual.target_index}, expected ${expected.target_index}`)
   }
-  // With the right number the text only has to agree with the row (code checks that); it is the
-  // answer itself only when there is no number.
+  // With the right row the text is not graded; it is the answer itself only when there is no row.
   if (expected.target_index === null && !targetOk(actual.target, expected.target)) {
     reasons.push(`target "${actual.target}", expected "${expected.target}"`)
   }
-  if (!differs || actual.confidence !== 'high') return false
-  const rows = testCase.recent.map((m, i) => ({ ...m, id: i + 1 }))
-  const resolved = resolveTarget(actual, rows, { text: testCase.text, today: testCase.today })
-  const wanted = expected.target_index === null ? undefined : rows[expected.target_index - 1]
-  return resolved.kind === 'found' && resolved.movement.id !== wanted?.id
+  return differs && actual.confidence === 'high'
 }
 
 function targetOk(got: string, want: string): boolean {

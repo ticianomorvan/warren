@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import type { Changes, RecentMovement } from './agent'
 import { applyChanges, canonicalAmount, changedFields, normalizeText } from './movement'
-import type { Changes, RecentMovement } from './parse'
 
 const row: RecentMovement = {
   direction: 'out',
@@ -11,15 +11,7 @@ const row: RecentMovement = {
   category: 'restaurantes',
   payment: 'visa',
 }
-const none: Changes = {
-  direction: null,
-  amount: null,
-  currency: null,
-  date: null,
-  description: null,
-  category: null,
-  payment: null,
-}
+const none: Changes = {}
 
 describe('applyChanges', () => {
   it('sets only what changes', () => {

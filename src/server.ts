@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { warmUp } from './agent'
 import { createApp } from './app'
 import { loadConfig } from './config'
 import { connect, migrate } from './db'
@@ -19,17 +20,24 @@ const graph = createGraph({
   phoneNumberId: config.WHATSAPP_PHONE_NUMBER_ID,
   token: config.WHATSAPP_ACCESS_TOKEN,
 })
+const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, fetch: keepAliveFetch() })
 const processor = createProcessor({
   store,
   graph,
   allowed: config.ALLOWED_WA_IDS,
   maxAttempts: MAX_ATTEMPTS,
-  client: new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, fetch: keepAliveFetch() }),
+  client,
   helpContact: config.HELP_CONTACT,
 })
 const server = createApp({ store, config, processor })
 
 server.listen(config.PORT, () => log('listening', { port: config.PORT }))
+
+// The first request after a tool change compiles the tool grammar (~10 s): do it before anyone writes.
+warmUp(client, 'haiku').then(
+  () => log('agent_warm'),
+  (err) => log('agent_warm_failed', { error: String(err) }, 'error'),
+)
 
 // Startup sweep, then every 30 s. One process only: the claim keeps two sweeps from double-sending,
 // but only one replica is supported.

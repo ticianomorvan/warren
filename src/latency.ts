@@ -20,6 +20,7 @@ const rows = await sql<
     delivered: number | null
     model: number | null
     type: string | null
+    turns: number | null
   }[]
 >`
   SELECT
@@ -27,7 +28,8 @@ const rows = await sql<
     extract(epoch FROM m.reply_sent_at - m.received_at) * 1000 AS reply,
     extract(epoch FROM r.delivered_at - m.meta_ts) * 1000 AS delivered,
     m.model_ms AS model,
-    m.command->>'type' AS type
+    COALESCE(m.action, m.command->>'type') AS type,
+    m.model_turns AS turns
   FROM (SELECT * FROM inbound_message WHERE kind = 'text' ORDER BY id DESC LIMIT ${last}) m
   LEFT JOIN reply r ON r.inbound_id = m.id`
 await sql.end()
@@ -57,9 +59,16 @@ console.log(`Last ${rows.length} inbound text messages`)
 metric('received -> typing sent', 'typing')
 metric('received -> reply sent', 'reply')
 metric('model time', 'model')
-metric(
-  'received -> reply sent, log only',
-  'reply',
-  rows.filter((r) => r.type === 'log'),
-)
+// By action (the `action` column; older rows carry their old command type).
+// Targets: log p50 <= 2.0 s, p95 <= 4.0 s; correct, delete and summarize p50 <= 4 s, p95 <= 8 s.
+for (const type of [...new Set(rows.map((r) => r.type ?? 'failed'))].sort()) {
+  const of = rows.filter((r) => (r.type ?? 'failed') === type)
+  const turns = of.flatMap((r) => (r.turns === null ? [] : [Number(r.turns)]))
+  metric(`received -> reply sent, ${type}`, 'reply', of)
+  if (turns.length > 0) {
+    console.log(
+      `${''.padEnd(34)} model turns per message: ${(turns.reduce((a, b) => a + b, 0) / turns.length).toFixed(2)}`,
+    )
+  }
+}
 metric('meta ts -> delivered (1 s steps)', 'delivered')

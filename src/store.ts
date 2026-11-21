@@ -1,6 +1,7 @@
+import type { AuditEntry, ConversationTurn, Pending } from './agent'
 import type { Sql } from './db'
-import { type MovementRow, recentMovements } from './ledger'
-import type { Command, PreviousExchange } from './parse'
+import { type FindFilter, findMovements, type MovementRow, recentMovements } from './ledger'
+import type { PendingQuestion } from './resolve'
 
 /** What a worker holds after claiming a row. Every later write checks `id` and `attempts`. */
 export interface Claim {
@@ -23,30 +24,46 @@ export interface Claim {
 
 /** What the commit point stores, in one transaction. */
 export interface Commit {
-  command: Command
+  /** What the model asked for: its action calls. Null when no model ran (a short answer to a question). */
+  parsed: unknown
+  /** What ran: the same actions, or the pending one a short answer chose. */
+  command: unknown
+  /** One word for the message: log, correct, delete, summarize, ask, reply or multi. */
+  action: string
+  /** Model turns used; 0 when no model ran. */
+  turns: number
   modelMs: number
   /**
-   * Applies the command to the ledger inside the commit transaction and returns the reply to
+   * Applies the actions to the ledger inside the commit transaction and returns the reply to
    * store. It only runs once the guard has passed, so it can never run twice for a message.
    */
   execute: (tx: Sql) => Promise<Executed>
 }
 
-/** What running a command gives back: the reply, and what to store with it. */
+/** What running a message's actions gives back: the reply, and what to store with it. */
 export interface Executed {
   reply: string
-  /** The options a `¿Cuál?` reply showed, number and movement id; stored so the next message can answer it. */
+  /** The options a question showed, number and movement id; stored so the next message can answer it. */
   asked?: { number: number; id: number }[]
-  /** The command that was really run, when it is not the model's (an answer to a question). */
-  command?: Command
+  /** What choosing an option of that question will do. */
+  pending?: Pending
+  /** The agent's tool calls with the outcome of each action. */
+  audit: AuditEntry[]
 }
 
-/** The sender's previous exchange, with what code needs to answer a question it asked. */
-export interface Previous extends PreviousExchange {
-  command: Command | null
-  /** The options that exchange's question offered, if it was one. */
-  asked: { number: number; id: number }[] | null
+/** What the agent is given about the sender's earlier messages. */
+export interface Conversation {
+  /** Committed turns of the last 30 minutes, at most 6, oldest first. */
+  turns: ConversationTurn[]
+  /** The question the previous message got, if it is unanswered and recent enough to answer. */
+  question: PendingQuestion | null
 }
+
+/** How far back the conversation window reaches, and how many turns it holds. */
+export const CONVERSATION_WINDOW_MS = 30 * 60_000
+export const CONVERSATION_TURNS = 6
+/** A question's options can be answered with a bare number for this long. */
+export const ANSWER_WINDOW_MS = 10 * 60_000
 
 export type Settled = 'done' | 'failed' | 'pending' | 'unknown' | 'ignored'
 
@@ -155,41 +172,53 @@ export function createStore(sql: Sql, o: StoreOptions) {
       return recentMovements(sql, accountId)
     },
 
+    /** The account's live movements that match a `find_movements` call. */
+    find(accountId: number, filter: FindFilter): Promise<MovementRow[]> {
+      return findMovements(sql, accountId, filter)
+    },
+
     /**
-     * The sender's message just before this one and the reply it was given, if that reply was
-     * committed and the message arrived at most `windowMs` before this one. Short-term memory for
-     * answers like "2" after a question; nothing older, and nothing from a message that failed.
+     * The sender's earlier turns: committed messages (body and stored reply) that arrived at most 30
+     * minutes before this one, the last 6, and the question the immediately preceding message got
+     * when it is at most 10 minutes old. The database stays the source of truth; nothing is kept in
+     * the model. A message that failed has no reply and is not here.
      */
-    async previousExchange(c: Claim, windowMs = 10 * 60_000): Promise<Previous | null> {
-      const [row] = await sql<
-        {
-          text: string | null
-          reply: string | null
-          command: Command | null
-          askedNumbers: number[] | null
-          askedIds: number[] | null
-        }[]
-      >`
-        SELECT p.body AS text, p.reply_text AS reply, p.command,
-          p.asked_numbers AS "askedNumbers", p.asked_ids::int[] AS "askedIds"
-        FROM inbound_message cur
-        JOIN LATERAL (
-          SELECT body, reply_text, received_at, kind, command, asked_numbers, asked_ids FROM inbound_message
-          WHERE wa_id = cur.wa_id AND id < cur.id
-          ORDER BY id DESC LIMIT 1) p ON true
-        WHERE cur.id = ${c.id} AND p.kind = 'text'
-          AND p.received_at > cur.received_at - make_interval(secs => ${windowMs / 1000})`
-      return row?.text && row.reply
-        ? {
-            text: row.text,
-            reply: row.reply,
-            command: row.command,
-            asked:
-              row.askedNumbers && row.askedIds
-                ? row.askedNumbers.map((number, k) => ({ number, id: row.askedIds?.[k] ?? 0 }))
-                : null,
-          }
-        : null
+    async conversation(c: Claim): Promise<Conversation> {
+      const [turns, [previous]] = await Promise.all([
+        sql<ConversationTurn[]>`
+          SELECT p.body AS text, p.reply_text AS reply,
+            floor(extract(epoch FROM cur.received_at - p.received_at) / 60)::int AS "minutesAgo"
+          FROM inbound_message cur
+          JOIN inbound_message p ON p.wa_id = cur.wa_id AND p.id < cur.id
+          WHERE cur.id = ${c.id} AND p.kind = 'text' AND p.reply_text IS NOT NULL
+            AND p.received_at > cur.received_at - make_interval(secs => ${CONVERSATION_WINDOW_MS / 1000})
+          ORDER BY p.id DESC LIMIT ${CONVERSATION_TURNS}`,
+        sql<
+          { askedNumbers: number[] | null; askedIds: number[] | null; pending: Pending | null }[]
+        >`
+          SELECT p.asked_numbers AS "askedNumbers", p.asked_ids::int[] AS "askedIds", p.pending
+          FROM inbound_message cur
+          JOIN LATERAL (
+            SELECT asked_numbers, asked_ids, pending, received_at, kind, reply_text
+            FROM inbound_message
+            WHERE wa_id = cur.wa_id AND id < cur.id
+            ORDER BY id DESC LIMIT 1) p ON true
+          WHERE cur.id = ${c.id} AND p.kind = 'text' AND p.reply_text IS NOT NULL
+            AND p.received_at > cur.received_at - make_interval(secs => ${ANSWER_WINDOW_MS / 1000})`,
+      ])
+      return {
+        turns: turns.reverse(),
+        question:
+          previous?.askedNumbers && previous.askedIds
+            ? {
+                asked: previous.askedNumbers.map((number, k) => ({
+                  number,
+                  id: previous.askedIds?.[k] ?? 0,
+                })),
+                pending: previous.pending,
+              }
+            : null,
+      }
     },
 
     /**
@@ -208,11 +237,14 @@ export function createStore(sql: Sql, o: StoreOptions) {
         const done = await m.execute(tx as unknown as Sql)
         await tx`
           UPDATE inbound_message
-          SET command = ${tx.json((done.command ?? m.command) as never)},
-              parsed = ${tx.json(m.command as never)},
+          SET command = ${tx.json(m.command as never)},
+              parsed = ${m.parsed === null ? null : tx.json(m.parsed as never)},
+              action = ${m.action}, tool_calls = ${tx.json(done.audit as never)},
+              model_turns = ${m.turns},
               model_ms = ${Math.round(m.modelMs)}, reply_text = ${done.reply},
               asked_numbers = ${done.asked?.length ? done.asked.map((a) => a.number) : null}::int[],
               asked_ids = ${done.asked?.length ? done.asked.map((a) => a.id) : null}::bigint[],
+              pending = ${done.pending ? tx.json(done.pending as never) : null}::jsonb,
               updated_at = now()
           WHERE id = ${c.id}`
         return done.reply
