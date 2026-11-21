@@ -32,7 +32,7 @@ How we know it worked:
 
 ## Not doing (this spec)
 
-- PDFs and voice notes. (Photos arrived in slice B2; voice notes are answered with a request for text.)
+- PDFs. (Photos arrived in slice B2 and voice notes in the voice slice.)
 - Reminders and payment due dates: designed in slice G only. Outside the 24 h window they need
   approved WhatsApp utility templates, which are billed per message.
 - A web UI, budgets, multi-currency conversion.
@@ -283,131 +283,8 @@ and keeps every guard. `AGENTS.md` (rule 2, layout, message flow) describes the 
   them. A photo that cannot be read is answered with its own text (too big, wrong type, download failed) through
   the commit point as a code `notice`, with no model call. The conversation window shows `[foto] caption`. A photo is
   never the bare answer to a question.
-- **Voice notes are out of scope.** An `audio` message gets "Todavía no entiendo audios. Escribime el gasto y lo
-  anoto." and no model call. Other kinds keep the short reply.
-- **Not verified against real Meta.** The download is tested with a fake `fetch` and the fake Graph. The host allowlist
-  is a guess from Meta's media URLs (`lookaside.fbsbx.com`, `mmg.whatsapp.net`); if the live test shows a photo
-  answered with "No pude descargar la foto", the `photo_unreadable` log line and the audit's `detail` name the host (never the URL). Add it to `metaHost` in `graph.ts`.
-- **Eval changes.**
-  - Scenarios s099–s111 come from the spike (the original 98 are unchanged except s017: it expected the canned text
-    "Solo puedo ayudarte…", and now accepts any answer that mentions gastos or ingresos).
-  - A turn may carry an `image` (a file in `evals/scenarios/fixtures`, sent as a photo with the turn's text as its
-    caption; the driver serves the bytes from the fake Graph). The fixture is a synthetic receipt.
-  - s112 is new (above).
-  - The report prints latency per tag.
-- **Prompt.** The conventions are unchanged. New: "Your words" (accounting for every part, no number the model
-  was not given, questions start with ¿), "Photos", the tool descriptions, `"text":null` in every example, and a
-  first-check rule for "el 1 luca". Two prompt regressions found on dev and fixed:
-  - an example that repeated #48 word for word made the model delete the wrong id (it was replaced by one with
-    other words);
-  - the new sections before "Which movement" made "el 1 luca fue 1500" pick list position 1 in 8 of 24 runs
-    (baseline: 0 of 24); moved after the field rules, with the unit rule first, 0 of 40.
-
-### Results (B2)
-
-- Review fixes (a fresh Opus 5.5 review of the diff): the numbers check now also refuses a number plus a multiplier
-  that was not given as a phrase ("2 lucas" from "2" and "lucas"), the open families of number words (veinti-,
-  dieci-, -cientos, doble, mitad), non-ASCII digits (after NFKC), and a first-person claim of a change ("borré",
-  "corregí", "anoté", "listo", "ya está") that this message did not make (a wording check, a denial such as "no
-  borré" is fine). `ask_user`'s question refuses number words too. Number words are checked against the
-  person's side only, never against lines the model's own descriptions appear in. A search turn tells the model
-  before its last turn that it is the last. The media download follows no redirect and has one 8 s budget.
-  Known and left: a text cannot quote a figure printed in a photo (it is dropped, so the model is told to log the
-  receipt or ask without numbers); a log beside a search is held too, as the brief says, at the cost of one more call.
-- Scenario eval, `--split all` (112 scenarios: the 98 of slice B, s099–s111 from the spike, and s112), Haiku 5.5:
-  **111/112 fully right (99.1%)**, dev 88/88, test 23/24 (held out), **0 silent wrong changes, 0 invented numbers**,
-  0 unnecessary questions. s099–s111: the 10 dev ones all pass; the 3 test ones are inside the test count.
-  Slice B on the same scenarios (dev split, without the photo scenario), three runs: 84/87 in the first two; the
-  misses are what it cannot do ("borraste el super?", "el taxi lo borraste, no?") and s112.
-- Stability. The model is not perfectly stable: dev runs of the final prompt family scored 88/88 in most runs and
-  86 or 87 of 88 in some. The misses were an `ask_user` replaced by a "No encontré" reply (the "answer" tag), "el dos
-  bórralo, cambiame el primero" without the question, and, before the unit rule moved and gained its "FIRST check",
-  "el 1 luca fue 1500" picking list position 1 (a silent wrong change, 8 of 24 probe runs; 0 of 24 on slice B; 0 of
-  40 after). Read the counts to about ±2 scenarios. A last prompt edit ("always ask_user") raised `pnpm eval`
-  dev misses (c079) and was reverted; the numbers below are for the committed prompt.
-- Latency per turn (post to stored reply, Mac in Argentina), by tag, p50 ms, slice B against B2 on the dev split
-  (three paired runs; the table is the last paired run, and the all-split run's per-tag p50 is within the same band):
-
-  | Tag            | slice B | B2    |
-  | -------------- | ------- | ----- |
-  | logging        | 1,554   | 1,518 |
-  | correction     | 1,555   | 1,497 |
-  | deletion       | 1,468   | 1,546 |
-  | answer         | 1,663   | 1,677 |
-  | query          | 1,513   | 1,422 |
-  | multi-action   | 1,663   | 1,603 |
-  | older-item     | 2,916   | 2,718 |
-  | typo           | 1,543   | 1,699 |
-  | time-reference | 1,608   | 1,590 |
-  | other          | 1,681   | 1,369 |
-
-  In the last pair and in the all-split run no tag moved by more than +160 ms. Earlier pairs, with earlier prompts,
-  moved more: in the first, logging +234 and older-item +539 ms against the mean of two slice B runs (older-item
-  is 3 or 4 turns, so its p50 is one sample; in the second pair +184 and +171). p95 by tag is in the run files; the
-  all-split p95 is 3.0 s overall.
-- Single-message eval, `--split all` (152 cases): 152/152, 0 silent amounts, 0 silent targets, p50 1,634 ms,
-  p95 2,773 ms, US$0.0349.
-- Open: the 20 live messages and `pnpm latency` on Railway are not done (nothing was deployed).
-
-## Agent slice B2 notes (2026-11-21)
-
-Built on branch `agent-b2`, after live messages #48 and #49 and the eve spike (`docs/eve-spike.md`, branch
-`eve-spike`). Ticiano kept our own loop rather than eve. B2 lets the loop answer more freely and read photos,
-and keeps every guard. `AGENTS.md` (rule 2, layout, message flow) describes the result.
-
-- **The model's words, and what stays code's.** Every write tool, `summarize` and `ask_user` carry a `text`; `reply`
-  is now `reply({text})`; `help` is a separate tool with no input, so the one canned text (it carries the help contact)
-  stays code's. Code renders the record of every change first (`✓ Corregido: … (antes …)`), the totals from
-  `summarize` and the question with its options, then sends the texts after it, in call order and without repeats.
-  The model's text is an addition, never a replacement.
-- **`text` is a required nullable field, not an optional one.** Strict tools allow 24 optional parameters in
-  total and the tools already used 22; five optional `text` fields would make 27. A nullable is a union, and
-  unions went from 4 to 9 of 16.
-- **The numbers check (`src/agent/say.ts`, pure).** A text goes out only if it is at most 280 characters, has no `✓`
-  (it cannot pass for the record) and every number in it is a number code gave. Numbers are compared by value, not
-  by spelling: `12.000`, `12000` and `$12.000,00` are one number; `9:12` and `09:12` are one time; `3/11`,
-  `03/11` and `2026-11-03` are one day. A `.` followed by exactly three digits is a thousands mark and a `,` is
-  the decimal mark (the Argentine reading), so `12,000` is 12, not 12 thousand. Number words (`dos`, `mil`,
-  `veinte`, `lucas`…) count too and pass only when the person wrote the same word.
-  - **Sources.** The person's message, the movement list (without ids), the conversation window, the option
-    numbers of the pending question, this message's `find_movements` results, and the lines code rendered for
-    this message. Not the calendar, the clock or an id: a bare day number inside `2026-11-21` does not let "el 21"
-    through, so the model says "hoy", "ayer" or `dd/mm`.
-  - **Where it runs.** At the commit point, in `execute`, because the code-rendered lines (which hold
-    `$25.000` for "25 lucas") are a source and exist only there. A failing text is dropped, the audit entry says
-    `text: dropped` and the reason (`textReason`), and the record is sent alone. A `reply` whose text is dropped, or
-    empty, sends `REPLY_SAY_FALLBACK`; the person is never left without an answer. A text beside an action that
-    did not apply (`gone`, `unchanged`) is dropped too: it was written for a change that did not happen.
-  - **What it does not do.** It checks where a number comes from, not what it means: the model may quote a true
-    amount of the wrong movement, and `$3000` passes where code writes `$3.000`. The grader (`invented`) still
-    compares amounts with the ledger, now also counting a figure the person wrote in that turn.
-- **Digits in descriptions and payments (slice B follow-up #3).** A description or payment with four or more digits in
-  a row (`café 12000`, `visa 4509`, `12.000`) is refused like any bad value: the model is told and sends it again.
-  It is not dropped, because code copies those fields into the record as written.
-- **A turn that searches and writes does not end the loop.** Code runs the reads, holds the writes (audit status `held`)
-  and answers each with "your changes were not run; send every change again". The model then sends every
-  change with the results in view, inside the same 3-turn cap. A log or a summary alone is still one model call.
-  The prompt asks for an action for every part of the request and a `text` for each part not done ("No encontré
-  el súper."). This is the fix for #48.
-- **Questions about Warren's own actions (#49).** `reply({text})` answers from the conversation window, whose
-  (Warren) lines are exactly what was sent. The prompt says that the time at the end of a line is when the movement
-  was logged, not when Warren acted.
-- **An expired question is marked (slice B follow-up #2).** A question in the window that is not the live pending one
-  is followed by "(pregunta vencida: …un número ahora es una posición de “Últimos movimientos”)". Scenario s112
-  reproduces the bug: without the mark "el 2 fue 4500" corrected option 2 of the old question (a silent wrong
-  change, 4 of 4 runs); with it, 4 of 4 right.
-- **Photos.** `payload.ts` reads an `image` message (media id, type, caption). `graph.fetchImage` looks the id up
-  (id, then URL), refuses by the declared size and type before downloading, downloads from a Meta https host only
-  (`facebook.com`, `fbsbx.com`, `fbcdn.net`, `whatsapp.net`, `whatsapp.com`; the token goes nowhere else), reads at
-  most 5 MB (stopping a stream, not trusting `content-length`), and takes the type from the bytes: JPEG, PNG or
-  WebP. All through the keep-alive client; no new dependency. The image reaches the model as an image block before
-  the context, with the caption in `<mensaje>`. It is never stored: `inbound_message` keeps the media id and
-  caption (they are in `payload` and `body`). The read receipt and typing go out at once; the download runs beside
-  them. A photo that cannot be read is answered with its own text (too big, wrong type, download failed) through
-  the commit point as a code `notice`, with no model call. The conversation window shows `[foto] caption`. A photo is
-  never the bare answer to a question.
-- **Voice notes are out of scope.** An `audio` message gets "Todavía no entiendo audios. Escribime el gasto y lo
-  anoto." and no model call. Other kinds keep the short reply.
+- **Voice notes were out of scope in B2** (an `audio` message got "Todavía no entiendo audios…"); the voice slice below
+  adds them. That reply remains for a server with no `OPENROUTER_API_KEY`. Other kinds keep the short reply.
 - **Not verified against real Meta.** The download is tested with a fake `fetch` and the fake Graph. The host allowlist
   is a guess from Meta's media URLs (`lookaside.fbsbx.com`, `mmg.whatsapp.net`); if the live test shows a photo
   answered with "No pude descargar la foto", the `photo_unreadable` log line and the audit's `detail` name the host (never the URL). Add it to `metaHost` in `graph.ts`.
@@ -538,3 +415,144 @@ an echo repaired or sent, the actions' own amounts not given, only some actions 
 two-word echo, no narrowing, narrowing a one-option question, the summarize description ignored or matched by
 any word, a figure in the description): all killed. Spend of this round about US$0.13 (tracked US$0.12 plus probes);
 the whole slice is about US$1.05 over its US$1.00, by the extra US$0.30 granted for this round.
+
+## Voice notes notes (2026-11-21)
+
+The photo path is the model: the download shares the photo's Graph code, the answer to a note that cannot be used is a
+code `notice` through the commit point, and the transcript is the one new thing a person sends in. A voice note is
+turned into text before everything else, so the model, the numbers check, the guards and the commit point are the
+ones a typed message gets.
+
+### Decisions (Ticiano and the orchestrator, tested on real notes)
+
+- **Service.** `openai/whisper-large-v3` through OpenRouter's `POST /api/v1/audio/transcriptions` (multipart,
+  OpenAI-compatible), the existing `OPENROUTER_API_KEY`, the existing keep-alive `fetch`, `FormData` from `undici`
+  (Node's global `FormData` is not accepted by undici's `fetch`: OpenRouter answered 400 "expected object"). No new
+  dependency.
+- **Pinned to Groq**, `provider={"order":["groq"],"allow_fallbacks":false}`. Unpinned, OpenRouter routes to DeepInfra,
+  which heard "YPF" as "IPEF" and "¿Cuánto va este mes?" as "en cuanto a este mes". Pinned, the transcripts matched Groq
+  direct, at 0.7 to 1.2 s a note (1.6 s for the first call of a process). A provider that is down is a failure notice,
+  not a worse transcript.
+- **Request:** `language=es`, `temperature=0`, `response_format=verbose_json` (the gate reads `segments`), and a
+  vocabulary prompt (`VOCABULARY_PROMPT`; Groq reads at most 224 tokens). Extending the prompt with six more words
+  (farmacia, alquiler, expensas, Netflix, sueldo, transferencia) made the beatbox note come out as "¡Hola!" at
+  avg_logprob -0.53, a hair from refusal, so it is the brief's prompt unchanged.
+- **Formats.** Checked against the service on a clip of Ticiano's note: Ogg/Opus (what WhatsApp sends for a voice
+  note), MP3 and MP4/M4A are read. Raw AAC (ADTS) and AMR are refused by Groq ("file must be one of: flac mp3 mp4 mpeg
+  mpga m4a ogg opus wav webm", checked 2026-11-21), so they are answered as unsupported. The type is read from the
+  bytes (`sniffAudio`), like a photo's, not from what the sender claims. The cap is 3 MB (about 25 minutes of Opus), and
+  the lookup's `file_size` and `content-length` are checked before reading, as for photos.
+- **Latency.** The read receipt and typing go out first, as for any message; the download starts beside them. The
+  transcription has its own 10 s budget inside the message's 30 s deadline, so a hung service becomes a notice while
+  there is time left; the 10 s interim note applies unchanged. Both calls get the deadline's `AbortSignal`, so a message
+  that passes it does not leave a download or an upload running.
+- **Storage.** No audio bytes anywhere. The media id stays in the webhook `payload`; what was heard goes into the
+  existing `body` at the commit point (no migration). A refused note keeps no transcript in `body` (it is noise): the
+  cause and the transcript's numbers go in the audit `detail` and the `voice_unusable` log line.
+
+### How a voice note flows
+
+1. `hear` (in `process.ts`) runs beside the typing call and the database reads: `fetchAudio`, `transcribe`, `judgeTranscript`.
+2. Not usable, each with its own code notice and no model call: too big or too long (`REPLY_VOICE.too_large`),
+   another type (`unsupported`), a failed download, a service error, a bad answer or the 10 s budget (`failed`: "No pude
+   procesar el audio, ¿me lo escribís?"), the gate (`unclear`: "No te entendí el audio, ¿me lo escribís?"). The cause is
+   logged (`voice_unusable`) and kept in the audit. Only the 30 s deadline is the failure path ("No pude procesar tu mensaje").
+3. Usable: the transcript replaces the text. The context tells the model it is an automatic transcript that can be
+   misheard; `contextFacts` and `checkSay` take it as the person's message, so the model may repeat a number the person
+   said and no other.
+4. The reply is `🎙️ "<transcript>"` (code) and then the usual reply. The next message's window shows `[audio] <transcript>`
+   (the reply line there also carries the 🎙️ line).
+5. A voice note is never the bare answer to a question: "el segundo" by voice goes to the model, which sees the options.
+   Code does not delete or correct on what a speech model thought it heard (decision beyond the brief, one more model call).
+
+### The confidence gate
+
+Whisper writes something for any sound. Ticiano's beatbox note came back, on different draws of the same file (Groq is not
+deterministic even at temperature 0), as ".", "¡Hola!", "Chika-chika, chika-chika", "Subtitulado por…", "¡Gracias por ver
+el video!", "Fuerza del Vigilio". `judgeTranscript` refuses on the `segments` (weights are the segments' durations):
+
+| signal             | good speech (3 real notes) | noise (beatbox, 42 draws)                  | refuse when                                               |
+| ------------------ | -------------------------- | ------------------------------------------ | --------------------------------------------------------- |
+| avg_logprob (mean) | -0.18 to -0.25             | -0.18 to -2.85, most under -0.4            | mean under -0.4, or one segment under -1.0                |
+| compression_ratio  | 0.76 to 1.06               | 0.2 to 2.26 (the "chika" loops 1.7 to 2.3) | any segment over 1.5                                      |
+| no_speech_prob     | 0.001 to 0.008             | 0.16 on every draw                         | mean over 0.1                                             |
+| text               |                            | "."                                        | no letter or digit, no segments, or over 3,000 characters |
+
+Each threshold sits between the good notes and the noise, and together they refused all 42 draws seen (the first
+version of the thresholds, -0.5 / 1.8 / 0.6, let two of the first ten through). Written risk: three good notes
+are not many. A noisy room or a mumbled note can sit near -0.4, and a refusal costs the person one retyped message;
+a hallucination that passes ("¡Hola!" at -0.46 would have) costs a harmless reply, and the 🎙️ line shows what was heard.
+Widen with care, and rerun `pnpm tsx evals/voice-probe.ts` on new notes first. A synthetic note, "No, fueron cuatro mil."
+by a computer voice, was heard as "Si no, fueron cuatro mil." at -0.46 and refused: the right call for that transcript.
+
+### Results
+
+- Real notes (local only, `evals/voice-probe.ts`; the audio is not in the repository):
+
+  | note          | transcript                                                               | avg_logprob / ratio / no_speech | gate                                                                                       |
+  | ------------- | ------------------------------------------------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------ |
+  | r51           | "Gasté 3.500 en café, 8.000 en el súper y 10.000 con la visa en el YPF." | -0.18 / 1.06 / 0.003            | pass                                                                                       |
+  | r52           | "No, en YPF fueron 10.500."                                              | -0.23 / 0.76 / 0.002            | pass                                                                                       |
+  | r53           | "¿Cuánto va este mes, más o menos?"                                      | -0.25 / 0.84 / 0.008            | pass                                                                                       |
+  | r54 (beatbox) | "Chika-chi, Chika-chi, Chika-chi, Chika-chi."                            | -0.60 / 1.91 / 0.160            | refused; 20 more draws: 20 refused (13 low confidence, 5 repetitive, 1 no speech, 1 empty) |
+
+- Scenario eval, `pnpm eval:scenarios --split all` (124 scenarios: the 117 of B2, s118 to s123 voice with synthetic
+  Paulina and Mónica notes, and s124 for live #70), Haiku 5.5: **121/124 fully right (97.6%)**, dev 95/97, test 26/27
+  (held out), **0 silent wrong changes, 0 invented numbers, 0 unnecessary questions**; the 6 voice scenarios 6/6 (the
+  noise clip s121 is answered by code, no model call, and writes nothing). Dev misses: s061 ("la segunda", model
+  variance, see below) and s117 (the older-item search; both are in the B2 notes as unstable). Per turn p50 1,464 ms,
+  p95 3,008 ms; the 7 voice turns p50 2,168 ms (the transcription adds about 0.7 s to a model turn of about 1.4 s).
+- Latency by tag, p50 ms, dev split, B2 against this run (no tag moved by more than +100 ms; the gate is +300):
+
+  | Tag            | B2    | voice slice |
+  | -------------- | ----- | ----------- |
+  | logging        | 1,518 | 1,429       |
+  | correction     | 1,497 | 1,476       |
+  | deletion       | 1,546 | 1,512       |
+  | answer         | 1,677 | 1,490       |
+  | query          | 1,422 | 1,456       |
+  | multi-action   | 1,603 | 1,679       |
+  | older-item     | 2,718 | 2,815       |
+  | typo           | 1,699 | 1,416       |
+  | time-reference | 1,590 | 1,560       |
+  | other          | 1,369 | 1,391       |
+  | voice (new)    |       | 2,168       |
+
+- Single-message eval, `pnpm eval --split all` (152 cases): 151/152 (99.3%), 0 silent amounts, 0 silent targets, p50
+  1,436 ms, p95 3,213 ms; the one miss is c098 (dev, a category of a query).
+- Tests: 449 passed (B2: 389), with the fake transcription endpoint injected like the fake Graph: a good note, each way the
+  gate refuses, a service error, a bad answer, the budget, the deadline (and the abort reaching the call), an oversized
+  or wrong-type file, the 🎙️ line and the window entry, the transcript as a source for the numbers check, nothing stored.
+  The request itself (the `provider` pin, the language, `verbose_json`, the key) is tested against a fake `fetch`.
+- Mutations (each broken alone; 39 mutations over the gate, the size cap, the time budgets, the pin and the voice path,
+  and the two follow-ups): 39 killed. Three survived the first pass (the too-long check, and the deadline not reaching the
+  transcription or the download, which the race at the deadline hid) and got tests.
+- Spend: about US$0.25 of US$0.60 (scenario runs US$0.14, `pnpm eval` runs US$0.08, transcription about US$0.03 at
+  US$0.0003 a note).
+
+### B2 follow-ups from the live test (#66 to #72)
+
+- **#72, the text that restated the line.** "Corregí el café de las 11:11." beside "✓ Corregido: Café $1.500 (antes
+  $3.500) · 11:11". `composeReply` now drops a text whose words are all filler or already in the lines code rendered
+  (`restates`, audit `text: dropped`, "only restates the lines"). A `reply` is never dropped for this: its words are the
+  answer. Kept in code, not the prompt: no change to the cached prompt for it.
+- **#70, `ask_user` with `after_answer: correct` and no `changes`.** Not fixed by accepting it as `none` in code: tried,
+  and s061 ("cambiame lo del almuerzo a 5000" then "la segunda") went from 6 of 10 passes to 0 of 10, because the model
+  omits `changes` in that case too, and the refusal is what makes it send them. So the rejection stays (a second model
+  turn, about 1.5 s, in a rare case) and the prompt's "gave no change" example now includes "cambiemos el gasto de
+  café". #70 did not reproduce offline: 16 runs of a two-café ledger, 0 refusals with or without the example; the new
+  scenario s124 pins the one-turn answer. A stronger sentence in the prompt ("correct always carries changes")
+  made s061 worse (2 of 10) and was dropped.
+- **Where the live time goes (p50 2.45 s, p95 3.75 s over 12 messages).** The model turn is about 1.5 s (p50 of 99 one-turn
+  messages in the eval, 1,505 ms) and the send through Meta 0.5 to 0.7 s, which the eval's fake Graph does not include:
+  that is about 2.1 to 2.2 s before anything else. The rest is the second model turn: 11 of 113 dev turns (10%) used
+  two (p50 3.2 s against 1.5 s): a search before a write, a repaired text or a refused call. That tail is p95. The
+  rejected `ask_user` is a case of it, but one message of the 12. So p50 over 2.0 s is the send plus the model, and
+  p95 under 4.0 s holds; getting p50 under 2.0 s would need a faster model call or a faster send, not a change in
+  the loop. Not chased further, as asked.
+
+### Open
+
+- Not deployed and not tested against real Meta: the live test of a real voice note (the media lookup and download of
+  `audio/ogg; codecs=opus`, the allowlisted hosts) is the orchestrator's. The `voice_unusable` log line names the cause.
+- `OPENROUTER_API_KEY` must be set on the Railway service for voice to be on; without it a note gets the request for text.

@@ -272,10 +272,12 @@ describe('a voice note that cannot be used', () => {
     app.close()
   })
 
-  it('past the message deadline while transcribing fails the message with the failure notice', async () => {
+  it('past the message deadline while transcribing fails the message with the failure notice, and stops the call', async () => {
+    let given: AbortSignal | undefined
     const stt = fakeTranscriber(
       (signal) =>
         new Promise((_resolve, reject) => {
+          given = signal
           signal?.addEventListener('abort', () => reject(signal.reason))
         }),
     )
@@ -287,6 +289,20 @@ describe('a voice note that cannot be used', () => {
     expect(await voice(app, 'wamid.F2')).toBe(REPLY_FAILED)
     expect((await row('wamid.F2'))?.status).toBe('failed')
     expect(app.model.n).toBe(0)
+    expect(given?.aborted).toBe(true) // the call was cancelled, not left running
+    app.close()
+  })
+
+  it('past the message deadline while downloading fails the message too, and stops the download', async () => {
+    const never = gate()
+    const fake = fakeGraph({ media: { a1: NOTE }, download: () => never.promise })
+    const app = await setup({
+      fake,
+      transcriber: fakeTranscriber().transcriber,
+      deadlineMs: 150,
+    })
+    expect(await voice(app, 'wamid.F4')).toBe(REPLY_FAILED)
+    expect(fake.calls.signals[0]?.aborted).toBe(true)
     app.close()
   })
 

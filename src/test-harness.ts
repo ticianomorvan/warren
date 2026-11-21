@@ -93,6 +93,8 @@ export function fakeGraph(
     typing: [] as string[],
     sent: [] as { to: string; body: string }[],
     downloads: [] as string[],
+    /** The abort signal each download was given: the message's own deadline. */
+    signals: [] as (AbortSignal | undefined)[],
     attempts: 0,
   }
   const graph: Graph = {
@@ -108,8 +110,9 @@ export function fakeGraph(
       if (media instanceof Error) throw media
       return checkImage(media)
     },
-    async fetchAudio(mediaId): Promise<Audio> {
+    async fetchAudio(mediaId, signal): Promise<Audio> {
       calls.downloads.push(mediaId)
+      calls.signals.push(signal)
       await o.download?.()
       const media = o.media?.[mediaId]
       if (media === undefined) throw new MediaError('unavailable', 'no such media')

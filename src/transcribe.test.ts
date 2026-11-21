@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   createTranscriber,
-  GATE,
   judgeTranscript,
   PROVIDER_PIN,
   type Segment,
@@ -103,7 +102,7 @@ describe('the confidence gate', () => {
   })
 
   it('refuses a text too long to be a note about an expense', () => {
-    const verdict = judgeTranscript(note('café '.repeat(GATE.maxChars)))
+    const verdict = judgeTranscript(note('x'.repeat(3001)))
     expect(verdict).toMatchObject({ ok: false, reason: 'too_long' })
   })
 
