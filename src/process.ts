@@ -147,7 +147,7 @@ export function createProcessor(o: ProcessorOptions) {
    * no await in between, so no commit starts after it. A deadline that fires while the commit is
    * running loses: committed means the reply is sent, late if need be.
    */
-  async function parseAndAnswer(c: Claim, age: number): Promise<void> {
+  async function parseAndAnswer(c: Claim, age: number, release: () => void): Promise<void> {
     const deadline = AbortSignal.timeout(Math.max(0, Math.ceil(deadlineMs - age)))
     const signal = AbortSignal.any([deadline, shutdown.signal])
     const aborted = new Promise<'aborted'>((resolve) => {
@@ -252,6 +252,8 @@ export function createProcessor(o: ProcessorOptions) {
       }
       const model_ms = Math.round(result.latencyMs)
       log('committed', { wamid: c.wamid, command: command.type, model_ms })
+      // What this message changed is stored: the sender's next message may start its parse.
+      release()
       await closeInterim()
       await deliver(c, reply, { typing_ms: await typing, model_ms })
     } finally {
@@ -260,7 +262,7 @@ export function createProcessor(o: ProcessorOptions) {
     }
   }
 
-  async function work(c: Claim): Promise<void> {
+  async function work(c: Claim, release: () => void): Promise<void> {
     if (!isAllowed(o.allowed, c.wa_id)) {
       await store.settle(c, 'ignored', 'sender not allowed')
       log('message_ignored', { wamid: c.wamid })
@@ -268,12 +270,14 @@ export function createProcessor(o: ProcessorOptions) {
     }
 
     if (c.kind !== 'text') {
+      release() // stores nothing the sender's next message could depend on
       const typing_ms = await showTyping(c)
       await deliver(c, REPLY_NON_TEXT, { typing_ms })
       return
     }
     if (c.replyText !== null) {
       // Committed earlier, send never started: the stored reply goes out, the model is not called.
+      release()
       const typing_ms = c.typingSent ? undefined : await showTyping(c)
       await deliver(c, c.replyText, { typing_ms })
       return
@@ -284,10 +288,10 @@ export function createProcessor(o: ProcessorOptions) {
       await fail(c, 'deadline passed before the commit point')
       return
     }
-    await parseAndAnswer(c, age)
+    await parseAndAnswer(c, age, release)
   }
 
-  async function runNow(c: Claim): Promise<void> {
+  async function runNow(c: Claim, release: () => void): Promise<void> {
     try {
       if (shutdown.signal.aborted) {
         // Queued behind another message of the same sender when the shutdown came: nothing started.
@@ -295,7 +299,7 @@ export function createProcessor(o: ProcessorOptions) {
         log('message_released', { wamid: c.wamid })
         return
       }
-      await work(c)
+      await work(c, release)
     } catch (err) {
       log('process_crash', { wamid: c.wamid, error: errorText(err) }, 'error')
     }
@@ -305,18 +309,24 @@ export function createProcessor(o: ProcessorOptions) {
   const lanes = new Map<string, Promise<void>>()
 
   /**
-   * One sender's messages run strictly one after the other, in the order they were handed in (kick
-   * and sweep alike). A message read its context before the parse, so a message that ran beside an
-   * earlier one would not see what that one stored ("café 3500", then "uy, era 3800" must find the
-   * café). Different senders still run in parallel. Single process, so a promise chain is enough.
+   * One sender's messages are handled in the order they were handed in (kick and sweep alike). A
+   * message reads its context before the parse, so it must not start until the previous one has
+   * stored what it changed ("café 3500", then "uy, era 3800" must find the café). The turn passes
+   * at that commit, not at the send, so a burst does not also wait on each reply's send. Different
+   * senders run in parallel. Single process, so a promise chain is enough.
    */
   function run(c: Claim): Promise<void> {
-    const next = (lanes.get(c.wa_id) ?? Promise.resolve()).then(() => runNow(c))
-    lanes.set(c.wa_id, next)
-    void next.finally(() => {
-      if (lanes.get(c.wa_id) === next) lanes.delete(c.wa_id)
+    let release!: () => void
+    const turn = new Promise<void>((resolve) => {
+      release = resolve
     })
-    return next
+    const previous = lanes.get(c.wa_id) ?? Promise.resolve()
+    lanes.set(c.wa_id, turn)
+    void turn.then(() => {
+      if (lanes.get(c.wa_id) === turn) lanes.delete(c.wa_id)
+    })
+    // Every path ends the turn: a failure, a lost claim or a crash releases it in `finally`.
+    return previous.then(() => runNow(c, release)).finally(release)
   }
 
   function track<T>(p: Promise<T>): Promise<T> {

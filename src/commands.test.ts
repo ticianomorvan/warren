@@ -21,6 +21,7 @@ import type { Command } from './parse'
 import { REPLY_BAD_CHANGE, REPLY_NO_CHANGES, REPLY_NO_MOVEMENTS } from './render'
 import {
   bodies,
+  fakeGraph,
   fakeModel,
   gate,
   messageBody,
@@ -281,6 +282,25 @@ describe('concurrent and replayed messages', () => {
     const live = await sql`SELECT description, amount::text AS amount FROM movement
       WHERE superseded_by IS NULL ORDER BY id`
     expect(live.map((r) => `${r.description} ${r.amount}`)).toEqual(['nafta 20000', 'café 3800'])
+    app.close()
+  })
+
+  it("the sender's next message starts once the previous one is stored, not after its send", async () => {
+    const sendHold = gate()
+    const fake = fakeGraph({
+      send: async (n) => {
+        if (n === 1) await sendHold.promise
+        return `wamid.OUT${n}`
+      },
+    })
+    const app = await setup({ fake, model: fakeModel(() => logOf(movement())) })
+    await post(app.base, messageBody('wamid.B1', WA))
+    await until(async () => (await row('wamid.B1'))?.reply_text != null) // committed, send held
+    await post(app.base, messageBody('wamid.B2', WA))
+    await until(() => app.model.n === 2) // parsing while the first reply is still being sent
+    expect((await row('wamid.B1'))?.reply_sent_at ?? null).toBeNull()
+    sendHold.open()
+    await until(async () => (await row('wamid.B2'))?.status === 'done')
     app.close()
   })
 

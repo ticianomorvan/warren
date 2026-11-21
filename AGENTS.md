@@ -123,7 +123,9 @@ model at the end. CI never calls the Anthropic API.
   the guard and the stored reply, so a replay or a sweep re-claim never applies them twice (the stored reply
   is sent instead). **One sender's messages run strictly one after the other** (`run` chains them per
   `wa_id`, kick and sweep alike; different senders stay parallel), because a message reads its context before
-  the parse and must see what the one before it stored. A shutdown hands queued messages back as `pending`
+  the parse and must see what the one before it stored. The turn passes at the commit, not at the send, so
+  a burst does not also wait on each reply's send (replies can then arrive out of order when one send is
+  slow; each names its own movements). A shutdown hands queued messages back as `pending`
   like the one in flight. The parser sees the account's last 10 live movements (`RECENT_LIMIT`, the most one
   message can log) as a numbered list and returns `target_index` plus `target`. Code (`resolveTarget`) reads
   the person's own message too, since `target` only echoes the row the model chose: "last" is number 1 (any
