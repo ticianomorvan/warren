@@ -175,3 +175,12 @@ Decided while building, changing the text above:
 - After the second review: the sign-in page asks "¿Es la tuya?" (masked number) when WhatsApp confirmed, and only the click finishes it, because better-auth skips the consent page for a returning
   person and every Claude user shares one client id. The endpoint itself does not check an acknowledgement: it is reachable only from that page (an httpOnly cookie, SameSite=Lax, a JSON POST under the origin check), so the page-level gate plus the origin check is the whole control.
 - The per-address limit counts an IPv6 address as its /64 and runs under a per-address advisory lock (7203004).
+
+## Slice 2 as built (2026-11-22)
+
+- The door is `requireMcpAuth` (signature, issuer, audience, expiry, `azp`, `ledger:read`, DPoP) plus our own checks, run in `src/mcp/door.ts`: `typ` must be `at+jwt` (better-auth does not check it), `sub` a uuid of an `auth_user` that stands for an account,
+  and that account's WhatsApp id allowed. Every refusal is the one 401 with the challenge; a missing `ledger:read` is better-auth's 403 `insufficient_scope`; a database that cannot answer is a 503. Each tool also checks its own scope (slice 3's write tools need `ledger:write`).
+- `warren_find_movements` has a page size (default 25, at most 50) and a cursor; `findMovements` got an `{ max, beforeId }` option, the WhatsApp path keeps its 20.
+- `isIsoDate` now refuses a day that does not exist ("2026-13-01"): the database would have refused it, and `find_movements` on WhatsApp would have failed the message.
+- `runSummary` (`src/run-summary.ts`) is the one place a summary is planned, summed and rendered; `execute` calls it.
+- `@modelcontextprotocol/server` 2.4.0 and `@modelcontextprotocol/node` 2.1.2. Tests speak JSON-RPC over HTTP with `fetch` (no client package).
