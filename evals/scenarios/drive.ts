@@ -186,6 +186,10 @@ async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<stri
       INSERT INTO turn (account_id, channel, created_at, label, reply)
       VALUES (${accountId}, 'whatsapp', ${new Date(first - 86_400_000).toISOString()}, 'seed', 'seed') RETURNING id::int AS id`
     const madeIn = turn?.id ?? 0
+    // The seeded ledger is not something the person did in this conversation: an undo has nothing of theirs to take back (as in v1,
+    // where the seed was no batch). The seed turn is marked as already undone, without ending anything.
+    await tx`INSERT INTO turn (account_id, channel, created_at, label, reply, undoes)
+      VALUES (${accountId}, 'whatsapp', ${new Date(first - 86_400_000).toISOString()}, 'undo', 'seed', ${madeIn})`
     for (const f of s.facts) {
       await tx`INSERT INTO fact (account_id, made_in, kind, key, value, logged_at)
         VALUES (${accountId}, ${madeIn}, ${f.kind}, ${f.key}, ${f.value}, ${new Date(first - 86_400_000).toISOString()})`
@@ -231,7 +235,7 @@ const actionOf = (action: string | null, reply: string): Action => {
 }
 
 /**
- * Plays one scenario through the real pipeline: webhook payload in, `createApp` and `createProcessor`
+ * Plays one scenario through the real pipeline: webhook payload in, `createWarren`
  * on a migrated database, the real model client behind `parseMessage`, a fake Graph. Turns run in
  * order, each one only after the previous reply is stored, as one sender's messages do in production.
  * It stops at the first turn that is not right: later turns would be graded on a ledger that already

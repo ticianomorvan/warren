@@ -297,8 +297,8 @@ export const EXAMPLES: Example[] = [
   },
   {
     facts: 'id=4 categoría "cafe" → entretenimiento',
-    message: 'cafe 3000',
-    calls: [log(mv('3000', 'café', 'entretenimiento'))],
+    message: 'cafe 2800',
+    calls: [log(mv('2800', 'café', 'entretenimiento'))],
   },
   {
     message:
