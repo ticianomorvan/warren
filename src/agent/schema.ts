@@ -1,55 +1,24 @@
 import { z } from 'zod'
+import {
+  CATEGORIES,
+  FACT_KINDS,
+  type FactKind,
+  GROUPS,
+  MAX_FOUND,
+  NAMED_PERIODS,
+} from '../core/commands'
+import { MAX_MOVEMENTS } from '../core/values'
 import { ScheduleSchema } from '../domain/reminders/schedule'
 
-export const CATEGORIES = [
-  'supermercado',
-  'restaurantes',
-  'transporte',
-  'combustible',
-  'vivienda',
-  'servicios',
-  'salud',
-  'educacion',
-  'entretenimiento',
-  'ropa',
-  'regalos',
-  'mascotas',
-  'viajes',
-  'impuestos',
-  'transferencias',
-  'sueldo',
-  'otros_ingresos',
-  'otros',
-] as const
-
-/** Periods code resolves from today alone, in Argentine time. */
-export const NAMED_PERIODS = [
-  'today',
-  'yesterday',
-  'this_week',
-  'last_week',
-  'weekend',
-  'last_weekend',
-  'this_month',
-  'last_month',
-  'this_year',
-  'last_year',
-] as const
+export { CATEGORIES, FACT_KINDS, type FactKind, GROUPS, MAX_FOUND, MAX_MOVEMENTS, NAMED_PERIODS }
 
 /** The named periods, plus the three that need the fields of the range: a month, a year, explicit days. */
 export const PERIODS = [...NAMED_PERIODS, 'month', 'year', 'dates'] as const
-
-/** How a summary splits its totals: not at all, by what was bought, by how it was paid, or by time. */
-export const GROUPS = ['none', 'category', 'payment', 'day', 'week', 'month'] as const
 
 /** The groups that are a span of time: in order, and the same key never repeats between two ranges. */
 export const TIME_GROUPS = ['day', 'week', 'month'] as const
 export const isTimeGroup = (by: string): by is (typeof TIME_GROUPS)[number] =>
   (TIME_GROUPS as readonly string[]).includes(by)
-
-/** What a fact is: a name for a payment, a place or a thing; where a kind of expense goes; or anything else, kept for later. */
-export const FACT_KINDS = ['alias', 'category', 'note'] as const
-export type FactKind = (typeof FACT_KINDS)[number]
 
 /** What a summary is compared with: nothing, the period before, or a second range the person named. */
 export const COMPARES = ['none', 'previous', 'range'] as const
@@ -137,11 +106,6 @@ export type RecentMovement = Pick<
   /** When it was logged, Argentine HH:MM. Tells apart movements of the same day. */
   time?: string
 }
-
-/** The most movements one message may log. */
-export const MAX_MOVEMENTS = 10
-/** The most rows `find_movements` returns. */
-export const MAX_FOUND = 20
 
 /** What an `ask_user` question will do once the person picks an option. */
 export const PENDING_ACTIONS = ['none', 'correct', 'delete'] as const

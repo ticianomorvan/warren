@@ -120,14 +120,16 @@ COMMENT ON TABLE reply IS 'One row per message Warren sent as an answer, with th
 --   ended_in / ended_at   the turn that ended this version (a correction, a delete, a forget, a cancel, an undo) and when.
 --              Live means ended_at IS NULL. Both are set together, once.
 -- A correction inserts a new version of the same entity_id in the same transaction that ends the old one.
+-- made_in / ended_in reference `turn` DEFERRABLE INITIALLY DEFERRED: the commit transaction applies the writes first and inserts the turn row last
+-- (its existence is the commit point), so the reference is checked at COMMIT. A transaction that never inserts its turn cannot commit a version.
 
 CREATE SEQUENCE movement_entity_seq AS bigint;
 CREATE TABLE movement (
   id           bigserial   PRIMARY KEY,
   entity_id    bigint      NOT NULL DEFAULT nextval('movement_entity_seq'),
   account_id   bigint      NOT NULL REFERENCES account (id),
-  made_in      bigint      NOT NULL REFERENCES turn (id),
-  ended_in     bigint      REFERENCES turn (id),
+  made_in      bigint      NOT NULL REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
+  ended_in     bigint      REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
   ended_at     timestamptz,
   logged_at    timestamptz NOT NULL DEFAULT now(),       -- when the entity was first logged: a correction passes the original in its INSERT
   direction    text        NOT NULL CONSTRAINT movement_direction_known CHECK (direction IN ('in', 'out')),
@@ -161,8 +163,8 @@ CREATE TABLE fact (
   id          bigserial   PRIMARY KEY,
   entity_id   bigint      NOT NULL DEFAULT nextval('fact_entity_seq'),
   account_id  bigint      NOT NULL REFERENCES account (id),
-  made_in     bigint      NOT NULL REFERENCES turn (id),
-  ended_in    bigint      REFERENCES turn (id),
+  made_in     bigint      NOT NULL REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
+  ended_in    bigint      REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
   ended_at    timestamptz,
   logged_at   timestamptz NOT NULL DEFAULT now(),
   kind        text        NOT NULL CONSTRAINT fact_kind_known CHECK (kind IN ('alias', 'category', 'note')),
@@ -184,8 +186,8 @@ CREATE TABLE reminder (
   id           bigserial   PRIMARY KEY,
   entity_id    bigint      NOT NULL DEFAULT nextval('reminder_entity_seq'),
   account_id   bigint      NOT NULL REFERENCES account (id),
-  made_in      bigint      NOT NULL REFERENCES turn (id),
-  ended_in     bigint      REFERENCES turn (id),
+  made_in      bigint      NOT NULL REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
+  ended_in     bigint      REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
   ended_at     timestamptz,
   logged_at    timestamptz NOT NULL DEFAULT now(),
   what         text        NOT NULL CONSTRAINT reminder_what_valid

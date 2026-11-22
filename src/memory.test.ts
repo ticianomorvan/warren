@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { MAX_FACTS } from './agent/memory'
 import {
   ask,
   day,
@@ -15,6 +14,7 @@ import {
   script,
   WA,
 } from './command-fixtures'
+import { MAX_FACTS } from './domain/facts'
 import { execute } from './execute'
 import { findLive, forgetFact, supersedeFact } from './facts'
 import { REPLY_FACT_CONTACT, REPLY_FACT_SECRET, REPLY_FACTS_NONE } from './render'

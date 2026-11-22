@@ -1,5 +1,5 @@
-import { sameValue } from './agent/memory'
 import type { Sql } from './core/db'
+import { sameValue } from './domain/facts'
 import {
   type BatchFact,
   batchFacts,

@@ -1,12 +1,12 @@
+import type { FactKind } from './agent/schema'
+import type { Sql } from './core/db'
 import {
   CONTEXT_FACTS,
   MAX_FACTS,
   MAX_MATCHED_FACTS,
   normalizeKey,
   sameValue,
-} from './agent/memory'
-import type { FactKind } from './agent/schema'
-import type { Sql } from './core/db'
+} from './domain/facts'
 
 /** A live fact as the model, the record and the list see it. */
 export interface FactRow {

@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { realPostgres } from '../test/db'
 import { applyReminderCall } from './apply'
 import { logOf, movement, replyCall, say, script, WA } from './command-fixtures'
+import { MAX_REMINDERS } from './domain/reminders/guard'
 import { ScheduleSchema } from './domain/reminders/schedule'
 import { insertReminder } from './reminders/db'
-import { MAX_REMINDERS } from './reminders/guard'
 import { createReminderSender } from './reminders/send'
 import {
   REPLY_FACT_SECRET,

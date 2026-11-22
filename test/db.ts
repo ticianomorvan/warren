@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { PGlite } from '@electric-sql/pglite'
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket'
 import { afterAll, beforeAll, beforeEach } from 'vitest'
-import { connect, migrate, type Sql } from '../src/core/db'
+import { connect, migrate, type Sql, schemaDir } from '../src/core/db'
 
 /** The real Postgres the suite runs on when set (CI's `postgres:17` service job, or `docker run` locally); PGlite otherwise. */
 export const PG_TEST_URL = process.env.PG_TEST_URL || undefined
@@ -69,7 +69,7 @@ export let sql: Sql
  * Gives the test file its own migrated database (see `createTestDatabase`) and empties the tables
  * between tests. Call it once at the top of the file and import `sql` from here.
  */
-export function useDatabase(o: { max?: number } = {}): void {
+export function useDatabase(o: { max?: number; migrations?: URL } = {}): void {
   let db: TestDatabase | undefined
   beforeAll(async () => {
     db = await createTestDatabase(o)
@@ -79,6 +79,11 @@ export function useDatabase(o: { max?: number } = {}): void {
     await db?.close()
   })
   beforeEach(async () => {
+    if (o.migrations === schemaDir) {
+      await sql`TRUNCATE mcp_request, reminder_send, reminder, fact, movement, reply, wa_message, turn,
+        account_address, account RESTART IDENTITY CASCADE`
+      return
+    }
     await sql`TRUNCATE link_request, auth_oauth_access_token, auth_oauth_refresh_token, auth_oauth_consent,
       auth_oauth_client_resource, auth_oauth_client_assertion, auth_oauth_resource, auth_oauth_client, auth_session,
       auth_account, auth_verification, auth_jwks, auth_user,

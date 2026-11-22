@@ -1,4 +1,5 @@
 import type { Sql } from '../core/db'
+import { tidyWhat } from '../domain/reminders/guard'
 import { nextOccurrence, type Schedule, ScheduleSchema } from '../domain/reminders/schedule'
 import { log } from '../log'
 
@@ -7,12 +8,6 @@ export const TEMPLATE_LANGUAGE = 'es_AR'
 
 /** Meta's "more than 24 hours since the person last wrote". */
 export const OUTSIDE_WINDOW = 131047
-
-/**
- * What a reminder says, on one line: runs of whitespace (a newline, a tab, five spaces) become one space. A template's
- * parameter may hold none of those, and the person's words are not changed by it.
- */
-export const tidyWhat = (what: string): string => what.replace(/\s+/g, ' ').trim()
 
 /** A live reminder as the model, the record and the list see it. */
 export interface ReminderRow {

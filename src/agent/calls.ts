@@ -9,12 +9,13 @@ import {
   isoDateProblem,
   issueText,
 } from '../core/values'
+import { checkFact, checkFactValues, normalizeKey } from '../domain/facts'
 import { planSummary } from '../domain/range'
+import { checkReminder } from '../domain/reminders/guard'
 import { nextOccurrence } from '../domain/reminders/schedule'
 import type { FindFilter } from '../ledger'
 import { normalizeText } from '../movement'
 import { isOnce } from '../reminders/describe'
-import { checkReminder } from '../reminders/guard'
 import {
   REPLY_FACT_CONTACT,
   REPLY_FACT_SECRET,
@@ -22,7 +23,6 @@ import {
   REPLY_REMINDER_PAST,
 } from '../render'
 import { argentinaToday } from '../time'
-import { checkFact, checkFactValues, normalizeKey } from './memory'
 import {
   MAX_FOUND,
   type ModelAction,

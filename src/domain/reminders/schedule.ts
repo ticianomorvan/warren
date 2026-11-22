@@ -57,6 +57,18 @@ const fields = z.strictObject({
   count: z.number().int().min(1).max(1000).optional(),
 })
 
+/** The repetition fields of a schedule, alone: what `set_reminder` takes beside `first` (the registry builds on it). */
+export const RepeatSchema = fields.pick({
+  every: true,
+  interval: true,
+  weekdays: true,
+  month_days: true,
+  nth: true,
+  month: true,
+  until: true,
+  count: true,
+})
+
 export const ScheduleSchema = fields.superRefine((s, ctx) => {
   const refuse = (path: string, message: string) =>
     ctx.addIssue({ code: 'custom', path: [path], message })
@@ -213,4 +225,99 @@ export function normalizeSchedule(schedule: Schedule, now: Date): Schedule | nul
   const first = nextOccurrence(open, now)
   if (!first) return null
   return { ...open, start: argentinaToday(first), ...(count === undefined ? {} : { count }) }
+}
+
+// ---- The first occurrence, as the person said it. The model sends what was said ("en 20 minutos", "mañana a las 10", "el lunes",
+// ---- "el 10"), and this works out the day and the clock: the model never does calendar arithmetic and no word of the message is read.
+
+const clock = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+  .describe('HH:MM, 24 hours. Leave out when the person gave no time.')
+
+/** How long from now, for "en 20 minutos", "en 2 horas", "en 3 días". */
+export const FIRST_UNITS = ['minutes', 'hours', 'days', 'weeks', 'months'] as const
+export const FIRST_DAYS = ['today', 'tomorrow', 'day_after'] as const
+
+/** When a reminder first fires, as the person said it: exactly one of five shapes. */
+export const FirstSchema = z.union([
+  z.strictObject({
+    in: z.strictObject({ n: z.int().min(1).max(1000), unit: z.enum(FIRST_UNITS) }),
+  }),
+  z.strictObject({ day: z.enum(FIRST_DAYS), time: clock.optional() }),
+  z.strictObject({ weekday, time: clock.optional() }),
+  z.strictObject({
+    month_day: z.int().min(1).max(31),
+    month: z.int().min(1).max(12).optional(),
+    time: clock.optional(),
+  }),
+  z.strictObject({ date: isoDay, time: clock.optional() }),
+])
+export type First = z.infer<typeof FirstSchema>
+
+/** The time a reminder fires at when the person gave none. */
+export const DEFAULT_TIME = '09:00'
+
+const addMonths = (day: string, n: number): string => {
+  const [y = 0, m = 1, d = 1] = day.split('-').map(Number)
+  const at = y * 12 + (m - 1) + n
+  const ny = Math.floor(at / 12)
+  const nm = (at % 12) + 1
+  const nd = Math.min(d, daysInMonth(ny, nm))
+  return fromDay(dayOf(ny, nm, nd)).iso
+}
+
+const pad2 = (n: number) => String(n).padStart(2, '0')
+const HHMM = (at: Date) => {
+  const local = new Date(at.getTime() - ARGENTINA_OFFSET_MS)
+  return `${pad2(local.getUTCHours())}:${pad2(local.getUTCMinutes())}`
+}
+
+/**
+ * The day and the clock of the first occurrence: `{start, time}` of a schedule. Pure, Argentine time, counted from `now`, the
+ * instant of the message. "En n minutes or hours" is that long from now; "en n days, weeks or months" is the same clock time that
+ * many days on; a weekday, a day of the month or a named day is the first such day whose time is still ahead of `now` (so "el lunes"
+ * said on a Monday morning is that Monday for a later time and the next one for an earlier time); a date is that date. The time
+ * is `DEFAULT_TIME` when the person gave none. A moment that has gone by is not moved: "hoy" at a time that passed stays today
+ * and the guard says it is past.
+ */
+export function resolveFirst(first: First, now: Date): { start: string; time: string } {
+  const today = argentinaToday(now)
+  const after = (day: string, time: string) => instant(toDay(day), time) > now
+  if ('in' in first) {
+    const { n, unit } = first.in
+    if (unit === 'minutes' || unit === 'hours') {
+      const at = new Date(now.getTime() + n * (unit === 'minutes' ? 60_000 : 3_600_000))
+      return { start: argentinaToday(at), time: HHMM(at) }
+    }
+    const time = HHMM(now)
+    if (unit === 'months') return { start: addMonths(today, n), time }
+    return { start: fromDay(toDay(today) + n * (unit === 'weeks' ? 7 : 1)).iso, time }
+  }
+  const time = first.time ?? DEFAULT_TIME
+  if ('day' in first) {
+    return { start: fromDay(toDay(today) + FIRST_DAYS.indexOf(first.day)).iso, time }
+  }
+  if ('weekday' in first) {
+    const wd = WEEKDAYS.indexOf(first.weekday)
+    for (let k = 0; k <= 7; k++) {
+      const day = fromDay(toDay(today) + k)
+      if (day.wd === wd && after(day.iso, time)) return { start: day.iso, time }
+    }
+  }
+  if ('month_day' in first) {
+    const [y = 0, m = 1] = today.split('-').map(Number)
+    for (let k = 0; k < 120; k++) {
+      const total = y * 12 + (m - 1) + k
+      const ny = Math.floor(total / 12)
+      const nm = (total % 12) + 1
+      if (first.month !== undefined && nm !== first.month) continue
+      if (first.month_day > daysInMonth(ny, nm)) continue
+      const day = fromDay(dayOf(ny, nm, first.month_day)).iso
+      if (after(day, time)) return { start: day, time }
+    }
+  }
+  if ('date' in first) return { start: first.date, time }
+  // Unreachable for a parsed `first`: a weekday always comes within 8 days, a day of the month within 10 years.
+  return { start: today, time }
 }

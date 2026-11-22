@@ -1,4 +1,5 @@
 import { isTimeGroup, NAMED_PERIODS, type RangeInput, type ToolInput } from '../agent/schema'
+import type { Input, Range } from '../core/commands'
 import { addDays, type DateRange, dayParts as parts } from '../time'
 
 /**
@@ -388,4 +389,41 @@ export function planSummary(
   if (typeof spec === 'string') return spec
   const second = resolveRange(spec, today)
   return second.ok ? { asked: asked.range, before: second.range } : `other: ${second.reason}`
+}
+
+// ---- The typed range of the registry's `summarize` (docs/rebuild/council-agent.md): a discriminated union, no sentinels, no
+// ---- string mini-language for the second range. The resolution core above is shared.
+
+/** A typed range as the sentinel shape `resolveRange` reads: the fields a period does not use are empty. */
+export function sentinel(r: Range): RangeInput {
+  const base = { month: 0, year: 0, from: '', to: '' }
+  switch (r.period) {
+    case 'month':
+      return { ...base, period: 'month', month: r.month, year: r.year ?? 0 }
+    case 'year':
+      return { ...base, period: 'year', year: r.year }
+    case 'dates':
+      return { ...base, period: 'dates', from: r.from, to: r.to ?? '' }
+    default:
+      return { ...base, period: r.period }
+  }
+}
+
+/**
+ * Every rule of a typed summary's days in one place: the range, "previous" or a second range, and what cannot be compared. A
+ * string is the reason it cannot run (for the model or the MCP client).
+ */
+export function planRange(
+  q: Pick<Input<'summarize'>, 'range' | 'group_by' | 'compare'>,
+  today: string,
+): SummaryPlan | string {
+  const asked = resolveRange(sentinel(q.range), today)
+  if (!asked.ok) return `range: ${asked.reason}`
+  if (q.compare === undefined) return { asked: asked.range, before: null }
+  if (q.group_by !== undefined && isTimeGroup(q.group_by)) {
+    return `a comparison cannot be grouped by ${q.group_by}: use group_by none, category or payment, or drop the comparison`
+  }
+  if (q.compare === 'previous') return { asked: asked.range, before: previousRange(asked.range) }
+  const second = resolveRange(sentinel(q.compare), today)
+  return second.ok ? { asked: asked.range, before: second.range } : `compare: ${second.reason}`
 }

@@ -1,8 +1,22 @@
-import { tidy as tidyWords } from '../agent/memory'
-import { hasForeignDigit, unwritten } from '../core/numbers'
-import { holdsSecretValue, looksContact } from '../core/secrets'
-import { nextOccurrence, normalizeSchedule, type Schedule } from '../domain/reminders/schedule'
-import { tidyWhat } from './db'
+import type { z } from 'zod'
+import { hasForeignDigit, unwritten } from '../../core/numbers'
+import { holdsSecretValue, looksContact } from '../../core/secrets'
+import { tidy as tidyWords } from '../facts'
+import {
+  type First,
+  nextOccurrence,
+  normalizeSchedule,
+  type RepeatSchema,
+  resolveFirst,
+  type Schedule,
+  ScheduleSchema,
+} from './schedule'
+
+/**
+ * What a reminder says, on one line: runs of whitespace (a newline, a tab, five spaces) become one space. A template's
+ * parameter may hold none of those, and the person's words are not changed by it.
+ */
+export const tidyWhat = (what: string): string => what.replace(/\s+/g, ' ').trim()
 
 /** The most live reminders one account holds. */
 export const MAX_REMINDERS = 20
@@ -30,7 +44,7 @@ export type ReminderCheck =
  * in the text must be one they wrote.
  */
 export function checkReminder(
-  input: { what: string; schedule: Schedule },
+  input: { what: string; schedule: Schedule | null },
   now: Date,
   message?: string,
 ): ReminderCheck {
@@ -55,10 +69,30 @@ export function checkReminder(
     }
   }
   // From `now` on (see `normalizeSchedule`): a start that has passed is moved to the first occurrence, never drained by `count`.
-  const schedule = normalizeSchedule(input.schedule, now)
+  const schedule = input.schedule && normalizeSchedule(input.schedule, now)
   const first = schedule && nextOccurrence(schedule, now)
   if (!schedule || !first) return { ok: false, refused: 'past' }
   if (first.getTime() - now.getTime() > MAX_DAYS_AHEAD * DAY_MS)
     return { ok: false, refused: 'far' }
   return { ok: true, what, schedule, first }
+}
+
+/** What `set_reminder` sends: the text, when it first fires as the person said it, and the repeat fields. */
+export type ReminderInput = { what: string; first: First } & z.input<typeof RepeatSchema>
+
+/**
+ * The schedule a `set_reminder` input comes to, from the instant of the message: `first` is resolved to a day and a clock time
+ * (`resolveFirst`), joined with the repeat fields and parsed, then counted from `now` (`normalizeSchedule`). A string is why it
+ * cannot be a schedule (for the model); null means it has no occurrence after `now`. Pure and deterministic, so the guard and
+ * the commit point reach the same schedule from the same input and instant.
+ */
+export function scheduleOf(input: ReminderInput, now: Date): Schedule | string | null {
+  const { what: _, first, ...repeat } = input
+  const parsed = ScheduleSchema.safeParse({ ...resolveFirst(first, now), ...repeat })
+  if (!parsed.success) {
+    return parsed.error.issues
+      .map((i) => `${i.path.length > 0 ? i.path.join('.') : 'schedule'}: ${i.message}`)
+      .join('; ')
+  }
+  return normalizeSchedule(parsed.data, now)
 }

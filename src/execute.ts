@@ -1,16 +1,16 @@
 import type { Action } from './agent'
 import type { AuditEntry } from './agent/loop'
-import { MAX_FACTS } from './agent/memory'
 import { composeReply, type Say, type Step } from './agent/say'
 import { applyCall, applyReminderCall } from './apply'
 import { disconnectAccount } from './auth/disconnect'
 import { askLink, confirmLink, declineLink } from './auth/link'
 import type { Sql } from './core/db'
+import { MAX_FACTS } from './domain/facts'
+import { MAX_REMINDERS } from './domain/reminders/guard'
 import { allLiveFacts, forgetAll } from './facts'
 import { liveByIds, newestLiveId } from './ledger'
 import { scrubAudit } from './redact'
 import { liveReminders } from './reminders/db'
-import { MAX_REMINDERS } from './reminders/guard'
 import {
   REPLY_DISCONNECT,
   REPLY_FACT_GONE,
