@@ -89,11 +89,15 @@ export function answerAction(text: string, question: PendingQuestion | null): Ac
 
 const UNDO_VERB =
   '(?:deshac(?:e|er|elo)|anul(?:a|ar|alo)|revert(?:i|ir|ilo)|volver? atras|vuelve atras)'
-/** What an undo may point at: the last thing, never one named movement ("deshacé el café") and never "todo". */
+/**
+ * What an undo may point at: the last thing, never one named movement ("deshacé el café", "el último", which names
+ * one movement while a batch may hold several) and never "todo". No "no"/"mejor" before the verb: "no deshacer" and
+ * "mejor no anular" are the opposite of an undo, and "no, deshacelo" goes to the model, which reads the conversation.
+ */
 const UNDO_OBJECT =
-  '(?:eso|esto|lo|lo ultimo|lo anterior|el ultimo|lo que (?:hiciste|hice|anotaste|puse|acabas de hacer|acabo de hacer)|lo ultimo que (?:hiciste|hice|anotaste|puse))'
+  '(?:eso|esto|lo|lo ultimo|lo anterior|lo que (?:hiciste|hice|anotaste|puse|acabas de hacer|acabo de hacer)|lo ultimo que (?:hiciste|hice|anotaste|puse))'
 const UNDO = new RegExp(
-  `^(?:(?:ay|uy|ups|no|dale|bueno|perdon|mejor|ok)\\s+)*(?:(?:por favor|porfa)\\s+)?${UNDO_VERB}(?:\\s+${UNDO_OBJECT})?(?:\\s+(?:por favor|porfa|nomas))?$`,
+  `^(?:(?:ay|uy|ups|dale|bueno|perdon|ok)\\s+)*(?:(?:por favor|porfa)\\s+)?${UNDO_VERB}(?:\\s+${UNDO_OBJECT})?(?:\\s+(?:por favor|porfa|nomas))?$`,
 )
 
 /**

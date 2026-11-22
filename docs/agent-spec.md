@@ -682,6 +682,11 @@ last batch of changes: all that one message logged, corrected or deleted, in one
   touched, then reads where each movement stands (after the locks, so a concurrent change has committed or waits), then `lockLive`
   on each head before writing. A correction racing an undo of the same movement: the first to lock wins; if the undo does, the correction
   gets "ya fue corregido o borrado"; if the correction does, the undo refuses with the stale reply. Both orders are tested on a real Postgres.
+  Known, not fixed: the undo locks rows in id order, a multi-correction message in action order, so two overlapping processes (never one:
+  a sender's messages are queued in order) could deadlock. Postgres aborts one and that message gets the failure notice (review, 2026-11-21).
+- **Code's bare "deshacer" is narrow** (review fixes). Only when no question is open (an open one, "deshacer" most likely means "never
+  mind": the model reads it), and never with "no"/"mejor" before the verb ("no deshacer", "mejor no anular") or "el último" as the object
+  (it names one movement; a batch may hold several). Those go to the model.
 - **Time limit: 24 hours** from the batch's message (`received_at`, to the asking message's). Past it nothing is touched and the reply says so:
   "Lo último que hice fue hace más de 24 horas y ya no lo deshago solo. Decime qué querés corregir o borrar." The undo does not reach past an
   expired batch to an older one (older is older still).

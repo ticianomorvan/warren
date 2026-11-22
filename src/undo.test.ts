@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  ask,
   correct,
   history,
   insist,
@@ -416,7 +417,12 @@ describe('what is not an undo', () => {
     ['volver atrás!', true],
     ['anulá lo que hiciste', true],
     ['uy, deshacé eso por favor', true],
-    ['no, deshacelo', true],
+    ['no, deshacelo', false], // the model reads it with the conversation
+    ['no deshacer', false],
+    ['mejor no anular', false],
+    ['no revertir', false],
+    ['no, no deshacer', false],
+    ['deshacé el último', false], // names one movement; a batch may hold several
     ['deshacé el café', false],
     ['deshacé todo', false],
     ['anulá el súper', false],
@@ -426,6 +432,24 @@ describe('what is not an undo', () => {
     ['cuánto gasté', false],
   ])('%s', (text, yes) => {
     expect(undoRequest(text) !== null).toBe(yes)
+  })
+
+  it('a typed "deshacer" while a question is open goes to the model, never undoes in code', async () => {
+    const app = await setup({
+      model: script(
+        logOf(cafe()),
+        logOf(super_, panaderia),
+        ask([2, 3]),
+        replyCall('Dale, no borro nada.'),
+      ),
+    })
+    await send(app, 'café 3500')
+    await send(app, 'super 5000 y panadería 3000')
+    expect(await send(app, 'borrá uno')).toContain('¿Cuál?')
+    expect(await send(app, 'deshacer')).toBe('Dale, no borro nada.')
+    expect(app.model.n).toBe(4) // went to the model
+    await expectLive(['café 3500', 'súper 5000', 'panadería 3000'])
+    app.close()
   })
 
   it('"deshacé el café" is a deletion of that movement, by the model', async () => {

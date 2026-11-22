@@ -277,9 +277,13 @@ export function createProcessor(o: ProcessorOptions) {
         heard = voice.heard
       }
       // A bare answer to the question we just asked, or a bare "deshacer", is code's job: no model call at all. Not for a
-      // note of voice: a delete, a correction or an undo is never run on what a model of speech thought it heard.
+      // note of voice: a delete, a correction or an undo is never run on what a model of speech thought it heard. A
+      // "deshacer" while a question is open most likely means "never mind", not "undo the batch before": the model reads it.
       const answer =
-        isPhoto || voice ? null : (answerAction(text, conversation.question) ?? undoRequest(text))
+        isPhoto || voice
+          ? null
+          : (answerAction(text, conversation.question) ??
+            (conversation.question ? null : undoRequest(text)))
       if (answer) {
         return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }
