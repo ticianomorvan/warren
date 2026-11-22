@@ -13,6 +13,8 @@ export interface TurnTiming {
   output: number
   cache_read: number
   cache_write: number
+  /** Of those, the tokens written with the 1-hour TTL. */
+  cache_write_1h?: number
   /** Characters of text the model wrote beside its tool calls (0 when it only called tools). */
   text_chars: number
 }
