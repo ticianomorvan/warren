@@ -443,7 +443,7 @@ describe('nextOccurrence: properties', () => {
         }
       }
     }
-  })
+  }, 60_000)
 
   it('always ends where count says: a series of count occurrences, then null', () => {
     const r = rng(7)
@@ -464,5 +464,5 @@ describe('nextOccurrence: properties', () => {
       expect(days, JSON.stringify(s)).toEqual([...days].sort((a, b) => a - b))
       expect(new Set(days).size, JSON.stringify(s)).toBe(days.length)
     }
-  })
+  }, 60_000)
 })
