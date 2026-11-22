@@ -800,11 +800,17 @@ the split and the filters; it never computes a total, a difference, a percentage
     pasó.", with no number), and goes back through the normal refusal path, so the model words the answer and `checkSay` still
     judges its text.
   - A `dates` range that is exactly a calendar month or year is that kind (its "before" is the previous month).
-- **"Previous" is whole, and the range in progress says so.** `compare_to: previous` is the same-length range before for a day or a
-  custom range, the previous Monday-to-Sunday for a week, the previous weekend, **the previous whole calendar month** for a month,
-  and the previous year. So "¿gasté más que el mes pasado?" on 21 November compares 1–21 November with all of October, and says it:
-  `Noviembre (1–21, en curso)` against `Octubre (1–31)`. Comparing like with like (1–21 October) would answer a question nobody asked
-  as worded; it is the open question below. A comparison with a time grouping is refused ("a comparison cannot be grouped by day").
+- **"Previous" is the same stretch while the period runs (decided by the orchestrator after the first version).** `compare_to: previous`
+  is the day before for a day, the same-length range before for a custom range, and, for a week, a weekend, a month or a year, the
+  previous one **cut to the same stretch while the current one is still running**: on 21 November "¿gasté más que el mes pasado?"
+  compares 1–21 November with 1–21 October (the same weekdays for a week, the same Saturday for a weekend, the same days of last
+  year for the year so far). A shorter previous month clamps to its last day: on 30 or 31 March, February is 1–28 (1–29 in a leap year); on 29
+  February the year so far is against 1–28 February of the year before. A period that is over is compared whole (October against all of
+  September, and September against all of August, though it is shorter). A week, a weekend and a year need no case of their own
+  (each ends where the one before ends); only a month does, because the one before can be longer. The reply names both ranges ("Noviembre
+  (1–21, en curso)" and "Octubre (1–21)"). The first version compared with the whole previous month; the orchestrator
+  asked for like with like. The full-previous-month total as context ("octubre completo: $X") was skipped: it needs a third SQL
+  result and a line of its own per currency, which is more than one line. A comparison with a time grouping is refused.
 - **SQL is the totals, always (rules 1 and 3).** `queryGroups` is the same filtered, live-only `matching` fragment as `queryTotals` plus
   a group key: category; payment, folded for case and accents (`Visa` and `visa` are one group, shown as written, none is "Sin medio de
   pago"); day; week (its Monday); month. Dates are cast to `timestamp` before `date_trunc`, which would otherwise go through the session
@@ -878,16 +884,23 @@ the split and the filters; it never computes a total, a difference, a percentage
 - `pnpm eval --split all` (152 cases): **150/152 (98.7%)**, 0 silent amounts, 0 silent targets, p50 1,621 ms, p95 2,870 ms. Slice C's
   run was 150/152 as well; the dev miss was c085, the test misses are not printed. An earlier dev-only run: 120/121 (c098: "cuánto gasté en
   nafta el mes pasado" answered with the description filter, not the category).
+- Like-with-like follow-up: tests 644 passed (6 skipped). New tests cover the clamp (28, 29, 30 and 31 March against February, 2026 and the
+  leap 2028; 30 and 31 days against shorter and longer months), the year so far (including 29 February into a year without one), a week and
+  a weekend in progress, and a finished month, week, year, shorter than the one before; two through the pipeline (30 and 31 March, the
+  year so far, Wednesday of a week), against independent sums. Mutations of the clamp and the in-progress condition: **13 of 13
+  killed** (the clamp removed or against the wrong month, a month in progress compared whole, a finished month cut, any month treated as in
+  progress, the year clamp, year/week/weekend compared whole, the weekdays shifted by one, the in-progress flag never, always, or at the
+  end day); two more survived as equivalent mutants and were removed by deleting the branches. `pnpm eval:scenarios --split dev --only` the
+  11 dev summary scenarios: **11/11**, 0 silent, 0 invented, 0 second model turns, p50 2,021 ms, p95 2,873 ms, US$0.0066 (s153 now expects
+  "Octubre (1–21)", "$67.000" and "+97%"; s158, s154 and s148 name their second range, which stays whole).
 - The first real run of the new schema failed every message: the grammar was too large (see Decisions). It was found by the
   scenario run, before any other check, and led to the shape above. Warm-up: the first request after this change compiles the grammar
   (about 10 s, seen as a 14 s turn in the first dev run); the server's startup warm-up covers it.
-- Model spend about US$0.33 by the printed per-run costs (scenario runs US$0.0065 + 0.054 + 0.069 + 0.068, `pnpm eval` runs 0.036 twice
-  by mistake of one rerun + 0.047, probes and reruns of s114 about US$0.01). Nothing was deployed and nothing outside the repository was touched.
+- Model spend about US$0.34 by the printed per-run costs (scenario runs US$0.0065 + 0.054 + 0.069 + 0.068 + 0.0066, `pnpm eval` runs 0.036 twice
+  because one dev run was repeated by mistake, + 0.047, probes and reruns of s114 about US$0.01). Nothing was deployed and nothing outside the repository was touched.
 
 ### Open
 
-- **Like with like.** Whether "¿gasté más que el mes pasado?" should compare the same days of last month (1–21 October) instead of
-  the whole of it. The reply names both ranges either way.
 - **Sliding windows** ("los últimos 7 días", "en los últimos 3 meses") are not a period. The prompt has the model send `dates` from
   the 14-day calendar for up to two weeks, and the label shows the days; beyond that the model should use a month or ask.
 - **A second explicit range as days** works (`dates:11-01..11-15`) but is the least tested path with the model.

@@ -265,8 +265,9 @@ wrong changes. Its test split is held out like the other: never print or tune on
   to come, "octubre" is the latest October that has started, and "5 de octubre" the latest such day not in the future. A range that has not
   started, a reversed one, or one over 731 days (two years) is refused with the reason the model reads and `checkCall` answers it like any
   other refusal. `group_by` is `none`, `category`, `payment`, `day`, `week` or `month`; `compare_to` is `none`, `previous` (the same-length
-  range before; the previous calendar month for a month, week for a week, year for a year; a custom range that is a whole month counts as
-  one) or `range` (with `other`, a second range). A comparison cannot be grouped by time. Totals and groups are `sum()`/`count()` in SQL over
+  range before; the previous calendar month for a month, week for a week, year for a year, **cut to the same stretch while the period is
+  still running**: 1–21 November against 1–21 October, clamped to a shorter month, the year so far against the same days of last year;
+  a custom range that is a whole month counts as one) or `range` (with `other`, a second range). A comparison cannot be grouped by time. Totals and groups are `sum()`/`count()` in SQL over
   live movements, by direction and currency, never converted; a payment group ignores case and accents; a comparison is two SQL results, and
   `summary.ts` computes the difference and the percentage (tenths of a percent, half away from zero; no percentage when there is nothing
   before). `render-summary.ts` names the range in words ("Octubre (1–31)", "Semana pasada (9–15 nov)"), lists at most 8 groups (then
