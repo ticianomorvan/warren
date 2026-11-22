@@ -3,6 +3,8 @@ import type { Timings } from './timings'
 
 /** One inbound text message with the times `pnpm latency` reads. Numbers come back from Postgres as strings or numbers. */
 export interface LatencyRow {
+  /** `text`, `image` or `audio`: the headline numbers are the text messages'; the stages cover all three. */
+  kind: string
   typing: number | string | null
   reply: number | string | null
   delivered: number | string | null
@@ -23,8 +25,8 @@ export function fetchLatencyRows(sql: Sql, last: number): Promise<LatencyRow[]> 
       m.model_ms AS model,
       COALESCE(m.action, m.command->>'type') AS type,
       m.model_turns AS turns,
-      m.timings
-    FROM (SELECT * FROM inbound_message WHERE kind = 'text' ORDER BY id DESC LIMIT ${last}) m
+      m.timings, m.kind
+    FROM (SELECT * FROM inbound_message WHERE kind IN ('text', 'image', 'audio') ORDER BY id DESC LIMIT ${last}) m
     LEFT JOIN reply r ON r.inbound_id = m.id`
 }
 
@@ -52,8 +54,8 @@ export interface Stages {
   claimed: number
   reads: number
   media: number
-  /** Model calls plus the reads that followed them: the whole agent loop. */
-  agent: number
+  /** Model calls plus the reads that followed them: the whole agent loop. Null when no model ran (answered in code). */
+  agent: number | null
   /** The first turn's model call, and the later ones summed (0 when there was no second turn). */
   turn1: number | null
   turn2: number
@@ -72,7 +74,7 @@ export function stagesOf(t: Timings): Stages {
     claimed: t.claimed_ms,
     reads: t.reads_ms ?? 0,
     media: t.media_ms ?? 0,
-    agent: sum(turns.map((x) => x.model_ms + x.find_ms)),
+    agent: turns.length > 0 ? sum(turns.map((x) => x.model_ms + x.find_ms)) : null,
     turn1: first ? first.model_ms : null,
     turn2: sum(turns.slice(1).map((x) => x.model_ms)),
     find: sum(turns.map((x) => x.find_ms)),
@@ -88,19 +90,24 @@ export function stagesOf(t: Timings): Stages {
 /** The report, one string per line. Pure: the same rows give the same lines. */
 export function renderLatency(rows: LatencyRow[]): string[] {
   const out: string[] = []
-  const col = (key: 'typing' | 'reply' | 'delivered' | 'model', from = rows) =>
+  // The headline numbers are the text messages' (a voice note's time includes its transcription).
+  const texts = rows.filter((r) => r.kind === 'text')
+  const col = (key: 'typing' | 'reply' | 'delivered' | 'model', from = texts) =>
     from.map((r) => num(r[key]))
-  const metric = (name: string, key: 'typing' | 'reply' | 'delivered' | 'model', from = rows) =>
+  const metric = (name: string, key: 'typing' | 'reply' | 'delivered' | 'model', from = texts) =>
     out.push(line(name, col(key, from)))
 
-  out.push(`Last ${rows.length} inbound text messages`)
+  const others = rows.length - texts.length
+  out.push(
+    `Last ${rows.length} inbound messages: ${texts.length} text${others > 0 ? `, ${others} photo or voice` : ''}`,
+  )
   metric('received -> typing sent', 'typing')
   metric('received -> reply sent', 'reply')
   metric('model time', 'model')
   // By action (the `action` column; older rows carry their old command type).
   // Targets: log p50 <= 2.0 s, p95 <= 4.0 s; correct, delete and summarize p50 <= 4 s, p95 <= 8 s.
-  for (const type of [...new Set(rows.map((r) => r.type ?? 'failed'))].sort()) {
-    const of = rows.filter((r) => (r.type ?? 'failed') === type)
+  for (const type of [...new Set(texts.map((r) => r.type ?? 'failed'))].sort()) {
+    const of = texts.filter((r) => (r.type ?? 'failed') === type)
     const turns = of.flatMap((r) => (r.turns === null ? [] : [Number(r.turns)]))
     metric(`received -> reply sent, ${type}`, 'reply', of)
     if (turns.length > 0) {
@@ -111,10 +118,9 @@ export function renderLatency(rows: LatencyRow[]): string[] {
   }
   metric('meta ts -> delivered (1 s steps)', 'delivered')
 
-  // Where the time goes: only the messages that stored their stages and were answered.
-  const timed = rows.flatMap((r) =>
-    r.timings && num(r.reply) !== null ? [{ r, s: stagesOf(r.timings) }] : [],
-  )
+  // Where the time goes: every message that stored its stages, text, photo or voice, answered or failed
+  // (a failed one stores the stages up to its failure: the slowest messages are among them).
+  const timed = rows.flatMap((r) => (r.timings ? [{ r, s: stagesOf(r.timings) }] : []))
   out.push('')
   if (timed.length === 0) {
     out.push(
@@ -122,8 +128,9 @@ export function renderLatency(rows: LatencyRow[]): string[] {
     )
     return out
   }
+  const failed = timed.filter((t) => num(t.r.reply) === null).length
   out.push(
-    `Where the time goes (${timed.length} messages with stored stages; typing runs beside these)`,
+    `Where the time goes (${timed.length} messages with stored stages${failed > 0 ? `, ${failed} of them with no reply sent` : ''}; typing runs beside these)`,
   )
   const stage = (name: string, f: (s: Stages) => number | null) =>
     out.push(
@@ -167,9 +174,9 @@ export function renderLatency(rows: LatencyRow[]): string[] {
       timed.map(({ r, s }) => {
         const reply = num(r.reply)
         if (reply === null || s.commit === null || s.stamp === null || s.send === null) return null
-        return Math.max(
-          0,
-          reply - (s.claimed + s.reads + s.media + s.agent + s.commit + s.stamp + s.send),
+        // Not clamped: a negative remainder means the stages overlap or a clock disagrees, and that is worth seeing.
+        return (
+          reply - (s.claimed + s.reads + s.media + (s.agent ?? 0) + s.commit + s.stamp + s.send)
         )
       }),
     ),

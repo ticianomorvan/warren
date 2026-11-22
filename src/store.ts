@@ -286,12 +286,14 @@ export function createStore(sql: Sql, o: StoreOptions) {
       c: Claim,
       error: string,
       trace?: { audit: unknown[]; turns: number },
+      timings?: Timings,
     ): Promise<boolean> {
       const rows = await sql`
         UPDATE inbound_message
         SET status = 'failed', error = ${error}, failure_sent_at = now(), updated_at = now(),
           tool_calls = COALESCE(${trace ? sql.json(trace.audit as never) : null}, tool_calls),
-          model_turns = COALESCE(${trace?.turns ?? null}, model_turns)
+          model_turns = COALESCE(${trace?.turns ?? null}, model_turns),
+          timings = COALESCE(timings, '{}'::jsonb) || COALESCE(${timings ? sql.json(timings as never) : null}::jsonb, '{}'::jsonb)
         WHERE ${owned(c)} AND send_started_at IS NULL AND reply_text IS NULL
           AND failure_sent_at IS NULL
         RETURNING id`

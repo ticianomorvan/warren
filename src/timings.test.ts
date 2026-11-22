@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { find, logOf, movement, replyCall, say, script, seed } from './command-fixtures'
+import { find, logOf, movement, remove, replyCall, say, script, seed } from './command-fixtures'
 import { fetchLatencyRows, type LatencyRow, percentile, renderLatency } from './latency-report'
 import {
   fakeGraph,
   fakeModel,
   fakeTranscriber,
   heard,
+  messageBody,
   post,
   row,
   seed as seedInbound,
@@ -146,6 +147,78 @@ describe('stored timings', () => {
     app.close()
   })
 
+  it('times the context reads', async () => {
+    const app = await setup({
+      model: script(logOf(movement())),
+      processorStore: (store) => ({
+        ...store,
+        upsertAccount: async (waId: string) => {
+          await new Promise((r) => setTimeout(r, 30))
+          return store.upsertAccount(waId)
+        },
+      }),
+    })
+    await say(app)
+    const [r] =
+      await sql`SELECT timings FROM inbound_message WHERE reply_text IS NOT NULL ORDER BY id DESC LIMIT 1`
+    expect(((r?.timings ?? {}) as Timings).reads_ms).toBeGreaterThanOrEqual(25)
+    app.close()
+  })
+
+  it('a message that fails keeps its stages too: the claim, the reads and every model call it made', async () => {
+    const [mine] = await seed([{ on: TODAY, amount: '1000', description: 'mío' }])
+    expect(mine).toBe(1)
+    // An id nobody showed the model, refused three times: the failure notice, with the three calls on record.
+    const app = await setup({ model: script(remove(9999), remove(9999), remove(9999)) })
+    await post(app.base, messageBody('wamid.FAIL1'))
+    await until(async () => (await row('wamid.FAIL1'))?.status === 'failed')
+    const t = await timingsOf('wamid.FAIL1')
+    expect(t?.turns).toHaveLength(3)
+    expect(t?.reads_ms).toBeGreaterThanOrEqual(0)
+    expect(t?.claimed_ms).toBeGreaterThanOrEqual(0)
+    expect(t?.commit_ms).toBeUndefined() // it never reached the commit
+    const rows = await fetchLatencyRows(sql, 10)
+    const text = renderLatency(rows).join('\n')
+    expect(text).toContain('1 of them with no reply sent')
+    expect(text).toMatch(/agent loop \(model \+ reads\)\s+p50\s+\d+ ms\s+p95\s+\d+ ms\s+\(n=1\)/)
+    app.close()
+  })
+
+  it('a message that runs out of time stores the stages it had (claim and reads)', async () => {
+    const app = await setup({
+      deadlineMs: 150,
+      model: fakeModel(async () => {
+        await new Promise((r) => setTimeout(r, 600))
+        return [logOf(movement())]
+      }),
+    })
+    await post(app.base, messageBody('wamid.SLOW1'))
+    await until(async () => (await row('wamid.SLOW1'))?.status === 'failed')
+    const t = await timingsOf('wamid.SLOW1')
+    expect(t?.claimed_ms).toBeGreaterThanOrEqual(0)
+    expect(t?.reads_ms).toBeGreaterThanOrEqual(0)
+    expect(t?.turns).toBeUndefined() // the model never answered in time
+    app.close()
+  })
+
+  it('a commit that fails stores the stages up to it, the model call included', async () => {
+    const app = await setup({
+      model: script(logOf(movement())),
+      processorStore: (store) => ({
+        ...store,
+        commit: async () => {
+          throw new Error('the database went away')
+        },
+      }),
+    })
+    await post(app.base, messageBody('wamid.COMMITFAIL1'))
+    await until(async () => (await row('wamid.COMMITFAIL1'))?.status === 'failed')
+    const t = await timingsOf('wamid.COMMITFAIL1')
+    expect(t?.turns).toHaveLength(1)
+    expect(t?.commit_ms).toBeUndefined()
+    app.close()
+  })
+
   it('a sent reply keeps timings already stored (the merge never wipes them)', async () => {
     const app = await setup({ model: script(logOf(movement())) })
     await say(app)
@@ -169,6 +242,7 @@ const timed = (
   t: Partial<Timings> & { claimed_ms: number },
   type = 'log',
 ): LatencyRow => ({
+  kind: 'text',
   typing: 400,
   reply,
   delivered: null,
@@ -182,6 +256,7 @@ describe('pnpm latency report', () => {
   it('reads old rows (no stages) without failing, and says so', () => {
     const lines = renderLatency([
       {
+        kind: 'text',
         typing: 400,
         reply: 2000,
         delivered: null,
@@ -297,6 +372,96 @@ describe('pnpm latency report', () => {
     expect(text).toMatch(/find_movements reads\s+p50\s+40 ms/)
     expect(text).toMatch(/agent loop \(model \+ reads\)\s+p50\s+2540 ms/)
     expect(text).toMatch(/ask\s+mean output\s+280 tok/)
+  })
+
+  it('shows a negative "other" instead of clamping it to zero', () => {
+    const rows = [
+      timed(500, {
+        claimed_ms: 50,
+        reads_ms: 20,
+        turns: [
+          {
+            model_ms: 400,
+            find_ms: 0,
+            input: 1,
+            output: 1,
+            cache_read: 1,
+            cache_write: 0,
+            text_chars: 0,
+          },
+        ],
+        commit_ms: 30,
+        stamp_ms: 10,
+        send_ms: 100,
+      }),
+    ]
+    // 500 - (50 + 20 + 400 + 30 + 10 + 100) = -110
+    expect(renderLatency(rows).join('\n')).toMatch(
+      /other \(rest of received -> sent\)\s+p50\s+-110 ms/,
+    )
+  })
+
+  it('leaves messages answered in code out of the agent-loop line, and counts them in the others', () => {
+    const coded = timed(300, {
+      claimed_ms: 20,
+      reads_ms: 10,
+      turns: [],
+      commit_ms: 5,
+      stamp_ms: 5,
+      send_ms: 100,
+    })
+    const modeled = timed(2000, {
+      claimed_ms: 20,
+      reads_ms: 10,
+      turns: [
+        {
+          model_ms: 1500,
+          find_ms: 0,
+          input: 1,
+          output: 50,
+          cache_read: 1,
+          cache_write: 0,
+          text_chars: 0,
+        },
+      ],
+      commit_ms: 5,
+      stamp_ms: 5,
+      send_ms: 100,
+    })
+    const text = renderLatency([coded, modeled]).join('\n')
+    expect(text).toMatch(/agent loop \(model \+ reads\)\s+p50\s+1500 ms\s+p95\s+1500 ms\s+\(n=1\)/)
+    expect(text).toMatch(/context reads \(db\)\s+p50\s+10 ms\s+p95\s+10 ms\s+\(n=2\)/)
+    // The code-answered message: 300 - (20 + 10 + 0 + 5 + 5 + 100) = 160 is its "other".
+    expect(text).toMatch(/other \(rest of received -> sent\)\s+p50\s+160 ms/)
+  })
+
+  it('counts photo and voice messages in the stages (not in the headline numbers) and shows their wait', () => {
+    const voice: LatencyRow = {
+      ...timed(4000, {
+        claimed_ms: 20,
+        reads_ms: 10,
+        media_ms: 1200,
+        turns: [],
+        commit_ms: 5,
+        stamp_ms: 5,
+        send_ms: 100,
+      }),
+      kind: 'audio',
+    }
+    const text = renderLatency([
+      voice,
+      timed(1500, {
+        claimed_ms: 20,
+        reads_ms: 10,
+        turns: [],
+        commit_ms: 5,
+        stamp_ms: 5,
+        send_ms: 100,
+      }),
+    ]).join('\n')
+    expect(text).toContain('Last 2 inbound messages: 1 text, 1 photo or voice')
+    expect(text).toMatch(/received -> reply sent\s+p50\s+1500 ms/) // the voice note's 4000 is not in it
+    expect(text).toMatch(/photo \/ voice wait\s+p50\s+1200 ms/)
   })
 
   it('percentile is the nearest rank and ignores nulls', () => {

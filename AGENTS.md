@@ -283,5 +283,5 @@ wrong changes. Its test split is held out like the other: never print or tune on
   accent- and case-insensitive contains (`translate`, no `unaccent` extension). `supermercado` reads as "Súper".
   Changing `tools.ts`, `schema.ts` or `prompt.ts` means rerunning `pnpm eval` and `pnpm eval:scenarios` (dev
   first). The server sends one tiny warm-up request at startup, which writes the prompt cache. Each sent reply stores
-  its stages in `inbound_message.timings` (`src/timings.ts`); a speed change is judged with `pnpm latency` on real
+  its stages in `inbound_message.timings` (`src/timings.ts`; a failed message keeps the ones it reached); a speed change is judged with `pnpm latency` on real
   traffic and `pnpm eval:scenarios` (per-turn p50/p95, second-turn rate and causes, output tokens per action).

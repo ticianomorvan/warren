@@ -109,12 +109,17 @@ export function createProcessor(o: ProcessorOptions) {
   }
 
   /** The failure path: one notice, only if the reply send never started and nothing was committed. */
-  const fail = (c: Claim, reason: string, trace?: { audit: unknown[]; turns: number }) =>
+  const fail = (
+    c: Claim,
+    reason: string,
+    trace?: { audit: unknown[]; turns: number },
+    stages?: Timings,
+  ) =>
     once(
       'failure_notice',
       c,
       async () => {
-        const ok = await store.recordFailure(c, reason, trace)
+        const ok = await store.recordFailure(c, reason, trace, stages)
         log(ok ? 'message_failed' : 'failure_skipped', { wamid: c.wamid, reason }, 'error')
         return ok
       },
@@ -354,7 +359,8 @@ export function createProcessor(o: ProcessorOptions) {
 
     try {
       const outcome = await Promise.race([working, aborted])
-      if (deadline.aborted) return await fail(c, 'deadline passed before the commit point')
+      if (deadline.aborted)
+        return await fail(c, 'deadline passed before the commit point', undefined, stages)
       if (shutdown.signal.aborted) {
         // Nothing was committed and no send started: hand the row to the next process at once.
         await store.settle(c, 'pending', 'shutdown before the commit point')
@@ -366,7 +372,8 @@ export function createProcessor(o: ProcessorOptions) {
         const e = outcome.error
         // A failed message keeps what the agent tried; it writes nothing to the ledger.
         const trace = e instanceof AgentError ? { audit: e.audit, turns: e.turns } : undefined
-        return await fail(c, `parse failed: ${errorText(e)}`, trace)
+        if (e instanceof AgentError) stages.turns = e.turnLog
+        return await fail(c, `parse failed: ${errorText(e)}`, trace, stages)
       }
 
       const { accountId, actions, parsed, audit, turns, ms, usage, turnLog, facts, window, heard } =
@@ -399,7 +406,7 @@ export function createProcessor(o: ProcessorOptions) {
             }),
         })
       } catch (err) {
-        return await fail(c, `commit failed: ${errorText(err)}`)
+        return await fail(c, `commit failed: ${errorText(err)}`, undefined, stages)
       }
       stages.commit_ms = Math.round(performance.now() - committing)
       if (reply === null) {
@@ -451,7 +458,9 @@ export function createProcessor(o: ProcessorOptions) {
     // A sweep claims many rows and works them in turn: age each from when its own work starts.
     const age = c.ageMs + (performance.now() - c.claimedAt)
     if (age >= deadlineMs) {
-      await fail(c, 'deadline passed before the commit point')
+      await fail(c, 'deadline passed before the commit point', undefined, {
+        claimed_ms: Math.round(c.ageMs),
+      })
       return
     }
     await parseAndAnswer(c, age, release)

@@ -20,7 +20,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Undo the person\'s LAST batch of changes as a whole (everything one earlier message logged, corrected or deleted): "deshacer", "volvé atrás", "anulá lo que hiciste", "no, eso no" right after a record. Code finds the batch and writes what it undid; you send no id. Never for one named movement (that is delete_movement or correct_movement), and never together with another action.',
 }
 
-/** The JSON schema of a zod schema, without numeric bounds and the `$schema` key (the checks of a value are code's: `validate.ts`). */
+/** The JSON schema of a zod schema, without numeric bounds, defaults and the `$schema` key (a default is how code reads a field the model left out, not something to show the model) (the checks of a value are code's: `validate.ts`). */
 function inputSchema(schema: z.ZodType): Anthropic.Tool.InputSchema {
   const { $schema: _, ...json } = z.toJSONSchema(schema) as Record<string, unknown>
   const strip = (node: unknown): unknown => {
@@ -28,7 +28,7 @@ function inputSchema(schema: z.ZodType): Anthropic.Tool.InputSchema {
     if (node && typeof node === 'object') {
       return Object.fromEntries(
         Object.entries(node)
-          .filter(([key]) => key !== 'minimum' && key !== 'maximum')
+          .filter(([key]) => key !== 'minimum' && key !== 'maximum' && key !== 'default')
           .map(([key, value]) => [key, strip(value)]),
       )
     }

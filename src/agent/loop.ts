@@ -33,6 +33,8 @@ export class AgentError extends Error {
     message: string,
     readonly audit: AuditEntry[] = [],
     readonly turns = 0,
+    /** The model calls it made, for the failed message's stored timings. */
+    readonly turnLog: TurnTiming[] = [],
   ) {
     super(message)
   }
@@ -247,7 +249,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     usage.cacheWrite1hTokens += response.usage.cache_creation?.ephemeral_1h_input_tokens ?? 0
 
     if (response.stop_reason === 'max_tokens')
-      throw new AgentError(`turn ${turn}: cut off`, audit, turn)
+      throw new AgentError(`turn ${turn}: cut off`, audit, turn, turnLog)
     const calls = response.content.filter((b) => b.type === 'tool_use')
     if (calls.length === 0) {
       // The model wrote text instead of acting (tool use cannot be forced on every model). Say so once
@@ -388,5 +390,5 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     if (turn === MAX_TURNS - 1) results.push({ type: 'text', text: LAST_TURN })
     messages.push({ role: 'user', content: results })
   }
-  throw new AgentError(`no valid action after ${MAX_TURNS} model turns`, audit, MAX_TURNS)
+  throw new AgentError(`no valid action after ${MAX_TURNS} model turns`, audit, MAX_TURNS, turnLog)
 }

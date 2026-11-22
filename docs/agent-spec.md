@@ -924,6 +924,8 @@ ms against targets of 2.0 s and 4.0 s. Nothing here changes what the agent decid
   model input was refused for its shape (the dev audit has only a repaired text and a text without a tool); one `summarize` call was refused in the held-out
   test split, whose reason is not printed (a range the guard refuses, or a shape: not known). The cost of the change: an input that does not fit (a category outside the list, a missing key) is now a refused call and a second turn,
   where strict made it impossible. Watch `second-turn causes` in the scenario report and the audit's `invalid input` in `tool_calls`.
+  A refusal's reason is one `path: reason` per failing field (never cut in the middle of one; see the review round), and a placeholder the model leaves out
+  (`text`, a null filter, an unused range field) is read as its placeholder, so a bad shape is usually one fixable turn.
   The strict-mode limits in the slice B2 and D notes (24 optional parameters, 16 unions, the grammar size) no longer bind: a field can be added, or
   `ask_user.changes` made required, without removing another first.
 - **A cache miss costs money, not time.** `evals/cache-probe.ts pairs`, 10 cold and warm pairs (a fresh nonce in front of the frozen prompt, so the
@@ -1039,3 +1041,22 @@ model call, the claim and the send should each now be separate lines; "other" is
 - **The grammar budget** (slice D's "the next slice has to remove a field first") no longer binds; the sentinel fields (`month`, `year`, `from`, `to`, `other`) can become one optional string when someone wants the tokens (about 20 per summarize, 0.05 s).
 - Not done, as the brief allowed: the DB reads were already parallel with the typing call (`reads_ms` and `claimed_ms` are measured now, so a slow query would show); the
   first-signal path was not touched.
+
+### Review round (Opus 5.5, fresh context), fixed on the same PR
+
+- **The refusal reason was cut mid-JSON** (`parsed.error.message.slice(0, 300)`, pretty-printed). A `summarize` that left out the unused range fields showed the model
+  `month` and half of `year`, never `from`/`to`, so it fixed one field a turn and could reach the failure notice; strict made that impossible. Now `issueList` gives one
+  `path: reason` per issue, joined with `; `, at most 12 and then "; and N more", never cutting one. And a field the model leaves out that has a placeholder is read as
+  it (`text`, `payment`, the summarize filters and `other` as null or `""`, `month`, `year`, `from`, `to` as 0 or `""`), through zod `.default`, which the tools' JSON schema
+  does not show (`tools.ts` strips `default`, so the model still sees every field required, and the cached prefix is the same bytes). Code validates the value either way.
+- **Timings now cover failed messages**, the slowest ones: `recordFailure` stores the stages up to the failure (the claim and reads; the model calls of a run that ended
+  with no valid action or cut off, through `AgentError.turnLog`; the commit time is absent as it never ran). `pnpm latency` counts them ("N of them with no reply sent") and leaves
+  them out of "other", which needs a reply. Messages answered in code are left out of the "agent loop" line (they have no model turn).
+- **`pnpm latency`** shows a negative "other" instead of clamping it, and includes photo and voice rows (the headline numbers stay the text messages'; the stage lines cover all three,
+  so "photo / voice wait" can print). The default `--last` now counts all three kinds.
+- Tests: the timing fields are asserted against delayed fakes (`reads_ms`, `commit_ms`, `send_ms`, the claim wait, the search time), the token fields against a response with known
+  counts (`input`, `cache_write`, `text_chars`), and the failed paths (no valid action, cut off, deadline, commit failure) each store their stages. Mutations: **28 of 28 killed** (the
+  refusal cut at 300, the "and N more" dropped, only the first issue, the path dropped, each default removed, defaults shown to the model, each failed path's stages dropped, the
+  failure write removed, code-answered rows in the agent line, failed rows left out, the clamp back, the headline over every kind, media rows left out, and each of `reads_ms`,
+  `text_chars`, `cache_write`, `input` zeroed). `schema.ts`'s comments no longer justify the shape with strict-mode limits.
+- **For the overhaul (not done here):** with strict off, use real optional fields instead of required null/`""`/0 placeholders and a typed second range in `summarize`, then delete `parseOther`.

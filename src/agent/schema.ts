@@ -55,11 +55,19 @@ const Currency = () => z.enum(['ARS', 'USD'])
 const Category = () => z.enum(CATEGORIES)
 const Confidence = () => z.enum(['high', 'low'])
 /**
- * A short sentence in the person's voice, or null. Always present (a nullable, not an optional, field:
- * strict tools allow 24 optional parameters and the tools already use 22). Code sends it after the
- * lines it renders, and only when every number in it comes from code (`checkSay`).
+ * The shapes below were written for strict tools, which allowed few optional and union fields, so a field that may
+ * be empty is a required one that is null, "" or 0, and the model writes it every time. The tools are no longer
+ * strict (speed pass) and the limits are gone, but the shape stays: simplifying it (real optional fields, a typed
+ * second range) is a follow-up of the overhaul, not part of the speed pass. What changed: a placeholder the model
+ * leaves out is read as its placeholder (`Empty`, `.default`), since code validates the value either way, so a
+ * missing `text` or an unused range field is not a refused call.
  */
-const Say = () => z.string().nullable()
+
+/**
+ * A short sentence in the person's voice, or null (also when left out). Code sends it after the lines it
+ * renders, and only when every number in it comes from code (`checkSay`).
+ */
+const Say = () => z.string().nullable().default(null)
 
 /** Amounts and dates are plain strings here; code validates them after the model (validate.ts). */
 export const MovementSchema = () =>
@@ -70,13 +78,13 @@ export const MovementSchema = () =>
     date: z.string(),
     description: z.string(),
     category: Category(),
-    payment: z.string().nullable(),
+    payment: z.string().nullable().default(null),
     confidence: Confidence(),
   })
 
 /**
- * Only the fields the person changes are present; the rest are left out. (Optional, not nullable:
- * strict tools allow 24 optional parameters but only 16 with a union type, and nullable is a union.)
+ * Only the fields the person changes are present; the rest are left out (optional, not nullable, so the model
+ * never writes a null for a field it does not change).
  */
 export const ChangesSchema = () =>
   z.object({
@@ -90,21 +98,21 @@ export const ChangesSchema = () =>
   })
 
 /**
- * The days a summary covers. Every field is always present (strict tools allow few optional or union
- * fields, and the others are used up): a field the period does not use is 0 or "". Code resolves it to
- * Argentine days (`resolveRange`), so the model never works out where a week or a month starts.
+ * The days a summary covers. Every field is written (a field the period does not use is 0 or ""; one the model
+ * leaves out is read as that). Code resolves it to Argentine days (`resolveRange`), so the model never works out
+ * where a week or a month starts.
  */
 export const RangeSchema = () =>
   z.object({
     period: z.enum(PERIODS),
     /** `month` only: 1 to 12 ("octubre" is 10). */
-    month: z.number().int(),
+    month: z.number().int().default(0),
     /** `month` (0 = the latest one that is not in the future) and `year` (the year). */
-    year: z.number().int(),
+    year: z.number().int().default(0),
     /** `dates` only: yyyy-mm-dd, mm-dd or dd, as the person said it (code picks the latest such day that is not in the future). */
-    from: z.string(),
+    from: z.string().default(''),
     /** `dates` only: same forms; "" is the same day as `from`. */
-    to: z.string(),
+    to: z.string().default(''),
   })
 
 export type Period = (typeof PERIODS)[number]
@@ -134,10 +142,9 @@ export const MAX_FOUND = 20
 export const PENDING_ACTIONS = ['none', 'correct', 'delete'] as const
 
 /**
- * The tools, one input schema each. Strict tools: nothing but the listed fields is allowed, and the
- * fields that are not optional are always there (an unset one is null). Optional and nullable
- * fields are spread so the whole list stays under the strict-mode limits (24 optional, 16 union).
- * The terminal tools (everything but `find_movements`) end the loop.
+ * The tools, one input schema each: nothing but the listed fields is allowed, and the fields that are not
+ * optional are written every time (an unset one is null, "" or 0; see the note above `Say`). The terminal tools
+ * (everything but `find_movements`) end the loop.
  */
 export const TOOL_INPUTS = {
   find_movements: () =>
@@ -159,16 +166,16 @@ export const TOOL_INPUTS = {
       group_by: z.enum(GROUPS),
       compare_to: z.enum(COMPARES),
       /**
-       * Only with `compare_to: "range"` ("" otherwise): the second range as a short text, because a second typed
-       * range does not fit the strict-tool grammar. A named period (`last_month`), `month:10` or `month:10:2025`,
+       * Only with `compare_to: "range"` ("" otherwise): the second range as a short text (it was written when strict
+       * tools could not hold a second typed range; a typed range and no `parseOther` are the overhaul's). A named period (`last_month`), `month:10` or `month:10:2025`,
        * `year:2025`, or `dates:11-01..11-15` (`from..to`, the same forms as `range`). Code parses it (`parseOther`).
        */
-      other: z.string(),
-      direction: Direction().nullable(),
-      category: Category().nullable(),
-      payment: z.string().nullable(),
+      other: z.string().default(''),
+      direction: Direction().nullable().default(null),
+      category: Category().nullable().default(null),
+      payment: z.string().nullable().default(null),
       /** Words of the description to count or total: "cuántos cafés" is `café`. */
-      description: z.string().nullable(),
+      description: z.string().nullable().default(null),
       text: Say(),
     }),
   ask_user: () =>

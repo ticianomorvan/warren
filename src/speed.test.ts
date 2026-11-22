@@ -46,9 +46,18 @@ describe('the model is told when it has seen the whole ledger', () => {
 
   it('a ledger of RECENT_LIMIT - 1 is complete; the next movement makes it full', async () => {
     await rows(RECENT_LIMIT - 1)
-    const app = await setup({ model: script(replyCall('a'), replyCall('b')) })
+    const app = await setup({
+      model: script(replyCall('Eso no lo sé.'), replyCall('Eso no lo sé.')),
+    })
     await say(app)
     expect(firstContext(app.requests)).toContain('toda la historia')
+    await seed([{ on: TODAY, amount: '9999', description: 'la décima' }])
+    await say(app)
+    // The second message's request is the second one the model got: it sees ten movements, the list is full.
+    const second = app.requests[1]?.messages[0]?.content
+    expect(typeof second === 'string' ? second : JSON.stringify(second)).not.toContain(
+      'toda la historia',
+    )
     app.close()
   })
 

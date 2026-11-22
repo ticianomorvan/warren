@@ -608,3 +608,127 @@ describe('warmUp', () => {
     expect(req?.max_tokens).toBe(16)
   })
 })
+
+describe('the token record of a model call', () => {
+  it('keeps every count the response reported, and the characters of text beside the calls', async () => {
+    const created = {
+      messages: {
+        create: async () => ({
+          content: [
+            { type: 'text', text: 'hay dos cafés' },
+            { type: 'tool_use', id: 't1', ...log() },
+          ],
+          stop_reason: 'tool_use',
+          usage: {
+            input_tokens: 11,
+            output_tokens: 22,
+            cache_read_input_tokens: 33,
+            cache_creation_input_tokens: 44,
+          },
+        }),
+      },
+    } as unknown as Anthropic
+    const result = await run(created)
+    expect(result.turnLog).toHaveLength(1)
+    expect(result.turnLog[0]).toMatchObject({
+      input: 11,
+      output: 22,
+      cache_read: 33,
+      cache_write: 44,
+      text_chars: 'hay dos cafés'.length,
+      find_ms: 0,
+    })
+  })
+
+  it('a run cut off at max_tokens carries the call that was cut', async () => {
+    const created = {
+      messages: {
+        create: async () => ({
+          content: [{ type: 'text', text: 'hay' }],
+          stop_reason: 'max_tokens',
+          usage: { input_tokens: 1, output_tokens: 2048 },
+        }),
+      },
+    } as unknown as Anthropic
+    const error = await run(created).catch((e) => e)
+    expect(error).toBeInstanceOf(AgentError)
+    expect((error as AgentError).turnLog).toMatchObject([{ output: 2048, text_chars: 3 }])
+  })
+
+  it('a failed run carries the calls it made', async () => {
+    const { c } = client([find({ text: 'x' })], [find({ text: 'x' })], [find({ text: 'x' })])
+    // Searches only, three times: the loop ends with no action.
+    const error = await run(c).catch((e) => e)
+    expect(error).toBeInstanceOf(AgentError)
+    expect((error as AgentError).turnLog).toHaveLength(3)
+  })
+})
+
+describe('a refusal the model can act on', () => {
+  const summary = (range: object) => ({
+    name: 'summarize',
+    input: { range, group_by: 'none', compare_to: 'none', other: '', direction: 'out' },
+  })
+
+  it('a summarize that leaves out the unused range fields and the null filters succeeds in one turn', async () => {
+    const { c, requests } = client([summary({ period: 'this_month' })])
+    const result = await run(c)
+    expect(requests).toHaveLength(1)
+    expect(result.turns).toBe(1)
+    expect(result.actions).toEqual([
+      {
+        tool: 'summarize',
+        input: {
+          range: { period: 'this_month', month: 0, year: 0, from: '', to: '' },
+          group_by: 'none',
+          compare_to: 'none',
+          other: '',
+          direction: 'out',
+          category: null,
+          payment: null,
+          description: null,
+          text: null,
+        },
+      },
+    ])
+  })
+
+  it('names every failing path, whole, so one turn can fix them all', async () => {
+    const bad = movement({ category: 'comida', currency: 'EUR', amount: 3500, direction: 'x' })
+    delete (bad as Record<string, unknown>).date
+    const { c, requests } = client(
+      [{ name: 'log_movements', input: { movements: [bad], text: null } }],
+      [log()],
+    )
+    const result = await run(c)
+    expect(result.turns).toBe(2)
+    const answer = JSON.stringify(requests[1]?.messages.at(-1)?.content)
+    for (const path of [
+      'movements.0.category',
+      'movements.0.currency',
+      'movements.0.amount',
+      'movements.0.direction',
+      'movements.0.date',
+    ]) {
+      expect(answer, path).toContain(path)
+    }
+    expect(answer).not.toContain('\\n') // one line, not pretty-printed JSON
+    expect(result.audit[0]?.detail).toContain('movements.0.date')
+  })
+
+  it('never cuts an issue in half: a long list ends with how many more there are', async () => {
+    const movements = Array.from({ length: 10 }, () =>
+      movement({ category: 'comida', currency: 'EUR', direction: 'x' }),
+    )
+    const { c } = client([{ name: 'log_movements', input: { movements, text: null } }], [log()])
+    const result = await run(c)
+    const detail = result.audit[0]?.detail ?? ''
+    expect(detail).toMatch(/; and \d+ more$/)
+    for (const part of detail
+      .replace('invalid input: ', '')
+      .replace(/; and \d+ more$/, '')
+      .split('; ')) {
+      expect(part, part).toMatch(/^movements\.\d+\.\w+: .+/)
+    }
+  })
+})
