@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { argentinaTime, argentinaToday } from '../time'
+import { argentinaTime, argentinaToday } from '../../time'
 import {
   nextOccurrence,
   normalizeSchedule,

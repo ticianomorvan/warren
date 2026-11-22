@@ -1,6 +1,6 @@
 import type { Sql } from '../core/db'
+import { nextOccurrence, type Schedule, ScheduleSchema } from '../domain/reminders/schedule'
 import { log } from '../log'
-import { nextOccurrence, type Schedule, ScheduleSchema } from './schedule'
 
 /** The template's language, as Meta names it. */
 export const TEMPLATE_LANGUAGE = 'es_AR'

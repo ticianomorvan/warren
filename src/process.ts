@@ -13,7 +13,7 @@ import {
   type Usage,
   windowReplies,
 } from './agent'
-import { sensitive } from './agent/memory'
+import { sensitive } from './core/secrets'
 import { execute } from './execute'
 import { RECENT_LIMIT } from './ledger'
 import { log } from './log'

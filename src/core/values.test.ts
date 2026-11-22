@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Movement } from './schema'
-import { checkChanges, checkCount, checkLog, hasChanges, issueText } from './validate'
+import type { Movement } from '../agent/schema'
+import { checkChanges, checkCount, checkLog, hasChanges, issueText } from './values'
 
 const today = '2026-11-20'
 const movement: Movement = {

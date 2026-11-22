@@ -1,4 +1,5 @@
 import type { Sql } from './core/db'
+import { nextOccurrence } from './domain/reminders/schedule'
 import {
   type BatchReminder,
   batchReminders,
@@ -9,7 +10,6 @@ import {
   reminderById,
 } from './reminders/db'
 import { MAX_REMINDERS } from './reminders/guard'
-import { nextOccurrence } from './reminders/schedule'
 
 /** What undoing one reminder of the batch did. */
 export type ReminderUndone =

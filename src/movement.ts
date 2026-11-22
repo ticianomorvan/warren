@@ -1,16 +1,8 @@
 import type { Changes, RecentMovement } from './agent'
 
-/** Lowercase without accents: how code compares what a person wrote with what is stored. */
-export const normalizeText = (value: string) =>
-  value
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .toLowerCase()
-    .trim()
+export { canonicalAmount, normalizeText } from './core/values'
 
-/** A canonical decimal string, so "3500" and "3500.00" compare equal. */
-export const canonicalAmount = (amount: string) =>
-  amount.includes('.') ? amount.replace(/0+$/, '').replace(/\.$/, '') : amount
+import { canonicalAmount } from './core/values'
 
 /** The values a correction leaves unset keep the old row's. Blank values never get here: validate rejects them. */
 export function applyChanges(old: RecentMovement, changes: Changes): RecentMovement {

@@ -1,14 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import {
-  checkSay,
-  composeReply,
-  type Evidence,
-  echoes,
-  hasForeignDigit,
-  hasLongNumber,
-  hasNumberWord,
-  MAX_SAY_LENGTH,
-} from './say'
+import { hasForeignDigit, hasLongNumber, hasNumberWord } from '../core/numbers'
+import { checkSay, composeReply, type Evidence, echoes, MAX_SAY_LENGTH } from './say'
 
 /** What the model saw this message, as the sources of the check. */
 const sources = [

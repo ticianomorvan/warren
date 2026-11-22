@@ -1,10 +1,20 @@
 import type { z } from 'zod'
+import { hasLongNumber, hasNumberWord } from '../core/numbers'
+import {
+  checkChanges,
+  checkCount,
+  checkLog,
+  hasChanges,
+  isDecimalAmount,
+  isoDateProblem,
+  issueText,
+} from '../core/values'
 import { planSummary } from '../domain/range'
+import { nextOccurrence } from '../domain/reminders/schedule'
 import type { FindFilter } from '../ledger'
 import { normalizeText } from '../movement'
 import { isOnce } from '../reminders/describe'
 import { checkReminder } from '../reminders/guard'
-import { nextOccurrence } from '../reminders/schedule'
 import {
   REPLY_FACT_CONTACT,
   REPLY_FACT_SECRET,
@@ -13,7 +23,6 @@ import {
 } from '../render'
 import { argentinaToday } from '../time'
 import { checkFact, checkFactValues, normalizeKey } from './memory'
-import { hasLongNumber, hasNumberWord } from './say'
 import {
   MAX_FOUND,
   type ModelAction,
@@ -23,15 +32,6 @@ import {
   type ToolInput,
   type ToolName,
 } from './schema'
-import {
-  checkChanges,
-  checkCount,
-  checkLog,
-  hasChanges,
-  isDecimalAmount,
-  isoDateProblem,
-  issueText,
-} from './validate'
 
 /** What a tool call comes to: a read to run, an action for the commit point, or a refusal the model is told. */
 export type Checked =

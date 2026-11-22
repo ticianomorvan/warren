@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { CATEGORIES, FACT_KINDS } from '../../src/agent/schema'
-import { ScheduleSchema } from '../../src/reminders/schedule'
+import { ScheduleSchema } from '../../src/domain/reminders/schedule'
 
 /**
  * A scenario is a conversation: a seeded ledger, then user turns, each with the Argentine "now" it

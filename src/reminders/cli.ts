@@ -1,9 +1,9 @@
 import { join } from 'node:path'
 import { reminderTemplate } from '../config'
 import { connect } from '../core/db'
+import { ScheduleSchema } from '../domain/reminders/schedule'
 import { createGraph } from '../whatsapp/graph'
 import { insertReminder, TEMPLATE_LANGUAGE } from './db'
-import { ScheduleSchema } from './schedule'
 
 /**
  * Dev scripts for the reminders (docs/reminders-spec.md, slice 6.1). Secrets come from the gitignored `.env`

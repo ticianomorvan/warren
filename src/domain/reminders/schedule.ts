@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { argentinaToday } from '../time'
+import { argentinaToday } from '../../time'
 
 /**
  * The schedule of a reminder: the useful subset of iCalendar's RRULE as typed fields (docs/reminders-spec.md,

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ScheduleSchema } from '../domain/reminders/schedule'
 import { fakeGraph, gate, post, setup, sql, until, useDatabase } from '../test-harness'
 import { GraphError } from '../whatsapp/graph'
 import { insertReminder, TEMPLATE_LANGUAGE } from './db'
-import { ScheduleSchema } from './schedule'
 import { createReminderSender, DAILY_ALERT, LATE_MS, PERSON_CAP, WINDOW_MS } from './send'
 
 vi.mock('../log', () => ({ log: vi.fn() }))

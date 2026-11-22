@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { nextOccurrence, ScheduleSchema } from '../domain/reminders/schedule'
 import { describeSchedule, instantInWords } from './describe'
-import { nextOccurrence, ScheduleSchema } from './schedule'
 
 type Input = Parameters<typeof ScheduleSchema.parse>[0]
 const at = (local: string) => new Date(`${local.replace(' ', 'T')}:00-03:00`)

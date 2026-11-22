@@ -1,6 +1,6 @@
+import { type Schedule, WEEKDAYS, type Weekday } from '../domain/reminders/schedule'
 import { addDays, argentinaToday, dayParts, weekdayName } from '../time'
 import type { ReminderRow } from './db'
-import { type Schedule, WEEKDAYS, type Weekday } from './schedule'
 
 /**
  * A schedule in Argentine Spanish, rendered by code from the typed fields, so the person sees what code understood and

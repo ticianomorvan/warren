@@ -1,5 +1,31 @@
-import { hasLongNumber } from './say'
-import { type Changes, MAX_MOVEMENTS, type Movement } from './schema'
+import { hasLongNumber } from './numbers'
+
+/** The most movements one message may log. */
+export const MAX_MOVEMENTS = 10
+
+/** The text fields of a stored movement as one comparison and one sentence know them. */
+type Words = { description?: string | null; payment?: string | null }
+/** What a logged movement holds that these rules check. */
+export type MovementValues = {
+  amount: string
+  date: string
+  description: string
+  payment?: string | null
+}
+/** The fields a correction may change. */
+export type ChangeValues = { [field: string]: string | undefined }
+
+/** Lowercase without accents: how code compares what a person wrote with what is stored. */
+export const normalizeText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+    .trim()
+
+/** A canonical decimal string, so "3500" and "3500.00" compare equal. */
+export const canonicalAmount = (amount: string) =>
+  amount.includes('.') ? amount.replace(/0+$/, '').replace(/\.$/, '') : amount
 
 /** A value the movement table cannot hold, or a rule the model broke. Never repaired: the model is told. */
 export type Issue = { path: string; message: string }
@@ -52,10 +78,7 @@ function checkValues(
  * four or more digits there ("café 12000", "visa 4509") would put a figure in the record that no
  * rule vouches for. Refused, never repaired: the model is told and sends it again.
  */
-function checkWords(
-  values: { description?: string | null; payment?: string | null },
-  path: string,
-): Issue[] {
+function checkWords(values: Words, path: string): Issue[] {
   return (['description', 'payment'] as const).flatMap((field) => {
     const value = values[field]
     return value != null && hasLongNumber(value)
@@ -70,7 +93,7 @@ function checkWords(
 }
 
 /** The movements of a `log_movements` call: 1 to 10, with values the table can hold. */
-export function checkLog(movements: Movement[], today: string): Issue[] {
+export function checkLog(movements: MovementValues[], today: string): Issue[] {
   if (movements.length === 0) return [{ path: 'movements', message: 'no movements' }]
   const issues: Issue[] = []
   movements.forEach((movement, i) => {
@@ -96,7 +119,7 @@ export function checkCount(count: number): Issue[] {
 }
 
 /** Changed values the movement table cannot hold. Same rules as a logged movement. */
-export function checkChanges(changes: Changes, today: string, path = 'changes'): Issue[] {
+export function checkChanges(changes: ChangeValues, today: string, path = 'changes'): Issue[] {
   const issues = [...checkValues(changes, today, path), ...checkWords(changes, path)]
   for (const field of ['description', 'payment'] as const) {
     if (changes[field] != null && changes[field].trim() === '') {
@@ -106,7 +129,7 @@ export function checkChanges(changes: Changes, today: string, path = 'changes'):
   return issues
 }
 
-export const hasChanges = (changes: Changes) => Object.values(changes).some((v) => v != null)
+export const hasChanges = (changes: ChangeValues) => Object.values(changes).some((v) => v != null)
 
 export const issueText = (issues: Issue[]) =>
   issues.map((i) => `${i.path}: ${i.message}`).join('; ')

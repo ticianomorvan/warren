@@ -1,5 +1,6 @@
 import type { Action, FactKind, Movement, RecentMovement } from './agent/schema'
 import type { Sql } from './core/db'
+import { nextOccurrence } from './domain/reminders/schedule'
 import {
   type FactRow,
   findLive,
@@ -19,7 +20,6 @@ import {
   type ReminderRow,
 } from './reminders/db'
 import { MAX_REMINDERS } from './reminders/guard'
-import { nextOccurrence } from './reminders/schedule'
 import { type UndoOutcome, undoLast } from './undo'
 
 /** The six calls that change what Warren keeps, whoever sends them: the agent over WhatsApp or a client over MCP. */

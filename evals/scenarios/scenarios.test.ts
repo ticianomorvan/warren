@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { SYSTEM_PROMPT } from '../../src/agent'
 import { logOf, movement } from '../../src/command-fixtures'
-import { nextOccurrence } from '../../src/reminders/schedule'
+import { nextOccurrence } from '../../src/domain/reminders/schedule'
 import { createTestDatabase, fakeModel } from '../../src/test-harness'
 import { Meter, runScenario } from './drive'
 import { isLive } from './grade'

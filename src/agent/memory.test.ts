@@ -1,16 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { unwritten } from '../core/numbers'
+import { holdsSecretValue, looksContact, looksSecret, sensitive } from '../core/secrets'
 import { checkCall, type Guard } from './calls'
-import {
-  checkFact,
-  holdsSecretValue,
-  looksContact,
-  looksSecret,
-  normalizeKey,
-  sameValue,
-  sensitive,
-  tidy,
-} from './memory'
-import { unwritten } from './say'
+import { checkFact, normalizeKey, sameValue, tidy } from './memory'
 
 const check = (kind: 'alias' | 'category' | 'note', key: string, value: string, message: string) =>
   checkFact({ kind, key, value }, message)

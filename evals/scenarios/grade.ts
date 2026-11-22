@@ -1,4 +1,4 @@
-import { canonical } from '../../src/agent/say'
+import { canonical } from '../../src/core/numbers'
 import { formatMoney } from '../../src/render'
 import type { NewMovementExpect, ReminderExpect, Turn } from './schema'
 

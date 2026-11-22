@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { ScheduleSchema } from '../reminders/schedule'
+import { ScheduleSchema } from '../domain/reminders/schedule'
 
 export const CATEGORIES = [
   'supermercado',

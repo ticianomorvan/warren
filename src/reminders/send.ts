@@ -1,11 +1,11 @@
 import type postgres from 'postgres'
 import type { Sql } from '../core/db'
+import { nextOccurrence, ScheduleSchema } from '../domain/reminders/schedule'
 import { log } from '../log'
 import { isAllowed } from '../process'
 import { argentinaTime, argentinaToday } from '../time'
 import { type Graph, GraphError } from '../whatsapp/graph'
 import { OUTSIDE_WINDOW, TEMPLATE_LANGUAGE } from './db'
-import { nextOccurrence, ScheduleSchema } from './schedule'
 
 /**
  * Meta's window is 24 h from the person's last message, and a status can only say it closed after the send. An hour

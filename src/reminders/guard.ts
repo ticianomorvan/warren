@@ -1,7 +1,8 @@
-import { holdsSecretValue, looksContact, tidy as tidyWords } from '../agent/memory'
-import { hasForeignDigit, unwritten } from '../agent/say'
+import { tidy as tidyWords } from '../agent/memory'
+import { hasForeignDigit, unwritten } from '../core/numbers'
+import { holdsSecretValue, looksContact } from '../core/secrets'
+import { nextOccurrence, normalizeSchedule, type Schedule } from '../domain/reminders/schedule'
 import { tidyWhat } from './db'
-import { nextOccurrence, normalizeSchedule, type Schedule } from './schedule'
 
 /** The most live reminders one account holds. */
 export const MAX_REMINDERS = 20
