@@ -101,6 +101,7 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
   const mcp = createMcpEndpoint({
     sql,
     door: createDoor({ auth, sql, publicUrl, allowed: o.allowed }),
+    origins: [new URL(publicUrl).origin, 'https://claude.ai', 'https://claude.com'],
     ...(o.now ? { now: o.now } : {}),
   })
 

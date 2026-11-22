@@ -21,7 +21,13 @@ const errorName = (error: unknown) => (error instanceof Error ? error.name : 'un
  * `POST /mcp` (docs/mcp-spec.md, Design 5): the door first, then a stateless MCP server, a new one for each request, whose
  * tools can only reach the account the door named. A failure anywhere answers 500 and is logged by name; none reaches the process.
  */
-export function createMcpEndpoint(o: { sql: Sql; door: Door; now?: () => Date }) {
+export function createMcpEndpoint(o: {
+  sql: Sql
+  door: Door
+  /** The origins a browser page may call from (an `Origin` header, when there is one): ours, and the clients'. */
+  origins: string[]
+  now?: () => Date
+}) {
   const now = o.now ?? (() => new Date())
   const handler = createMcpHandler(
     (ctx) => {
@@ -35,7 +41,6 @@ export function createMcpEndpoint(o: { sql: Sql; door: Door; now?: () => Date })
       registerReadTools(server, {
         sql: o.sql,
         accountId,
-        scopes: new Set(info?.scopes ?? []),
         now,
       })
       return server
@@ -52,6 +57,12 @@ export function createMcpEndpoint(o: { sql: Sql; door: Door; now?: () => Date })
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      // A browser page of anyone else's site must not reach this with a token it holds: only ours and the known clients' origins.
+      const origin = req.headers.origin
+      if (origin !== undefined && !o.origins.includes(origin)) {
+        res.writeHead(403, { 'content-type': 'application/json' })
+        return void res.end(JSON.stringify({ error: 'origin_not_allowed' }))
+      }
       const admitted = await o.door(req)
       if (!admitted.ok) return await sendWeb(res, admitted.response)
       ;(req as IncomingMessage & { auth?: unknown }).auth = admitted.authInfo

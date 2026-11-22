@@ -118,15 +118,11 @@ export type FactCheck =
   | { ok: false; refused: 'secret' | 'contact' }
 
 /**
- * The rules of a fact before it is stored, none of them the model's to waive:
- * - it is a secret (a card or CBU number, a password, a DNI) or contact data (an email, a phone): refused, and the person is told so;
- * - the key is 1 to 4 short words and the value fits, and a `category` value is one of the categories;
- * - the person said it: the key (an alias also accepts the value) are words of their message, so a model
- *   cannot remember something it only inferred;
- * - every number in it is a number the person wrote (`cobro el 5` keeps its 5; a model's 4509 is refused).
- * `message` is the person's own message, or what was heard in a voice note.
+ * The value rules of a fact, whoever sends it: a secret (a card or CBU number, a password, a DNI) or contact data (an email,
+ * a phone) is refused and the sender told so; the key is 1 to 4 short words, the value fits, a `category` value is one of the
+ * categories. `messageHasSecret`: the message the fact came with held a secret (a conversation's). Nothing about whose words they are.
  */
-export function checkFact(input: FactInput, message: string): FactCheck {
+export function checkFactValues(input: FactInput, messageHasSecret = false): FactCheck {
   const key = normalizeKey(input.key)
   const value = tidy(input.value)
   const stored = `${key} ${value}`
@@ -135,7 +131,7 @@ export function checkFact(input: FactInput, message: string): FactCheck {
   // A phone number with its country code is as long as a card number: it is contact data, not a secret.
   const contact = looksContact(raw)
   if (contact && /\+\d/.test(raw)) return { ok: false, refused: 'contact' }
-  if (looksSecret(raw) || sensitive(message)) return { ok: false, refused: 'secret' }
+  if (looksSecret(raw) || messageHasSecret) return { ok: false, refused: 'secret' }
   if (contact) return { ok: false, refused: 'contact' }
   const why = (message: string): FactCheck => ({ ok: false, message })
 
@@ -150,6 +146,24 @@ export function checkFact(input: FactInput, message: string): FactCheck {
   if (input.kind === 'category' && !(CATEGORIES as readonly string[]).includes(value)) {
     return why(`for a category fact the value is exactly one of: ${CATEGORIES.join(', ')}`)
   }
+  return { ok: true, fact: { kind: input.kind, key, value } }
+}
+
+/**
+ * The rules of a fact before it is stored, none of them the model's to waive:
+ * - it is a secret (a card or CBU number, a password, a DNI) or contact data (an email, a phone): refused, and the person is told so;
+ * - the key is 1 to 4 short words and the value fits, and a `category` value is one of the categories;
+ * - the person said it: the key (an alias also accepts the value) are words of their message, so a model
+ *   cannot remember something it only inferred;
+ * - every number in it is a number the person wrote (`cobro el 5` keeps its 5; a model's 4509 is refused).
+ * `message` is the person's own message, or what was heard in a voice note.
+ */
+export function checkFact(input: FactInput, message: string): FactCheck {
+  const checked = checkFactValues(input, sensitive(message))
+  if (!checked.ok) return checked
+  const { key, value } = checked.fact
+  const stored = `${key} ${value}`
+  const why = (message: string): FactCheck => ({ ok: false, message })
   // The person's own words: the key, or for an alias either side (the other may be in your terms: "la visa" is "crédito visa").
   const said = normalizeKey(message)
   const inMessage = (words: string) => words !== '' && said.includes(words)

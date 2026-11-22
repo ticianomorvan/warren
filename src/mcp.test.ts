@@ -13,7 +13,7 @@ import {
   WA_B,
   withClaude,
 } from './auth-test-kit'
-import { decodeCursor, encodeCursor, outputSchemas, registerReadTools } from './mcp/tools'
+import { decodeCursor, encodeCursor, outputSchemas } from './mcp/tools'
 import { sql, useDatabase } from './test-harness'
 
 /**
@@ -128,6 +128,7 @@ interface Row {
   state?: 'live' | 'deleted' | 'replaced'
 }
 
+let seeds = 0
 async function seed(
   wa: string,
   rows: Row[],
@@ -136,7 +137,7 @@ async function seed(
   const account = await accountOf(wa)
   const [inbound] = await sql`
     INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status)
-    VALUES (${`seed.${wa}`}, ${wa}, 'text', 'seed', '{}'::jsonb, 'done') RETURNING id`
+    VALUES (${`seed.${wa}.${++seeds}`}, ${wa}, 'text', 'seed', '{}'::jsonb, 'done') RETURNING id`
   const ids: number[] = []
   for (const [position, r] of rows.entries()) {
     const [m] = await sql`
@@ -262,17 +263,15 @@ async function forge(
     await sql`SELECT id, "privateKey" AS private FROM auth_jwks ORDER BY "createdAt" DESC LIMIT 1`
   const secret = (await (app.auth as NonNullable<typeof app.auth>).$context).secretConfig
   const jwk = JSON.parse(await symmetricDecrypt({ key: secret, data: JSON.parse(key?.private) }))
-  const now = Math.floor(NOW.getTime() / 1000)
-  const now2 = Math.floor(Date.now() / 1000)
-  void now
+  const now = Math.floor(Date.now() / 1000)
   const payload: Record<string, unknown> = {
     iss: app.base,
     aud: mcpUrl(app.base),
     sub: over.sub ?? a.userId,
     azp: CLIENT_ID,
     scope: 'ledger:read ledger:write',
-    iat: now2,
-    exp: now2 + 900,
+    iat: now,
+    exp: now + 900,
     ...over.claims,
   }
   for (const k of over.dropClaims ?? []) delete payload[k]
@@ -345,12 +344,21 @@ describe('the door', () => {
     expect((await rpc(session.token, 'tools/list')).status).toBe(401)
   })
 
-  it('a token that was not given ledger:read is told insufficient_scope with the challenge: 403', async () => {
-    const r = await rpc(await forge({ claims: { scope: 'ledger:write' } }), 'tools/list')
-    expect(r.status).toBe(403)
-    const challenge = r.headers.get('www-authenticate') ?? ''
-    expect(challenge).toContain('insufficient_scope')
-    expect(challenge).toContain('ledger:read')
+  it("the door only authenticates: scope is each tool's, answered 403 insufficient_scope with the challenge naming the scope", async () => {
+    const writeOnly = await forge({ claims: { scope: 'ledger:write' } })
+    // Discovery needs no scope.
+    expect((await rpc(writeOnly, 'tools/list')).status).toBe(200)
+    for (const name of ['warren_find_movements', 'warren_summarize', 'warren_list_facts']) {
+      const r = await rpc(writeOnly, 'tools/call', { name, arguments: {} })
+      expect(r.status, name).toBe(403)
+      const challenge = r.headers.get('www-authenticate') ?? ''
+      expect(challenge, name).toContain('error="insufficient_scope"')
+      expect(challenge, name).toContain('scope="ledger:read"')
+      expect(r.body).toMatchObject({ error: 'insufficient_scope' })
+    }
+    // Read alone is enough for the read tools.
+    const readOnly = await forge({ claims: { scope: 'ledger:read' } })
+    expect(ok(await call(readOnly, 'warren_list_facts'), 'facts').total).toBe(A_FACTS.length)
   })
 
   it('an account whose WhatsApp id is no longer allowed is refused, the others are not', async () => {
@@ -387,6 +395,30 @@ describe('the door', () => {
       await sql`ALTER TABLE auth_user_away RENAME TO auth_user`
     }
     expect((await rpc(a.access_token, 'tools/list')).status).toBe(200)
+  })
+
+  it('the signing keys unreadable (auth_jwks) is a 503 too, not a 500 and not a 401', async () => {
+    await sql`ALTER TABLE auth_jwks RENAME TO auth_jwks_away`
+    try {
+      const r = await rpc(a.access_token, 'tools/list')
+      expect(r.status).toBe(503)
+      expect(r.headers.get('retry-after')).toBe('5')
+      expect(r.headers.get('www-authenticate')).toBeNull()
+    } finally {
+      await sql`ALTER TABLE auth_jwks_away RENAME TO auth_jwks`
+    }
+    expect((await rpc(a.access_token, 'tools/list')).status).toBe(200)
+  })
+
+  it('a browser page of another site cannot call it, even with a token; ours and claude.ai/claude.com can', async () => {
+    const withOrigin = (origin: string) => rpc(a.access_token, 'tools/list', {}, { origin })
+    expect((await withOrigin('https://evil.example')).status).toBe(403)
+    expect((await withOrigin('null')).status).toBe(403)
+    expect((await withOrigin('http://localhost:3000')).status).toBe(403)
+    for (const ok of [app.base, 'https://claude.ai', 'https://claude.com']) {
+      expect((await withOrigin(ok)).status, ok).toBe(200)
+    }
+    expect((await rpc(a.access_token, 'tools/list')).status).toBe(200) // no Origin: not a browser
   })
 
   it('a malformed body is an answer, not a crash', async () => {
@@ -547,20 +579,32 @@ describe('warren_find_movements', () => {
   it('refuses with the reason the agent is given, as an error result and not a protocol error', async () => {
     const bad = async (args: Record<string, unknown>) =>
       refusal(await call(a.access_token, 'warren_find_movements', args))
-    expect(await bad({ from: '2026-13-01' })).toContain('dates are yyyy-mm-dd')
+    expect(await bad({ from: '2026-13-01' })).toContain('date does not exist')
+    expect(await bad({ to: '2026-02-30' })).toContain('to "2026-02-30": date does not exist')
+    expect(await bad({ from: 'ayer' })).toContain('date is not yyyy-mm-dd')
     expect(await bad({ amount: 'mucho' })).toContain('amount is not a decimal string')
     expect(await bad({ cursor: 'AAAA' })).toContain('Invalid cursor')
-    const r = await rpc(a.access_token, 'tools/call', {
-      name: 'warren_find_movements',
-      arguments: { limit: 500 },
-    })
-    expect(r.body?.error ?? r.body?.result?.isError).toBeTruthy() // over the page cap: refused by the schema
+    for (const arguments_ of [
+      { limit: 500 },
+      { text: 'x'.repeat(201) },
+      { payment: 'x'.repeat(201) },
+    ]) {
+      const r = await rpc(a.access_token, 'tools/call', {
+        name: 'warren_find_movements',
+        arguments: arguments_,
+      })
+      expect(
+        r.body?.error ?? r.body?.result?.isError,
+        JSON.stringify(arguments_).slice(0, 40),
+      ).toBeTruthy() // over a cap: refused by the schema
+    }
   })
 
   it('a page of 50 is far under what a client takes', async () => {
     const out = await call(a.access_token, 'warren_find_movements', { limit: 50 })
-    // About 5k tokens against Claude Code's 25k: far under, so a page of 50 never needs trimming.
-    expect(JSON.stringify(out).length).toBeLessThan(25_000) // a tenth of the 25k-token limit, in characters
+    // The result carries the data twice (structuredContent and its text), and `out` is both: about 16k characters, 4 to 5k
+    // tokens against Claude Code's 25k, so a page of 50 never needs trimming.
+    expect(JSON.stringify(out).length).toBeLessThan(25_000)
   })
 
   it('cursors are ours alone', () => {
@@ -690,6 +734,72 @@ describe('warren_summarize', () => {
     ).toMatch(/range/)
   })
 
+  it('keeps the latest buckets of each direction and currency, as the text does: a year by day', async () => {
+    // Every day of the year so far: spending (ARS) and, on five of them, income (ARS), and one in dollars.
+    const days: string[] = []
+    for (
+      let d = new Date('2026-01-01T00:00:00Z');
+      d <= new Date('2026-11-18T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + 1)
+    ) {
+      days.push(d.toISOString().slice(0, 10))
+    }
+    expect(days).toHaveLength(322)
+    const incomeDays = [0, 40, 80, 120, 160].map((i) => days[i] ?? '')
+    await seed(WA_A, [
+      ...days.map((on): Row => ({ on, amount: '100', description: 'diario', category: 'otros' })),
+      ...incomeDays.map(
+        (on): Row => ({ on, amount: '5000', direction: 'in', description: 'ingreso' }),
+      ),
+      { on: '2026-03-03', amount: '50', currency: 'USD', description: 'dolares' },
+    ])
+    const out = ok(await summarize(period('this_year', { group_by: 'day' })), 'summarize')
+    const groups = (direction: string, currency: string) =>
+      out.groups.filter((g) => g.direction === direction && g.currency === currency)
+    // Spending in pesos is on 322 days: the latest 31 are kept, oldest first, and the rest are counted.
+    const spent = groups('out', 'ARS')
+    expect(spent.map((g) => g.key)).toEqual(days.slice(-31))
+    expect(out.groups_omitted).toBe(days.length - 31)
+    // Income and dollars are not crowded out by them.
+    expect(groups('in', 'ARS').map((g) => g.key)).toEqual(incomeDays)
+    expect(groups('out', 'USD').map((g) => g.key)).toEqual(['2026-03-03'])
+    expect(groups('in', 'USD').map((g) => g.key)).toEqual(['2026-10-15'])
+    // The two halves agree: every bucket listed is in the text, and the first day of the year is in neither.
+    for (const g of spent) expect(out.summary, g.label).toContain(g.label)
+    expect(out.summary).toContain('… y 291 anteriores')
+    expect(out.groups.some((g) => g.key === '2026-01-01' && g.direction === 'out')).toBe(false)
+    // The totals are over everything, whatever is listed.
+    expect(
+      out.totals.find((t) => t.direction === 'out' && t.currency === 'ARS')?.count,
+    ).toBeGreaterThan(322)
+  })
+
+  it('a grouping that is not by time keeps the biggest, per direction and currency', async () => {
+    const payments = Array.from(
+      { length: 130 },
+      (_, i): Row => ({
+        on: '2026-11-10',
+        amount: String(1000 + i),
+        description: 'pago',
+        payment: `medio ${String(i).padStart(3, '0')}`,
+      }),
+    )
+    await seed(WA_A, [
+      ...payments,
+      { on: '2026-11-11', amount: '10', direction: 'in', description: 'ingreso', payment: 'banco' },
+    ])
+    const out = ok(await summarize(period('this_month', { group_by: 'payment' })), 'summarize')
+    const spent = out.groups.filter((g) => g.direction === 'out')
+    expect(spent).toHaveLength(100)
+    expect(out.groups.filter((g) => g.direction === 'in')).toHaveLength(1)
+    expect(out.groups_omitted).toBeGreaterThan(29)
+    // Biggest first: the first group is the dearest payment.
+    expect(cents(spent[0]?.amount ?? '0') >= cents(spent[99]?.amount ?? '0')).toBe(true)
+    // (November's cash spending is the dearest: 18180.)
+    expect(spent[0]?.amount).toBe('18180')
+    expect(spent[1]?.amount).toBe('1129')
+  })
+
   it("reads today as the Argentine day, not the server's", async () => {
     const out = ok(await summarize(period('today')), 'summarize')
     expect(out.from).toBe('2026-11-18')
@@ -721,29 +831,6 @@ describe('warren_list_facts', () => {
     )
   })
 })
-
-describe("the tools' own scope check", () => {
-  it('each read tool refuses a caller without ledger:read, whatever the door let through', async () => {
-    const handlers = new Map<string, (input: unknown) => Promise<ToolResult>>()
-    registerReadTools(
-      {
-        registerTool: (name: string, _config: unknown, handler: never) =>
-          handlers.set(name, handler),
-      } as never,
-      { sql, accountId: await accountOf(WA_A), scopes: new Set(['ledger:write']), now: () => NOW },
-    )
-    expect([...handlers.keys()].sort()).toEqual([
-      'warren_find_movements',
-      'warren_list_facts',
-      'warren_summarize',
-    ])
-    for (const [name, handler] of handlers) {
-      expect(refusal(await handler({ limit: 5 })), name).toContain('"ledger:read" scope')
-    }
-  })
-})
-
-// ---- Two people
 
 describe('two people who share a server', () => {
   it("B sees only B's movements, summaries and facts; A only A's", async () => {

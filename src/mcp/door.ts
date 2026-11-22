@@ -8,7 +8,6 @@ import { type Auth, mcpUrl, SCOPES } from '../auth/config'
 import type { Sql } from '../db'
 import { log } from '../log'
 import { isAllowed } from '../process'
-import { READ_SCOPE } from './tools'
 
 /** What the door says about a request: who it is, or the answer to send instead. */
 export type Admitted =
@@ -26,6 +25,15 @@ export interface DoorOptions {
   allowed: string[]
 }
 
+/** The database cannot answer: try again, do not sign in again. */
+const unavailable = (): Admitted => ({
+  ok: false,
+  response: Response.json(
+    { error: 'unavailable' },
+    { status: 503, headers: { 'retry-after': '5' } },
+  ),
+})
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The `typ` of a token's header, lower case, or '' when there is no readable one. */
@@ -42,12 +50,15 @@ function tokenType(authorization: string | null): string {
 }
 
 /**
- * The door of `/mcp` (docs/mcp-spec.md, Design 5), run on every request before anything else: the token's signature, issuer,
- * audience (`${publicUrl}/mcp`), expiry, `azp` and `ledger:read` are checked in-process by better-auth's `requireMcpAuth`; then
- * its type (`at+jwt`: a session JWT or an ID token is not an access token), and that its `sub` is a user that stands for an
- * account whose WhatsApp id is still allowed. Anything else is the same 401 with the `WWW-Authenticate` challenge, whatever
- * the reason, so a token teaches nothing; a database that cannot answer is a 503, not a reason to sign in again. The account
- * id leaves here, in `authInfo.extra`, and nowhere else: no tool takes it from its input. Tokens are never logged.
+ * The door of `/mcp` (docs/mcp-spec.md, Design 5), run on every request before anything else, and only authentication: who is
+ * asking, never what they may do (each tool asks for its own scope). better-auth's `requireMcpAuth` checks the token's
+ * signature, issuer, audience (`${publicUrl}/mcp`), expiry and `azp` in-process; its own DPoP handling stays on and refuses
+ * what it cannot prove (this server issues bearer tokens only, so a client has none). Then ours: the token's type is `at+jwt`
+ * (a session JWT or an ID token is not an access token; `requireMcpAuth` does not offer jose's `typ` option, so the header is read
+ * here), and its `sub` is a user that stands for an account whose WhatsApp id is still allowed. Our own refusals are one 401 with
+ * the `WWW-Authenticate` challenge whatever the reason, so a token teaches nothing; better-auth's carry their own error
+ * description, which tells a client what it already knows. A database that cannot answer is a 503, not a reason to sign in again.
+ * The account id leaves here, in `authInfo.extra`, and nowhere else: no tool takes it from its input. Tokens are never logged.
  */
 export function createDoor(o: DoorOptions): Door {
   const resource = mcpUrl(o.publicUrl)
@@ -96,13 +107,7 @@ export function createDoor(o: DoorOptions): Door {
         { error: error instanceof Error ? error.name : 'unknown' },
         'error',
       )
-      return {
-        ok: false,
-        response: Response.json(
-          { error: 'unavailable' },
-          { status: 503, headers: { 'retry-after': '5' } },
-        ),
-      }
+      return unavailable()
     }
     if (!person) return refused(request, 'unknown user')
     if (!isAllowed(o.allowed, person.wa_id)) return refused(request, 'not allowed')
@@ -125,20 +130,27 @@ export function createDoor(o: DoorOptions): Door {
       headers: fromNodeHeaders(req.headers),
     })
     let admitted: Admitted | undefined
-    // The cast: `requireMcpAuth`'s parameter type is a weak shape that a renamed `verification` model does not satisfy.
-    const response = await requireMcpAuth(
-      o.auth as unknown as Parameters<typeof requireMcpAuth>[0],
-      async (verified, claims) => {
-        admitted = await admit(verified, claims)
-        return new Response(null, { status: 204 })
-      },
-      {
-        resource,
-        issuer: o.publicUrl,
-        requiredScopes: [READ_SCOPE],
-        challengeScopes,
-      },
-    )(request)
+    let response: Response
+    try {
+      // The cast: `requireMcpAuth`'s parameter type is a weak shape that a renamed `verification` model does not satisfy.
+      response = await requireMcpAuth(
+        o.auth as unknown as Parameters<typeof requireMcpAuth>[0],
+        async (verified, claims) => {
+          admitted = await admit(verified, claims)
+          return new Response(null, { status: 204 })
+        },
+        { resource, issuer: o.publicUrl, challengeScopes },
+      )(request)
+    } catch (error) {
+      // A token that fails verification is answered, not thrown: what is thrown here is reading the signing keys (`auth_jwks`)
+      // or the replay store, which is the database. Not the client's fault, so not a reason to sign in again.
+      log(
+        'mcp_door_unavailable',
+        { error: error instanceof Error ? error.name : 'unknown' },
+        'error',
+      )
+      return unavailable()
+    }
     return admitted ?? { ok: false, response }
   }
 }

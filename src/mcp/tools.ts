@@ -1,10 +1,11 @@
-import type { McpServer } from '@modelcontextprotocol/server'
+import { type McpServer, requireScopes } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { checkCall } from '../agent/calls'
+import { checkInput } from '../agent/calls'
 import {
   CATEGORIES,
   FACT_KINDS,
   type GROUPS,
+  isTimeGroup,
   PERIODS,
   RangeSchema,
   TOOL_INPUTS,
@@ -14,7 +15,7 @@ import { allLiveFacts } from '../facts'
 import { findMovements, type GroupTotal, type MovementRow, type QueryTotal } from '../ledger'
 import { log } from '../log'
 import { formatMoney } from '../render'
-import { groupLabel, rangeLabel, type Side } from '../render-summary'
+import { groupLabel, MAX_BUCKETS, rangeLabel, type Side } from '../render-summary'
 import { runSummary } from '../run-summary'
 import { change, formatPercent } from '../summary'
 import { argentinaToday } from '../time'
@@ -22,10 +23,18 @@ import { argentinaToday } from '../time'
 /** The scope each kind of tool needs (`src/auth/config.ts` has the full list). */
 export const READ_SCOPE = 'ledger:read'
 
+/** The longest a free-text input may be (a word or two is what they hold), a day, an amount: a client cannot send a book. */
+const MAX_TEXT = 200
+const MAX_DAY = 20
+const MAX_AMOUNT = 20
+
 /** A page of `warren_find_movements`: 25 rows are about 3k tokens, far under what a client takes in one result. */
 export const DEFAULT_PAGE = 25
 export const MAX_PAGE = 50
-/** Groups listed per range in `warren_summarize`'s structured result; the rest are counted (the text has the full wording). */
+/**
+ * Groups listed per direction and currency in `warren_summarize`'s structured result, for a grouping that is not by time (the
+ * biggest first, as the database orders them); a grouping by day, week or month keeps the latest `MAX_BUCKETS`, as the text does.
+ */
 export const MAX_GROUPS_LISTED = 100
 
 /** Closed (`strict`) for the test that holds the real output to it; open in production, so a field added later breaks no client. */
@@ -173,8 +182,29 @@ const presentTotal = (t: QueryTotal) => ({
   display: formatMoney(t.total, t.currency),
 })
 
+/**
+ * The groups of a range that are listed, and how many are left out. Each direction and currency has its own: one with many
+ * groups never crowds another out. By time the latest buckets are kept (what `renderSummary` shows); otherwise the biggest.
+ */
+export function listGroups(groups: GroupTotal[], by: (typeof GROUPS)[number]) {
+  const perPair = new Map<string, GroupTotal[]>()
+  for (const g of groups) {
+    const pair = `${g.direction}:${g.currency}`
+    perPair.set(pair, [...(perPair.get(pair) ?? []), g])
+  }
+  const listed: GroupTotal[] = []
+  for (const all of perPair.values()) {
+    listed.push(
+      ...(isTimeGroup(by)
+        ? all.slice(-MAX_BUCKETS) // oldest first: the latest are the last
+        : all.slice(0, MAX_GROUPS_LISTED)),
+    )
+  }
+  return { listed, omitted: groups.length - listed.length }
+}
+
 const presentSide = (s: Side, by: (typeof GROUPS)[number], today: string) => {
-  const listed = s.groups.slice(0, MAX_GROUPS_LISTED)
+  const { listed, omitted } = listGroups(s.groups, by)
   return {
     from: s.range.from,
     to: s.range.to,
@@ -185,7 +215,7 @@ const presentSide = (s: Side, by: (typeof GROUPS)[number], today: string) => {
       label: groupLabel(by, g, today),
       ...presentTotal(g),
     })),
-    groups_omitted: s.groups.length - listed.length,
+    groups_omitted: omitted,
   }
 }
 
@@ -213,18 +243,26 @@ function changes(now: Side, before: Side) {
 
 const findBase = TOOL_INPUTS.find_movements()
 const findInput = findBase.omit({ limit: true }).extend({
-  text: findBase.shape.text.describe(
-    'Words of the description or the category, all of them must match (accents and case ignored), e.g. "café" or "nafta ypf".',
-  ),
-  from: findBase.shape.from.describe('First day, yyyy-mm-dd (inclusive).'),
-  to: findBase.shape.to.describe('Last day, yyyy-mm-dd (inclusive).'),
+  text: z
+    .string()
+    .max(MAX_TEXT)
+    .optional()
+    .describe(
+      'Words of the description or the category, all of them must match (accents and case ignored), e.g. "café" or "nafta ypf".',
+    ),
+  from: z.string().max(MAX_DAY).optional().describe('First day, yyyy-mm-dd (inclusive).'),
+  to: z.string().max(MAX_DAY).optional().describe('Last day, yyyy-mm-dd (inclusive).'),
   category: findBase.shape.category.describe('Only this category.'),
-  payment: findBase.shape.payment.describe(
-    'Part of how it was paid, e.g. "visa" or "efectivo" (accents and case ignored).',
-  ),
-  amount: findBase.shape.amount.describe(
-    'Exactly this amount, a decimal string such as "3500" or "1500.50".',
-  ),
+  payment: z
+    .string()
+    .max(MAX_TEXT)
+    .optional()
+    .describe('Part of how it was paid, e.g. "visa" or "efectivo" (accents and case ignored).'),
+  amount: z
+    .string()
+    .max(MAX_AMOUNT)
+    .optional()
+    .describe('Exactly this amount, a decimal string such as "3500" or "1500.50".'),
   limit: z
     .number()
     .int()
@@ -232,7 +270,7 @@ const findInput = findBase.omit({ limit: true }).extend({
     .max(MAX_PAGE)
     .default(DEFAULT_PAGE)
     .describe(`Page size, 1 to ${MAX_PAGE}.`),
-  cursor: z.string().optional().describe('The `next_cursor` of the previous page.'),
+  cursor: z.string().max(32).optional().describe('The `next_cursor` of the previous page.'),
 })
 
 const rangeBase = RangeSchema()
@@ -247,8 +285,16 @@ const summarizeInput = summarizeBase.omit({ text: true }).extend({
       year: rangeBase.shape.year.describe(
         'period "month" (0 = the latest such month not in the future) or "year": the year.',
       ),
-      from: rangeBase.shape.from.describe('period "dates": yyyy-mm-dd, mm-dd or dd.'),
-      to: rangeBase.shape.to.describe('period "dates": same forms; "" is the same day as `from`.'),
+      from: z
+        .string()
+        .max(MAX_DAY)
+        .default('')
+        .describe('period "dates": yyyy-mm-dd, mm-dd or dd.'),
+      to: z
+        .string()
+        .max(MAX_DAY)
+        .default('')
+        .describe('period "dates": same forms; "" is the same day as `from`.'),
     })
     .describe('The days to total, in Argentine days.'),
   group_by: summarizeBase.shape.group_by.describe(
@@ -257,33 +303,39 @@ const summarizeInput = summarizeBase.omit({ text: true }).extend({
   compare_to: summarizeBase.shape.compare_to.describe(
     '"previous" compares with the range just before (cut to the same stretch while the period is running), "range" with the range in `other`, "none" does not compare.',
   ),
-  other: summarizeBase.shape.other.describe(
-    'Only with compare_to "range": the second range as text, e.g. "last_month", "month:10", "month:10:2025", "year:2025" or "dates:11-01..11-15".',
-  ),
+  other: z
+    .string()
+    .max(MAX_TEXT)
+    .default('')
+    .describe(
+      'Only with compare_to "range": the second range as text, e.g. "last_month", "month:10", "month:10:2025", "year:2025" or "dates:11-01..11-15".',
+    ),
   direction: summarizeBase.shape.direction.describe(
     '"out" for spending, "in" for income, null for both.',
   ),
   category: summarizeBase.shape.category.describe('Only this category, or null.'),
-  payment: summarizeBase.shape.payment.describe('Part of how it was paid (e.g. "visa"), or null.'),
-  description: summarizeBase.shape.description.describe(
-    'Words of the description to total or count, e.g. "café" for "how many coffees"; no digits. Null for all.',
-  ),
+  payment: z
+    .string()
+    .max(MAX_TEXT)
+    .nullable()
+    .default(null)
+    .describe('Part of how it was paid (e.g. "visa"), or null.'),
+  description: z
+    .string()
+    .max(MAX_TEXT)
+    .nullable()
+    .default(null)
+    .describe(
+      'Words of the description to total or count, e.g. "café" for "how many coffees"; no digits. Null for all.',
+    ),
 })
 
 export interface ToolContext {
   sql: Sql
   /** The person: from the verified token, never from an argument. */
   accountId: number
-  /** What the token may do. */
-  scopes: ReadonlySet<string>
   now: () => Date
 }
-
-/** The refusal of a tool whose scope the token lacks. The door already refuses a token with no `ledger:read`; this is the tool's own check. */
-const lacks = (c: ToolContext, scope: string) =>
-  c.scopes.has(scope)
-    ? null
-    : fail(`This token does not carry the "${scope}" scope. Connect Warren again and allow it.`)
 
 /** One failed read, told to the client without detail and to the log without data. */
 function unavailable(tool: string, error: unknown) {
@@ -309,23 +361,19 @@ export function registerReadTools(server: McpServer, c: ToolContext) {
         QUOTE,
       inputSchema: findInput,
       outputSchema: OUTPUTS.find,
+      scopeChallenge: requireScopes(READ_SCOPE),
       annotations: { title: 'Find movements', ...READ_ONLY },
     },
     async (input) => {
-      const refused = lacks(c, READ_SCOPE)
-      if (refused) return refused
-      // The agent's own guards: amounts are decimal strings, dates are real days.
-      const checked = checkCall(
-        'find_movements',
-        { ...input, limit: undefined, cursor: undefined },
-        { today: argentinaToday(c.now()), seen: new Set(), logged: 0 },
-      )
+      // The agent's own value guards, on the filter alone: a page's size and cursor are this tool's, not the agent's.
+      const { limit, cursor, ...filter } = input
+      const checked = checkInput('find_movements', filter, argentinaToday(c.now()))
       if (checked.kind !== 'read') {
         return fail(checked.kind === 'rejected' ? checked.message : 'invalid input')
       }
       let beforeId: number | undefined
-      if (input.cursor !== undefined) {
-        const id = decodeCursor(input.cursor)
+      if (cursor !== undefined) {
+        const id = decodeCursor(cursor)
         if (id === null) return fail('Invalid cursor. Use the `next_cursor` of a previous result.')
         beforeId = id
       }
@@ -334,14 +382,14 @@ export function registerReadTools(server: McpServer, c: ToolContext) {
         const rows = await findMovements(
           c.sql,
           c.accountId,
-          { ...checked.filter, limit: input.limit + 1 },
-          { max: MAX_PAGE + 1, ...(beforeId ? { beforeId } : {}) },
+          { ...checked.filter, limit: limit + 1 },
+          beforeId ? { beforeId } : {},
         )
-        const page = rows.slice(0, input.limit)
+        const page = rows.slice(0, limit)
         const last = page.at(-1)
         return done({
           movements: page.map(presentMovement),
-          next_cursor: rows.length > input.limit && last ? encodeCursor(last.id) : null,
+          next_cursor: rows.length > limit && last ? encodeCursor(last.id) : null,
         })
       } catch (error) {
         return unavailable('warren_find_movements', error)
@@ -362,15 +410,14 @@ export function registerReadTools(server: McpServer, c: ToolContext) {
         QUOTE,
       inputSchema: summarizeInput,
       outputSchema: OUTPUTS.summarize,
+      scopeChallenge: requireScopes(READ_SCOPE),
       annotations: { title: 'Summarize spending and income', ...READ_ONLY },
     },
     async (input) => {
-      const refused = lacks(c, READ_SCOPE)
-      if (refused) return refused
       const today = argentinaToday(c.now())
-      // The agent's own guards, with the `text` field that is WhatsApp's left empty.
+      // The agent's own value guards, with the `text` field that is WhatsApp's left empty.
       const q = { ...input, text: null }
-      const checked = checkCall('summarize', q, { today, seen: new Set(), logged: 0 })
+      const checked = checkInput('summarize', q, today)
       if (checked.kind === 'rejected') return fail(checked.message)
       if (checked.kind !== 'action' || checked.action.tool !== 'summarize') {
         return fail('invalid input')
@@ -402,11 +449,10 @@ export function registerReadTools(server: McpServer, c: ToolContext) {
         '("alias", "category" or "note"), key and value. Read-only; these never change a movement.',
       inputSchema: z.object({}),
       outputSchema: OUTPUTS.facts,
+      scopeChallenge: requireScopes(READ_SCOPE),
       annotations: { title: 'List what Warren remembers', ...READ_ONLY },
     },
     async () => {
-      const refused = lacks(c, READ_SCOPE)
-      if (refused) return refused
       try {
         const facts = await allLiveFacts(c.sql, c.accountId)
         return done({

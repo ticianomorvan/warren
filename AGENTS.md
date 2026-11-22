@@ -48,8 +48,8 @@ src/auth/     The OAuth server and WhatsApp sign-in for MCP (slice 5.1, `docs/mc
               for an account that confirmed on WhatsApp), link.ts (`link_request` SQL: the page's side, and `askLink`/`confirmLink`/`declineLink` that run in the commit transaction), routes.ts
               (/sign-in, /sign-in/status, /oauth/consent, /api/auth/*, /.well-known/*, /mcp's 401 challenge; only on PUBLIC_URL's host), pages.ts (the two HTML pages),
               print-schema.ts (what better-auth wants as SQL; `012_auth.sql` is that, `auth_*`)
-src/mcp/      Warren over MCP (slice 5.2, `docs/mcp-spec.md`): door.ts (every `/mcp` request: the token's signature, issuer, audience `${PUBLIC_URL}/mcp`, expiry, `azp`, `ledger:read`, type `at+jwt`, then
-              `sub` → `auth_user` → account → its WhatsApp id still allowed; else the same 401 challenge, 503 when the database is down), endpoint.ts (`createMcpHandler`, a new stateless `McpServer` per request,
+src/mcp/      Warren over MCP (slice 5.2, `docs/mcp-spec.md`): door.ts (every `/mcp` request: the token's signature, issuer, audience `${PUBLIC_URL}/mcp`, expiry, `azp`, type `at+jwt`, then
+              `sub` → `auth_user` → account → its WhatsApp id still allowed; else a 401 challenge, 503 when the database is down; authentication only, each tool asks for its own scope), endpoint.ts (`createMcpHandler`, a new stateless `McpServer` per request,
               `toNodeHandler`, every failure caught), tools.ts (the three read tools and their closed-able output schemas)
 src/run-summary.ts  Plans, sums and renders a summary: the one path under WhatsApp's `summarize` and MCP's `warren_summarize`
 src/server.ts Entry point: config, migrate, warm-up, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
@@ -186,7 +186,7 @@ wrong changes. Its test split is held out like the other: never print or tune on
   every query takes it. Tools `warren_find_movements` (page of 25, at most 50, by cursor: the id the next page starts below), `warren_summarize` and `warren_list_facts` take the agent's own input schemas (`TOOL_INPUTS`, minus the
   WhatsApp-only `text`, plus descriptions) and run its guards (`checkCall`), so a refusal is the same reason the model is given, as an `isError` result. Amounts are decimal strings plus `display` (`formatMoney`); `warren_summarize` also returns
   the `renderSummary` text and the exact differences from `summary.ts`; "today" is the Argentine day. Output schemas are open (a field added later breaks no client); the tests hold the real output to a closed copy (`outputSchemas(true)`).
-  A session JWT or an ID token is not an access token (its `typ` is not `at+jwt`). The allow-list is the one WhatsApp answers by, read at every request. Nothing returned and no token is logged.
+  A session JWT or an ID token is not an access token (its `typ` is not `at+jwt`). Scope is each tool's (`requireScopes`, a 403 `insufficient_scope` with the challenge), an `Origin` must be ours or claude.ai/claude.com, free text is at most 200 characters. `checkCall` is two layers: `checkInput` (the value guards, shared with MCP) and the conversation's. The allow-list is the one WhatsApp answers by, read at every request. Nothing returned and no token is logged.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
 - **Photos (agent B2).** An `image` webhook message keeps its media id and caption in `inbound_message`
   (`payload`, `body`); the bytes are never stored. `graph.fetchImage` looks the id up, checks the declared size
