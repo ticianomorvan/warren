@@ -263,6 +263,8 @@ export async function setup(
     sql?: Sql
     /** Turns on the OAuth server and the sign-in, on the test server's own origin (`auth.test.ts`). */
     auth?: { fetchClient?: Parameters<typeof createAuth>[0]['fetchClientMetadataResource'] }
+    /** The clock the MCP tools read "today" from. */
+    now?: () => Date
   } = {},
 ) {
   const fake = opts.fake ?? fakeGraph()
@@ -312,6 +314,8 @@ export async function setup(
       links,
       publicUrl: base,
       displayNumber: DISPLAY_NUMBER,
+      allowed: opts.allowed ?? ['*'],
+      ...(opts.now ? { now: opts.now } : {}),
     })
   }
   return {

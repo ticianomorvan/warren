@@ -175,3 +175,23 @@ Decided while building, changing the text above:
 - After the second review: the sign-in page asks "¿Es la tuya?" (masked number) when WhatsApp confirmed, and only the click finishes it, because better-auth skips the consent page for a returning
   person and every Claude user shares one client id. The endpoint itself does not check an acknowledgement: it is reachable only from that page (an httpOnly cookie, SameSite=Lax, a JSON POST under the origin check), so the page-level gate plus the origin check is the whole control.
 - The per-address limit counts an IPv6 address as its /64 and runs under a per-address advisory lock (7203004).
+
+## Slice 2 as built (2026-11-22)
+
+- The door is authentication only, `src/mcp/door.ts`: `requireMcpAuth` (signature, issuer, audience, expiry, `azp`, DPoP) plus our own checks: `typ` must be `at+jwt` (better-auth does not check it, and
+  `requireMcpAuth` offers no `typ` option, so the header is read there), `sub` a uuid of an `auth_user` that stands for an account, and that account's WhatsApp id allowed. Our refusals are one 401 with the challenge
+  whatever the reason; better-auth's carry their own error description. A database that cannot answer (the account lookup, or the signing keys `auth_jwks`, whose failure is thrown out of better-auth) is a 503 with `retry-after`.
+- **Scope is each tool's**, not the door's: every tool is registered with the SDK's `scopeChallenge: requireScopes('ledger:read')`, which in stateless mode answers HTTP 403 `insufficient_scope` with
+  `WWW-Authenticate: Bearer error="insufficient_scope", scope="ledger:read"` before the tool runs (Claude re-authorizes only on that, an `isError` result would not move it). Its challenge carries the scope but not `resource_metadata`
+  (better-auth's own has both); a client already holds the metadata from its first discovery. `initialize` and `tools/list` need no scope. Slice 3's write tools register with `requireScopes('ledger:write')`. Consent always grants every scope asked for, so a real token holds both.
+- An `Origin` header on `/mcp` must be ours or `https://claude.ai` / `https://claude.com`, else 403; no `Origin` (not a browser) passes.
+- Inputs: every free-text field is at most 200 characters. `warren_summarize` lists groups per direction and currency: by day, week or month the latest 31 buckets (what the text shows), otherwise the 100 biggest, with `groups_omitted`.
+- `warren_find_movements` has a page size (default 25, at most 50) and a cursor; `findMovements` got a `beforeId` option, and its callers cap the page (`checkCall` keeps WhatsApp's 20).
+- `checkCall` is two layers: the value guards (`checkInput`: shapes, amounts, real days, long numbers, secrets in facts) that MCP's tools call alone, and the conversation guards WhatsApp's model also gets (ids it was shown, the message's count, a fact being the person's words). Slice 3's write tools and `applyCall` start from `checkInput`.
+- `isIsoDate` now refuses a day that does not exist ("2026-13-01"): the database would have refused it, and `find_movements` on WhatsApp would have failed the message.
+- `runSummary` (`src/run-summary.ts`) is the one place a summary is planned, summed and rendered; `execute` calls it.
+- `@modelcontextprotocol/server` 2.4.0 and `@modelcontextprotocol/node` 2.1.2. Tests speak JSON-RPC over HTTP with `fetch` (no client package).
+
+## Not doing / later
+
+- A per-account rate limit on `/mcp` (a token is one person, behind a door that already needs a real sign-in; add one if usage shows a need).

@@ -42,6 +42,7 @@ const auth =
         links,
         publicUrl: config.auth.publicUrl,
         displayNumber: config.auth.displayNumber,
+        allowed: config.ALLOWED_WA_IDS,
       })
     : undefined
 const processor = createProcessor({

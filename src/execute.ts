@@ -13,17 +13,8 @@ import {
   lockFacts,
   rememberFact,
 } from './facts'
-import {
-  insertMovements,
-  liveByIds,
-  lockLive,
-  newestLiveId,
-  softDelete,
-  summaryRows,
-  supersede,
-} from './ledger'
+import { insertMovements, liveByIds, lockLive, newestLiveId, softDelete, supersede } from './ledger'
 import { applyChanges, changedFields } from './movement'
-import { planSummary, type Resolved } from './range'
 import { scrubAudit } from './redact'
 import {
   REPLY_FACT_GONE,
@@ -52,7 +43,7 @@ import {
   renderUndo,
   type UndoLine,
 } from './render'
-import { renderSummary, type Side } from './render-summary'
+import { runSummary } from './run-summary'
 import type { Executed } from './store'
 import { type Undone, undoLast } from './undo'
 
@@ -318,33 +309,17 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         steps.push({ tool: action.tool, outcome: 'applied' })
         break
       case 'summarize': {
-        const { group_by, direction, category, payment, description } = action.input
-        // `checkCall` already planned this against the same day: a failure here is a bug, not a refusal.
-        const plan = planSummary(action.input, today)
-        if (typeof plan === 'string') throw new Error(`summarize: ${plan}`)
-        const { asked, before } = plan
-        const side = async (r: Resolved): Promise<Side> => ({
-          range: r,
-          ...(await summaryRows(
-            tx,
-            i.accountId,
-            { direction, category, payment, description, range: r },
-            group_by,
-          )),
-        })
-        const now = await side(asked)
-        lines.push(
-          ...renderSummary(
-            { direction, category, payment, description, groupBy: group_by },
-            today,
-            now,
-            before ? await side(before) : null,
-          ),
-        )
+        const {
+          current,
+          previous,
+          lines: summary,
+        } = await runSummary(tx, i.accountId, action.input, today)
+        lines.push(...summary)
         steps.push({ tool: action.tool, outcome: 'applied' })
+        const { group_by } = action.input
         details.set(
           index,
-          `${asked.from}..${asked.to}${before ? ` vs ${before.from}..${before.to}` : ''}${group_by === 'none' ? '' : ` by ${group_by}`}`,
+          `${current.range.from}..${current.range.to}${previous ? ` vs ${previous.range.from}..${previous.range.to}` : ''}${group_by === 'none' ? '' : ` by ${group_by}`}`,
         )
         break
       }

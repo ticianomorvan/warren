@@ -112,7 +112,7 @@ export function rangeLabel(r: Resolved, today: string): string {
 }
 
 /** One group's name: a category, a payment as written, a day, the week of a Monday or a month. */
-function groupLabel(by: GroupBy, g: GroupTotal, today: string): string {
+export function groupLabel(by: GroupBy, g: GroupTotal, today: string): string {
   if (by === 'category') return CATEGORY_LABEL[g.key as Category] ?? g.key
   if (by === 'payment') return g.label ? capitalize(g.label) : 'Sin medio de pago'
   if (by === 'none') return ''

@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { requireMcpAuth } from '@better-auth/mcp'
 import { verifyOAuthQueryParams } from '@better-auth/oauth-provider'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
 import type { Sql } from '../db'
-import { type Auth, mcpUrl, SCOPES } from './config'
+import { createDoor } from '../mcp/door'
+import { createMcpEndpoint } from '../mcp/endpoint'
+import type { Auth } from './config'
 import { LINK_TTL_MINUTES, type Links } from './link'
 import { consentPage, messagePage, signInPage } from './pages'
 import { LINK_COOKIE } from './plugin'
@@ -17,6 +18,10 @@ export interface AuthRoutesOptions {
   publicUrl: string
   /** The WhatsApp number as a person reads it; its digits make the `wa.me` link. */
   displayNumber: string
+  /** Normalized WhatsApp ids that may use Warren (`ALLOWED_WA_IDS`): a token of anyone else is refused at the door of `/mcp`. */
+  allowed: string[]
+  /** The clock, for the day a summary means by "today". */
+  now?: () => Date
 }
 
 /** Serves what the authorization server needs besides better-auth's own endpoints; false when the path is not one of its. */
@@ -78,17 +83,6 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body))
 }
 
-async function sendWeb(res: ServerResponse, response: Response) {
-  const headers: Record<string, string | string[]> = {}
-  response.headers.forEach((value, key) => {
-    if (key !== 'set-cookie') headers[key] = value
-  })
-  const cookies = response.headers.getSetCookie()
-  if (cookies.length) headers['set-cookie'] = cookies
-  res.writeHead(response.status, headers)
-  res.end(Buffer.from(await response.arrayBuffer()))
-}
-
 const OAUTH_PATH = /^\/(?:api\/auth(?:\/|$)|\.well-known\/)/
 
 /**
@@ -103,20 +97,13 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
   const secureCookie = publicUrl.startsWith('https:')
   const betterAuth = toNodeHandler(auth)
   const waNumber = o.displayNumber.replace(/\D/g, '')
-  const resource = mcpUrl(publicUrl)
 
-  /** The MCP endpoint's door. Slice 2 puts the tools behind it; for now a good token meets "not implemented". */
-  // The cast: `requireMcpAuth`'s parameter type is a weak shape that a renamed `verification` model does not satisfy.
-  const mcpDoor = requireMcpAuth(
-    auth as unknown as Parameters<typeof requireMcpAuth>[0],
-    () => Response.json({ error: 'not_implemented' }, { status: 501 }),
-    {
-      resource,
-      issuer: publicUrl,
-      requiredScopes: ['ledger:read'],
-      challengeScopes: [...SCOPES],
-    },
-  )
+  const mcp = createMcpEndpoint({
+    sql,
+    door: createDoor({ auth, sql, publicUrl, allowed: o.allowed }),
+    origins: [new URL(publicUrl).origin, 'https://claude.ai', 'https://claude.com'],
+    ...(o.now ? { now: o.now } : {}),
+  })
 
   async function verified(query: string): Promise<URLSearchParams | null> {
     if (!query || !(await verifyOAuthQueryParams(query, (await auth.$context).secret))) return null
@@ -233,15 +220,6 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
     )
   }
 
-  async function mcpRoute(req: IncomingMessage, res: ServerResponse) {
-    // No tools yet, so the body is never read: only the token and the challenge matter.
-    const request = new Request(resource, {
-      method: req.method,
-      headers: fromNodeHeaders(req.headers),
-    })
-    await sendWeb(res, await mcpDoor(request))
-  }
-
   return async (req, res, url) => {
     const path = url.pathname
     const isPage =
@@ -258,7 +236,7 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
     else if (path === '/sign-in/status' && req.method === 'GET') await signInStatus(req, res)
     else if (path === '/sign-in/cancel' && req.method === 'POST') await signInCancel(req, res)
     else if (path === '/oauth/consent' && req.method === 'GET') await consent(req, res, url)
-    else if (path === '/mcp') await mcpRoute(req, res)
+    else if (path === '/mcp') await mcp(req, res)
     else if (OAUTH_PATH.test(path)) await betterAuth(req, res)
     else res.writeHead(405, { allow: 'GET' }).end()
     return true

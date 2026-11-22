@@ -8,17 +8,24 @@ const AMOUNT_RE = /^\d+(\.\d{1,2})?$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 export const isDecimalAmount = (amount: string) => AMOUNT_RE.test(amount) && Number(amount) > 0
-export const isIsoDate = (date: string) => DATE_RE.test(date)
+/** A real calendar day written yyyy-mm-dd ("2026-13-01" and "2026-02-30" are not: the database would refuse them). */
+export function isIsoDate(date: string): boolean {
+  if (!DATE_RE.test(date)) return false
+  const parsed = new Date(`${date}T00:00:00Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date
+}
+
+/** Why a text is not a real day written yyyy-mm-dd, or null when it is one. */
+export function isoDateProblem(date: string): string | null {
+  if (!DATE_RE.test(date)) return 'date is not yyyy-mm-dd'
+  return isIsoDate(date) ? null : 'date does not exist'
+}
 
 /** A real calendar date in ISO form, not after `today` (both are Argentine calendar days). */
 function dateProblem(date: string, today: string): string | null {
-  if (!DATE_RE.test(date)) return 'date is not yyyy-mm-dd'
-  const parsed = new Date(`${date}T00:00:00Z`)
-  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
-    return 'date does not exist'
-  }
-  if (date > today) return 'date is after today'
-  return null
+  const problem = isoDateProblem(date)
+  if (problem) return problem
+  return date > today ? 'date is after today' : null
 }
 
 function checkValues(
