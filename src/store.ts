@@ -1,5 +1,5 @@
 import type { AuditEntry, ConversationTurn, Pending } from './agent'
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import { type FactRow, liveFacts } from './facts'
 import { type FindFilter, findMovements, type MovementRow, recentMovements } from './ledger'
 import { REDACTED_BODY } from './redact'

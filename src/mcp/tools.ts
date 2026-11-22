@@ -10,14 +10,14 @@ import {
   RangeSchema,
   TOOL_INPUTS,
 } from '../agent/schema'
-import type { Sql } from '../db'
+import type { Sql } from '../core/db'
+import { change, formatPercent } from '../domain/summary'
 import { allLiveFacts } from '../facts'
 import { findMovements, type GroupTotal, type MovementRow, type QueryTotal } from '../ledger'
 import { log } from '../log'
 import { formatMoney } from '../render'
 import { groupLabel, MAX_BUCKETS, rangeLabel, type Side } from '../render-summary'
 import { runSummary } from '../run-summary'
-import { change, formatPercent } from '../summary'
 import { argentinaToday } from '../time'
 
 /** The scope each kind of tool needs (`src/auth/config.ts` has the full list). */

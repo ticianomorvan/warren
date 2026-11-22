@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { reminderTemplate } from '../config'
-import { connect } from '../db'
+import { connect } from '../core/db'
 import { createGraph } from '../whatsapp/graph'
 import { insertReminder, TEMPLATE_LANGUAGE } from './db'
 import { ScheduleSchema } from './schedule'

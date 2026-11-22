@@ -10,8 +10,7 @@ import { sql, useDatabase } from './test-harness'
  * the bearer of JSON-RPC calls over HTTP to `/mcp`: the door, the three read tools, and two people who never see each other.
  * On PGlite; with PG_TEST_URL set, on a real Postgres in its own schema.
  */
-const url = process.env.PG_TEST_URL
-useDatabase(url ? { url, max: 12, schema: 'mcp_test' } : undefined)
+useDatabase({ max: 12 })
 
 /** 2026-11-18 12:30 in Argentina: "today" for every tool. */
 const NOW = new Date('2026-11-18T15:30:00.000Z')

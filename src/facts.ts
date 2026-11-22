@@ -6,7 +6,7 @@ import {
   sameValue,
 } from './agent/memory'
 import type { FactKind } from './agent/schema'
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 
 /** A live fact as the model, the record and the list see it. */
 export interface FactRow {

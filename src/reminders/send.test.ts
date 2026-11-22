@@ -8,9 +8,8 @@ import { createReminderSender, DAILY_ALERT, LATE_MS, PERSON_CAP, WINDOW_MS } fro
 vi.mock('../log', () => ({ log: vi.fn() }))
 const { log } = await import('../log')
 
-// The same real-Postgres opt-in as the concurrency tests: a schema of its own, a pool of connections.
-const url = process.env.PG_TEST_URL
-useDatabase(url ? { url, max: 12, schema: 'reminders_test' } : undefined)
+// A pool of connections: on a real Postgres (PG_TEST_URL) it is used, on PGlite it is one.
+useDatabase({ max: 12 })
 
 const WA = '5491100000000'
 const TEMPLATE = 'warren_reminder'

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { realPostgres } from '../test/db'
 import type { Action } from './agent'
 import { correct, history, logOf, movement, remove, script, seed, WA } from './command-fixtures'
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import { execute } from './execute'
 import { REPLY_GONE, REPLY_UNDO_NOTHING } from './render'
 import { createStore } from './store'
@@ -12,10 +13,9 @@ import { bodies, messageBody, post, setup, sql, TODAY, until, useDatabase } from
  * show. Skipped unless PG_TEST_URL is set (see AGENTS.md), so CI and `pnpm test` never need one.
  * The database is truncated between tests: point it at a throwaway one.
  */
-const url = process.env.PG_TEST_URL
-if (url) useDatabase({ url, max: 12 })
+useDatabase({ max: 12 })
 
-describe.skipIf(!url)('real Postgres: concurrency', () => {
+describe.skipIf(!realPostgres)('real Postgres: concurrency', () => {
   it('concurrent corrections and deletes of one movement apply once, the rest get a reply', async () => {
     const store = createStore(sql, { staleMs: 60_000, maxAttempts: 3 })
     const actions: Action[][] = [

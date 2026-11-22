@@ -1,0 +1,574 @@
+[
+  {
+    "startedAt": "2026-11-22T19:23:32.754Z",
+    "model": "claude-haiku-5-5",
+    "summary": {
+      "scenarios": 214,
+      "passed": 213,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passRate": 0.9953271028037384,
+      "byTag": {
+        "logging": {
+          "passed": 47,
+          "total": 47
+        },
+        "correction": {
+          "passed": 59,
+          "total": 60
+        },
+        "deletion": {
+          "passed": 35,
+          "total": 35
+        },
+        "answer": {
+          "passed": 20,
+          "total": 20
+        },
+        "query": {
+          "passed": 18,
+          "total": 18
+        },
+        "multi-action": {
+          "passed": 16,
+          "total": 16
+        },
+        "older-item": {
+          "passed": 5,
+          "total": 5
+        },
+        "typo": {
+          "passed": 9,
+          "total": 9
+        },
+        "time-reference": {
+          "passed": 25,
+          "total": 25
+        },
+        "other": {
+          "passed": 12,
+          "total": 12
+        },
+        "undo": {
+          "passed": 19,
+          "total": 19
+        },
+        "summary": {
+          "passed": 17,
+          "total": 17
+        },
+        "voice": {
+          "passed": 8,
+          "total": 8
+        },
+        "memory": {
+          "passed": 19,
+          "total": 19
+        },
+        "reminder": {
+          "passed": 32,
+          "total": 32
+        }
+      },
+      "silentWrongChanges": 0,
+      "unnecessaryQuestions": 0,
+      "inventedNumbers": 0,
+      "turns": 288,
+      "turnMs": {
+        "n": 288,
+        "p50": 1181.273957999998,
+        "p95": 1831.2198329999956
+      },
+      "modelMs": {
+        "n": 288,
+        "p50": 1162,
+        "p95": 1672
+      },
+      "byAction": {
+        "log": {
+          "n": 53,
+          "p50": 1121.736042000004,
+          "p95": 2112.290832999999
+        },
+        "correct": {
+          "n": 50,
+          "p50": 1174.7848330000015,
+          "p95": 1875.8648329999996
+        },
+        "delete": {
+          "n": 23,
+          "p50": 986.6252079999977,
+          "p95": 1281.2402919999986
+        },
+        "undo": {
+          "n": 17,
+          "p50": 12.638166999997338,
+          "p95": 1005.9032920000027
+        },
+        "query": {
+          "n": 33,
+          "p50": 1372.7859160000007,
+          "p95": 2040.629958000005
+        },
+        "ask": {
+          "n": 38,
+          "p50": 1215.2982499999998,
+          "p95": 2097.1235830000005
+        },
+        "multi": {
+          "n": 18,
+          "p50": 1329.0093330000018,
+          "p95": 2380.6663750000007
+        },
+        "other": {
+          "n": 56,
+          "p50": 1187.3922499999971,
+          "p95": 1740.7375829999946
+        }
+      },
+      "secondTurn": {
+        "turns": 8,
+        "withModel": 262
+      },
+      "turnCap": {
+        "capped": 18,
+        "over": 0
+      },
+      "secondTurnCauses": {
+        "find_movements:ok": 5,
+        "reply:repair": 1,
+        "ask_user:rejected": 1,
+        "summarize:rejected": 1
+      },
+      "outputTokens": {
+        "mean": 157.9732824427481,
+        "byAction": {
+          "log": {
+            "n": 53,
+            "mean": 153.54716981132074
+          },
+          "correct": {
+            "n": 48,
+            "mean": 136.64583333333334
+          },
+          "delete": {
+            "n": 21,
+            "mean": 92.85714285714286
+          },
+          "undo": {
+            "n": 5,
+            "mean": 66.4
+          },
+          "query": {
+            "n": 33,
+            "mean": 256.42424242424244
+          },
+          "ask": {
+            "n": 30,
+            "mean": 147.83333333333334
+          },
+          "multi": {
+            "n": 18,
+            "mean": 217.38888888888889
+          },
+          "other": {
+            "n": 54,
+            "mean": 140.74074074074073
+          }
+        }
+      },
+      "costUsd": 0.11583549999999998,
+      "costPerTurnUsd": 0.00040220659722222215,
+      "gate": {
+        "passRate": true,
+        "noSilentWrong": true,
+        "noInvented": true,
+        "complete": true
+      },
+      "passedGate": true
+    }
+  },
+  {
+    "startedAt": "2026-11-22T19:25:00.582Z",
+    "model": "claude-haiku-5-5",
+    "summary": {
+      "scenarios": 214,
+      "passed": 211,
+      "failed": 3,
+      "errors": 0,
+      "skipped": 0,
+      "passRate": 0.985981308411215,
+      "byTag": {
+        "logging": {
+          "passed": 47,
+          "total": 47
+        },
+        "correction": {
+          "passed": 59,
+          "total": 60
+        },
+        "deletion": {
+          "passed": 35,
+          "total": 35
+        },
+        "answer": {
+          "passed": 19,
+          "total": 20
+        },
+        "query": {
+          "passed": 18,
+          "total": 18
+        },
+        "multi-action": {
+          "passed": 16,
+          "total": 16
+        },
+        "older-item": {
+          "passed": 5,
+          "total": 5
+        },
+        "typo": {
+          "passed": 9,
+          "total": 9
+        },
+        "time-reference": {
+          "passed": 25,
+          "total": 25
+        },
+        "other": {
+          "passed": 11,
+          "total": 12
+        },
+        "undo": {
+          "passed": 19,
+          "total": 19
+        },
+        "summary": {
+          "passed": 17,
+          "total": 17
+        },
+        "voice": {
+          "passed": 8,
+          "total": 8
+        },
+        "memory": {
+          "passed": 19,
+          "total": 19
+        },
+        "reminder": {
+          "passed": 31,
+          "total": 32
+        }
+      },
+      "silentWrongChanges": 0,
+      "unnecessaryQuestions": 0,
+      "inventedNumbers": 0,
+      "turns": 287,
+      "turnMs": {
+        "n": 287,
+        "p50": 1197.101042000002,
+        "p95": 2073.8695420000004
+      },
+      "modelMs": {
+        "n": 287,
+        "p50": 1162,
+        "p95": 1645
+      },
+      "byAction": {
+        "log": {
+          "n": 53,
+          "p50": 1163.4602500000037,
+          "p95": 2153.7915829999984
+        },
+        "correct": {
+          "n": 50,
+          "p50": 1174.3660000000018,
+          "p95": 2053.297834000001
+        },
+        "delete": {
+          "n": 23,
+          "p50": 1024.349624999999,
+          "p95": 1316.755624999998
+        },
+        "undo": {
+          "n": 17,
+          "p50": 13.58845800000563,
+          "p95": 1180.1063749999958
+        },
+        "query": {
+          "n": 33,
+          "p50": 1376.9256669999959,
+          "p95": 2156.6145000000033
+        },
+        "ask": {
+          "n": 41,
+          "p50": 1227.0434160000004,
+          "p95": 2082.416624999998
+        },
+        "multi": {
+          "n": 18,
+          "p50": 1300.5036659999969,
+          "p95": 2181.883750000001
+        },
+        "other": {
+          "n": 52,
+          "p50": 1156.9453330000033,
+          "p95": 2286.7408339999965
+        }
+      },
+      "secondTurn": {
+        "turns": 11,
+        "withModel": 262
+      },
+      "turnCap": {
+        "capped": 18,
+        "over": 0
+      },
+      "secondTurnCauses": {
+        "find_movements:ok": 5,
+        "reply:repair": 1,
+        "ask_user:rejected": 2,
+        "summarize:rejected": 1,
+        "log_movements:rejected": 1,
+        "remember_fact:rejected": 1
+      },
+      "outputTokens": {
+        "mean": 159.3206106870229,
+        "byAction": {
+          "log": {
+            "n": 53,
+            "mean": 158.30188679245282
+          },
+          "correct": {
+            "n": 49,
+            "mean": 136.26530612244898
+          },
+          "delete": {
+            "n": 21,
+            "mean": 95.95238095238095
+          },
+          "undo": {
+            "n": 5,
+            "mean": 74.6
+          },
+          "query": {
+            "n": 33,
+            "mean": 257.09090909090907
+          },
+          "ask": {
+            "n": 33,
+            "mean": 153.36363636363637
+          },
+          "multi": {
+            "n": 18,
+            "mean": 214
+          },
+          "other": {
+            "n": 50,
+            "mean": 137.8
+          }
+        }
+      },
+      "costUsd": 0.11197077,
+      "costPerTurnUsd": 0.0003901420557491289,
+      "gate": {
+        "passRate": true,
+        "noSilentWrong": true,
+        "noInvented": true,
+        "complete": true
+      },
+      "passedGate": true
+    }
+  },
+  {
+    "startedAt": "2026-11-22T19:26:30.598Z",
+    "model": "claude-haiku-5-5",
+    "summary": {
+      "scenarios": 214,
+      "passed": 214,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passRate": 1,
+      "byTag": {
+        "logging": {
+          "passed": 47,
+          "total": 47
+        },
+        "correction": {
+          "passed": 60,
+          "total": 60
+        },
+        "deletion": {
+          "passed": 35,
+          "total": 35
+        },
+        "answer": {
+          "passed": 20,
+          "total": 20
+        },
+        "query": {
+          "passed": 18,
+          "total": 18
+        },
+        "multi-action": {
+          "passed": 16,
+          "total": 16
+        },
+        "older-item": {
+          "passed": 5,
+          "total": 5
+        },
+        "typo": {
+          "passed": 9,
+          "total": 9
+        },
+        "time-reference": {
+          "passed": 25,
+          "total": 25
+        },
+        "other": {
+          "passed": 12,
+          "total": 12
+        },
+        "undo": {
+          "passed": 19,
+          "total": 19
+        },
+        "summary": {
+          "passed": 17,
+          "total": 17
+        },
+        "voice": {
+          "passed": 8,
+          "total": 8
+        },
+        "memory": {
+          "passed": 19,
+          "total": 19
+        },
+        "reminder": {
+          "passed": 32,
+          "total": 32
+        }
+      },
+      "silentWrongChanges": 0,
+      "unnecessaryQuestions": 0,
+      "inventedNumbers": 0,
+      "turns": 288,
+      "turnMs": {
+        "n": 288,
+        "p50": 1191.548917,
+        "p95": 1790.0405829999945
+      },
+      "modelMs": {
+        "n": 288,
+        "p50": 1154,
+        "p95": 1676
+      },
+      "byAction": {
+        "log": {
+          "n": 53,
+          "p50": 1128.6624589999992,
+          "p95": 2452.764292
+        },
+        "correct": {
+          "n": 51,
+          "p50": 1191.361665999997,
+          "p95": 1991.337792000002
+        },
+        "delete": {
+          "n": 23,
+          "p50": 992.1338340000002,
+          "p95": 1658.9257919999982
+        },
+        "undo": {
+          "n": 17,
+          "p50": 24.419167000000016,
+          "p95": 1051.3266250000015
+        },
+        "query": {
+          "n": 33,
+          "p50": 1374.1779999999926,
+          "p95": 2037.7737500000003
+        },
+        "ask": {
+          "n": 40,
+          "p50": 1232.1392500000002,
+          "p95": 1692.6325829999987
+        },
+        "multi": {
+          "n": 18,
+          "p50": 1327.3088750000024,
+          "p95": 2537.866540999996
+        },
+        "other": {
+          "n": 53,
+          "p50": 1172.8394580000022,
+          "p95": 1574.8885420000006
+        }
+      },
+      "secondTurn": {
+        "turns": 8,
+        "withModel": 262
+      },
+      "turnCap": {
+        "capped": 18,
+        "over": 0
+      },
+      "secondTurnCauses": {
+        "log_movements:repair": 1,
+        "find_movements:ok": 5,
+        "correct_movement:held": 1,
+        "summarize:rejected": 2
+      },
+      "outputTokens": {
+        "mean": 158.32824427480915,
+        "byAction": {
+          "log": {
+            "n": 53,
+            "mean": 156.9811320754717
+          },
+          "correct": {
+            "n": 49,
+            "mean": 136.6530612244898
+          },
+          "delete": {
+            "n": 21,
+            "mean": 96.23809523809524
+          },
+          "undo": {
+            "n": 5,
+            "mean": 72.8
+          },
+          "query": {
+            "n": 33,
+            "mean": 257.3333333333333
+          },
+          "ask": {
+            "n": 32,
+            "mean": 143.4375
+          },
+          "multi": {
+            "n": 18,
+            "mean": 221.22222222222223
+          },
+          "other": {
+            "n": 51,
+            "mean": 137.58823529411765
+          }
+        }
+      },
+      "costUsd": 0.11083560000000006,
+      "costPerTurnUsd": 0.0003848458333333335,
+      "gate": {
+        "passRate": true,
+        "noSilentWrong": true,
+        "noInvented": true,
+        "complete": true
+      },
+      "passedGate": true
+    }
+  }
+]

@@ -1,5 +1,5 @@
-import { isTimeGroup, NAMED_PERIODS, type RangeInput, type ToolInput } from './agent/schema'
-import { addDays, type DateRange, dayParts as parts } from './time'
+import { isTimeGroup, NAMED_PERIODS, type RangeInput, type ToolInput } from '../agent/schema'
+import { addDays, type DateRange, dayParts as parts } from '../time'
 
 /**
  * Which kind of span a range is, which decides what "the one before" means: a month goes back to the

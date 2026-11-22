@@ -78,7 +78,10 @@ src/render.ts The reply templates (Argentine money format) and every canned text
               the 🎙️ line, the fallback when the model's words are dropped); pure
 src/transcribe.ts  Voice notes to text: the OpenRouter client (whisper-large-v3, pinned to Groq), the vocabulary prompt
               and the confidence gate (`judgeTranscript`)
-src/test-harness.ts  Shared integration-test setup: PGlite (or a real Postgres), fake Graph (with media by id),
+test/         The test kit: db.ts (`useDatabase()`: a migrated database per test file, PGlite or `PG_TEST_URL`), until.ts (`until(cond, {timeout})`, no fixed sleeps), fakes.ts (Graph, the Anthropic client typed to the SDK's `Message`, transcriber)
+src/warren.ts `createWarren(deps)`: the one wiring of store, processor, reminders, OAuth routes and the HTTP app; `server.ts`, the tests and the eval all use it
+src/core/ db.ts; src/domain/ range.ts, summary.ts (the new layout; the slices of the rebuild move the rest in: `docs/rebuild-spec.md`)
+src/test-harness.ts  v1 integration-test setup (`setup`, webhook bodies; the pieces above are re-exported): PGlite (or a real Postgres), fake Graph (with media by id),
               fake transcription, fake Anthropic client (scripted tool calls), `setup()`, `photoBody()`, `voiceBody()`
 src/command-fixtures.ts  Scripted tool calls, seeded movements and `say()` for the agent tests
 src/http.ts   keepAliveFetch: a fetch with its own 60 s keep-alive pool (Graph and Anthropic)
@@ -92,7 +95,7 @@ evals/        cases.jsonl (dev/test split, one command per message), command.ts 
               (runs the agent on a case and maps it to a command), grade.ts, run.ts, results/ (gitignored but summary.md)
 evals/voice-probe.ts  Local probe: real audio files through the real transcription service, printing the transcript and the gate verdict
 evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl (a scenario may seed `facts`, a turn may check `liveFacts`, carry an `image` or an `audio`, a file of fixtures/;
-              `fixtures/make-voice.sh` makes the synthetic voice notes), schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts (pass rate, latency by action and by tag), run.ts, results/baseline.md
+              `fixtures/make-voice.sh` makes the synthetic voice notes), schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts (pass rate, latency by action and by tag), run.ts, results/latest.md (generated), report-cli.ts (`pnpm eval:report`)
 docs/spec.md  Source of truth for what is built and in which order; docs/agent-spec.md the agent design
 ```
 
@@ -103,8 +106,10 @@ pnpm install --frozen-lockfile
 pnpm lint          # Biome
 pnpm typecheck
 pnpm test          # Vitest, no network; real SQL on in-process PGlite, Graph API injected
-PG_TEST_URL=postgres://postgres:test@localhost:55432/postgres pnpm test src/concurrency.test.ts
-                   # also runs the real-Postgres concurrency tests (skipped without PG_TEST_URL; CI never sets it).
+PG_TEST_URL=postgres://postgres:test@localhost:55432/postgres pnpm test
+                   # the whole suite on a real Postgres (each test file in a schema of its own, dropped after; the real-Postgres
+                   # concurrency tests run only then). CI runs it in a `postgres:17` service job next to the PGlite job.
+pnpm check         # lint + typecheck + test (PGlite): what the CI `check` job runs
                    # Throwaway database only, it is truncated. docker run --rm -d --name warren-pg-test -p 55432:5432 -e POSTGRES_PASSWORD=test postgres:17
 pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the WhatsApp variables (see src/config.ts);
                    # OPENROUTER_API_KEY turns voice notes on (unset: they are answered with a request for text)
@@ -127,8 +132,9 @@ model at the end. CI never calls the Anthropic API. Its cases are written as one
 
 `pnpm eval:scenarios` does the same for conversations (PGlite, a fake Graph, the real model; stops before its
 `--budget`, default US$0.30). It grades the database after each turn and gates on 95% fully right and 0 silent
-wrong changes. Its test split is held out like the other: never print or tune on it. Baseline:
-`evals/scenarios/results/baseline.md`.
+wrong changes. Its test split is held out like the other: never print or tune on it. `pnpm eval:report`
+writes `evals/scenarios/results/latest.md` from the newest three `*-all.json` runs, next to the committed v1
+baseline (`v1-baseline.json`); never edit that file by hand.
 
 ## Conventions
 

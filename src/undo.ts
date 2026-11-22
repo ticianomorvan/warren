@@ -1,4 +1,4 @@
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import type { FactRow } from './facts'
 import {
   type BatchRow,

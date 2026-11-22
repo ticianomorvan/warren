@@ -1,4 +1,4 @@
-import type { Sql } from '../db'
+import type { Sql } from '../core/db'
 
 /**
  * "desconectar" (docs/mcp-spec.md, Slice 3): cuts every connection of an agent to this account, inside the commit transaction

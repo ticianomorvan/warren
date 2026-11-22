@@ -278,6 +278,16 @@ All of them land on branch `rebuild`, in one PR, built by sequential Sonnet 5.5 
 | R8 | Ops: Railway environments, graph-sink, probe, import, cutover scripts | `pnpm probe staging` green; import verification on a copy of production |
 | R9 | Fresh-context Opus review (`/code-review` high and `review-design`), fixes, then cutover and production probes | review findings answered; production probe green; Ticiano's live check |
 
+### As built (R0)
+
+- **Baseline:** tag `v1-final` (066eb87) pushed. Three runs of `pnpm eval:scenarios --split all` on it, US$0.338 in all. Their summaries are committed as `evals/scenarios/results/v1-baseline.json`; `pnpm eval:report` writes `results/latest.md` from run files and always renders that baseline as its own section, so no slice re-runs v1. Until R3 the "Latest" section shows the same three v1 runs. The bar to match: median 213/214 fully right, 0 silent, 0 unnecessary, 0 invented, per-turn p50 1,192 ms and p95 1,831 ms, p50 model turns 1 (3.1% of messages need a second).
+- **p50 model turns is derived:** the held-out turns are stripped from result files, so the report reads it from the second-turn share (1 while under half of the messages need a second turn). A slice whose share passes 50% reports 2.
+- **Test kit:** `test/db.ts` (`useDatabase({max?})`: its own schema per file on `PG_TEST_URL`, dropped after; PGlite otherwise), `test/until.ts`, `test/fakes.ts` (Graph, transcriber, Anthropic client returning a real `Message`, via `message()` and `toolUse()`). `src/test-harness.ts` keeps `setup` and the webhook helpers and re-exports the kit, so v1 tests did not change; the slices that rewrite them move to `test/` imports. Fixed 150 ms `settle()` sleeps (26 calls) were not converted: `until` is there for the rewritten tests.
+- **Real Postgres:** the whole v1 suite passes on `postgres:17` (1235 tests, none skipped; the 14 that PGlite skips run there). No v1 test needed a skip.
+- **Layout:** moved with `git mv`: `db.ts` to `src/core/`, `range.ts` and `summary.ts` (and their tests) to `src/domain/`. The other folders (`agent`, `whatsapp`, `mcp`, `auth`) already exist. `src/warren.ts` `createWarren(deps)` wires store, processor, reminder sender, OAuth routes and app; `server.ts` and the test `setup` use it. The scenario eval still builds its pipeline through `setup`, so it uses it too.
+- **CI:** `check` job runs `pnpm check`; a `postgres` job runs `pnpm test` with `PG_TEST_URL` on a `postgres:17` service. `test/boot.test.ts` starts the app through `createWarren` and checks `/health`.
+- **biome** ignores `docs/rebuild/` and `docs/rebuild-spec.md` (generated outputs and the spec).
+
 ## Decisions (Ticiano, 2026-11-22)
 
 1. Rebuild from scratch on main, autonomously, with no manual testing in the middle.

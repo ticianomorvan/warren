@@ -1,7 +1,7 @@
 import type { z } from 'zod'
+import { planSummary } from '../domain/range'
 import type { FindFilter } from '../ledger'
 import { normalizeText } from '../movement'
-import { planSummary } from '../range'
 import { isOnce } from '../reminders/describe'
 import { checkReminder } from '../reminders/guard'
 import { nextOccurrence } from '../reminders/schedule'

@@ -1,5 +1,5 @@
 import { type GroupBy, isTimeGroup, type Movement, type RecentMovement } from './agent/schema'
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import { normalizeText } from './movement'
 import type { DateRange } from './time'
 

@@ -13,4 +13,5 @@ coverage
 evals/results/*
 !evals/results/summary.md
 evals/scenarios/results/*
-!evals/scenarios/results/baseline.md
+!evals/scenarios/results/latest.md
+!evals/scenarios/results/v1-baseline.json

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { PERIODS, type RangeInput } from './agent/schema'
+import { PERIODS, type RangeInput } from '../agent/schema'
+import { argentinaToday } from '../time'
 import {
   MAX_RANGE_DAYS,
   parseOther,
@@ -8,7 +9,6 @@ import {
   rangeDays,
   resolveRange,
 } from './range'
-import { argentinaToday } from './time'
 
 /** A range as the model sends it: unused fields at their empty values. */
 const r = (period: string, o: Partial<RangeInput> = {}): RangeInput =>

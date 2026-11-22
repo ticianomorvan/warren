@@ -19,7 +19,7 @@ import {
   summarize,
   WA,
 } from './command-fixtures'
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import { execute } from './execute'
 import { recentMovements } from './ledger'
 import { REPLY_FAILED, REPLY_GONE } from './render'

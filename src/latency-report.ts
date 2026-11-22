@@ -1,4 +1,4 @@
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import type { Timings } from './timings'
 
 /** One inbound text message with the times `pnpm latency` reads. Numbers come back from Postgres as strings or numbers. */

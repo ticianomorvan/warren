@@ -1,6 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import postgres from 'postgres'
-import { log } from './log'
+import { log } from '../log'
 
 export type Sql = postgres.Sql
 
@@ -11,7 +11,7 @@ export function connect(
   return postgres(url, { onnotice: () => {}, ...options })
 }
 
-const dir = new URL('./migrations/', import.meta.url)
+const dir = new URL('../migrations/', import.meta.url)
 
 /**
  * Applies each `NNN_name.sql` once, in order, under an advisory lock. Safe to run on every start.

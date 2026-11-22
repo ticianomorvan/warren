@@ -1,5 +1,5 @@
 import type postgres from 'postgres'
-import type { Sql } from '../db'
+import type { Sql } from '../core/db'
 import { log } from '../log'
 import { isAllowed } from '../process'
 import { argentinaTime, argentinaToday } from '../time'

@@ -49,9 +49,8 @@ import {
  * cookie jar) walks authorize -> sign-in page -> WhatsApp "vincular" and "sí" -> consent -> code -> token ->
  * refresh. On PGlite; with PG_TEST_URL set, on a real Postgres in its own schema.
  */
-const url = process.env.PG_TEST_URL
-// PGlite shares one session between connections, so its tests keep to one (as the other test files do).
-useDatabase(url ? { url, max: 12, schema: 'auth_test' } : undefined)
+// PGlite shares one session between connections, so `useDatabase` gives it one; a real Postgres gets a pool.
+useDatabase({ max: 12 })
 
 describe('the whole flow', () => {
   it('authorize, sign-in by WhatsApp, consent, token, refresh rotation, reuse refused', async () => {

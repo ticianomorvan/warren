@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { realPostgres } from '../test/db'
 import {
   type App,
   browser,
@@ -27,8 +28,7 @@ import { fakeModel, settle, sql, until, useDatabase } from './test-harness'
  * HTTP, and the WhatsApp pipeline in the same server: a change from one channel is seen, and undone, from the other.
  * On PGlite; with PG_TEST_URL set, on a real Postgres in its own schema (and the concurrency test runs).
  */
-const url = process.env.PG_TEST_URL
-useDatabase(url ? { url, max: 12, schema: 'mcpw_test' } : undefined)
+useDatabase({ max: 12 })
 
 const NOW = new Date('2026-11-18T15:30:00.000Z')
 
@@ -850,7 +850,7 @@ describe('"desconectar"', () => {
 
 // ---- Racing channels, on a real Postgres
 
-describe.skipIf(!url)(
+describe.skipIf(!realPostgres)(
   'real Postgres: an MCP correct racing a WhatsApp correct of the same movement',
   () => {
     it('exactly one wins, the other is refused, over several rounds', async () => {

@@ -1,5 +1,5 @@
 import type { Action, FactKind, Movement, RecentMovement } from './agent/schema'
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import {
   type FactRow,
   findLive,

@@ -1,4 +1,4 @@
-import type { Sql } from '../db'
+import type { Sql } from '../core/db'
 import { log } from '../log'
 import { nextOccurrence, type Schedule, ScheduleSchema } from './schedule'
 

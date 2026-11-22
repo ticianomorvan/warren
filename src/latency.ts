@@ -1,4 +1,4 @@
-import { connect } from './db'
+import { connect } from './core/db'
 import { fetchLatencyRows, renderLatency } from './latency-report'
 
 const url = process.env.DATABASE_URL

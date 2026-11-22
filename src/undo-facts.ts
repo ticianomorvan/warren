@@ -1,5 +1,5 @@
 import { sameValue } from './agent/memory'
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import {
   type BatchFact,
   batchFacts,

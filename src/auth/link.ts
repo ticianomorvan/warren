@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto'
-import type { Sql } from '../db'
+import type { Sql } from '../core/db'
 import { ipKey } from './ip'
 import type { SessionLinks } from './plugin'
 

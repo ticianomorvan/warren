@@ -1,7 +1,7 @@
 import type { ToolInput } from './agent/schema'
-import type { Sql } from './db'
+import type { Sql } from './core/db'
+import { planSummary, type Resolved } from './domain/range'
 import { summaryRows } from './ledger'
-import { planSummary, type Resolved } from './range'
 import { renderSummary, type Side } from './render-summary'
 
 /** What a summary found: the range asked about, the range it is compared with (if any), and the reply code renders from them. */

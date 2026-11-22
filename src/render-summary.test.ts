@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import type { Resolved } from './domain/range'
 import type { GroupTotal, QueryTotal } from './ledger'
-import type { Resolved } from './range'
 import { fitReply } from './render'
 import { renderSummary as lines, MAX_GROUPS, rangeLabel, spanText } from './render-summary'
 

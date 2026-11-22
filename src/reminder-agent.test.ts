@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { realPostgres } from '../test/db'
 import { applyReminderCall } from './apply'
 import { logOf, movement, replyCall, say, script, WA } from './command-fixtures'
 import { insertReminder } from './reminders/db'
@@ -15,8 +16,7 @@ import type { ToolCall } from './test-harness'
 import { fakeGraph, fakeModel, setup, sql, useDatabase } from './test-harness'
 
 // With PG_TEST_URL set (see AGENTS.md) this runs on a real Postgres, in a schema of its own.
-const url = process.env.PG_TEST_URL
-useDatabase(url ? { url, max: 12, schema: 'reminder_agent_test' } : undefined)
+useDatabase({ max: 12 })
 
 /**
  * The harness's messages are sent at 2025-10-09 05:53 in Argentina (a Thursday): "today" in these tests.
@@ -645,7 +645,7 @@ describe('a stored reminder whose schedule no longer parses', () => {
 })
 
 // A sweep that is finishing a one-off while an undo reads it: on a real Postgres only (the lock needs two connections).
-describe.skipIf(!url)('real Postgres: an undo and the sender', () => {
+describe.skipIf(!realPostgres)('real Postgres: an undo and the sender', () => {
   it('an undo that finds a one-off ended by a sweep in flight is refused as stale, not failed', async () => {
     const app = await setup({
       model: script(setRem('pagar la Visa', { start: '2025-10-09', time: '18:00' })),

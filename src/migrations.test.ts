@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { PGlite } from '@electric-sql/pglite'
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket'
 import { describe, expect, it } from 'vitest'
-import { connect, migrate } from './db'
+import { connect, migrate } from './core/db'
 
 const dir = new URL('./migrations/', import.meta.url)
 

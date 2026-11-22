@@ -11,9 +11,9 @@ import {
   windowReplies,
 } from '../src/agent'
 import { MAX_FOUND, NAMED_PERIODS } from '../src/agent/schema'
+import { resolveRange } from '../src/domain/range'
 import type { FindFilter, MovementRow } from '../src/ledger'
 import { normalizeText } from '../src/movement'
-import { resolveRange } from '../src/range'
 import { argentinaTime } from '../src/time'
 import type { Changes, Command } from './command'
 import type { EvalCase } from './grade'

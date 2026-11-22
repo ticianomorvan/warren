@@ -5,7 +5,7 @@ import type { ClientMetadataResourceFetch } from '@better-auth/oauth-provider'
 import { betterAuth } from 'better-auth'
 import { jwt } from 'better-auth/plugins'
 import { PostgresJSDialect } from 'kysely-postgres-js'
-import type { Sql } from '../db'
+import type { Sql } from '../core/db'
 import { linkSession, type SessionLinks } from './plugin'
 
 /** What a token may be used for. `offline_access` is the refresh token. */

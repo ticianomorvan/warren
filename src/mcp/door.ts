@@ -5,7 +5,7 @@ import type { AuthInfo } from '@modelcontextprotocol/server'
 import { APIError } from 'better-auth/api'
 import { fromNodeHeaders } from 'better-auth/node'
 import { type Auth, mcpUrl, SCOPES } from '../auth/config'
-import type { Sql } from '../db'
+import type { Sql } from '../core/db'
 import { log } from '../log'
 import { isAllowed } from '../process'
 
