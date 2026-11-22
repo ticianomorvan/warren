@@ -2,8 +2,15 @@ import type { AuditEntry, ConversationTurn, Pending } from './agent'
 import type { Sql } from './db'
 import { type FactRow, liveFacts } from './facts'
 import { type FindFilter, findMovements, type MovementRow, recentMovements } from './ledger'
+import { REDACTED_BODY } from './redact'
 import type { PendingQuestion } from './resolve'
 import type { Timings } from './timings'
+
+/** `payload = ...`: the raw message object with the person's text (a message's, or a photo's caption) replaced by the placeholder. */
+const redactedPayload = (sql: Sql) => sql`payload = CASE
+  WHEN payload #> '{text,body}' IS NOT NULL THEN jsonb_set(payload, '{text,body}', to_jsonb(${REDACTED_BODY}::text))
+  WHEN payload #> '{image,caption}' IS NOT NULL THEN jsonb_set(payload, '{image,caption}', to_jsonb(${REDACTED_BODY}::text))
+  ELSE payload END`
 
 /** What a worker holds after claiming a row. Every later write checks `id` and `attempts`. */
 export interface Claim {
@@ -44,6 +51,8 @@ export interface Commit {
   execute: (tx: Sql) => Promise<Executed>
   /** What was heard in a voice note: stored as the message's `body`, which a voice note has no text in. */
   heard?: string
+  /** The message held something Warren must not keep: its text is replaced by a placeholder everywhere it is stored (`redact.ts`). */
+  redact?: boolean
 }
 
 /** What running a message's actions gives back: the reply, and what to store with it. */
@@ -183,9 +192,9 @@ export function createStore(sql: Sql, o: StoreOptions) {
       return recentMovements(sql, accountId)
     },
 
-    /** The account's newest live facts, for the model's context, and how many live facts it has in all. */
-    facts(accountId: number): Promise<{ facts: FactRow[]; total: number }> {
-      return liveFacts(sql, accountId)
+    /** The facts the model is shown with a message: the newest, and those the message names; and how many live facts the account has. */
+    facts(accountId: number, message: string): Promise<{ facts: FactRow[]; total: number }> {
+      return liveFacts(sql, accountId, message)
     },
 
     /** The account's live movements that match a `find_movements` call. */
@@ -229,15 +238,17 @@ export function createStore(sql: Sql, o: StoreOptions) {
       return {
         turns: turns.reverse(),
         question:
-          previous?.askedNumbers && previous.askedIds
-            ? {
-                asked: previous.askedNumbers.map((number, k) => ({
-                  number,
-                  id: previous.askedIds?.[k] ?? 0,
-                })),
-                pending: previous.pending,
-              }
-            : null,
+          previous?.pending?.action === 'forget_all'
+            ? { asked: [], pending: previous.pending }
+            : previous?.askedNumbers && previous.askedIds
+              ? {
+                  asked: previous.askedNumbers.map((number, k) => ({
+                    number,
+                    id: previous.askedIds?.[k] ?? 0,
+                  })),
+                  pending: previous.pending,
+                }
+              : null,
       }
     },
 
@@ -257,7 +268,8 @@ export function createStore(sql: Sql, o: StoreOptions) {
         const done = await m.execute(tx as unknown as Sql)
         await tx`
           UPDATE inbound_message
-          SET body = COALESCE(${m.heard ?? null}, body), command = ${tx.json(m.command as never)},
+          SET ${m.redact ? tx`body = ${REDACTED_BODY}` : tx`body = COALESCE(${m.heard ?? null}, body)`},
+              ${m.redact ? redactedPayload(tx as unknown as Sql) : tx`payload = payload`}, command = ${tx.json(m.command as never)},
               parsed = ${m.parsed === null ? null : tx.json(m.parsed as never)},
               action = ${m.action}, tool_calls = ${tx.json(done.audit as never)},
               model_turns = ${m.turns},
@@ -293,10 +305,12 @@ export function createStore(sql: Sql, o: StoreOptions) {
       error: string,
       trace?: { audit: unknown[]; turns: number },
       timings?: Timings,
+      redact = false,
     ): Promise<boolean> {
       const rows = await sql`
         UPDATE inbound_message
         SET status = 'failed', error = ${error}, failure_sent_at = now(), updated_at = now(),
+          ${redact ? sql`body = ${REDACTED_BODY}, ${redactedPayload(sql)},` : sql``}
           tool_calls = COALESCE(${trace ? sql.json(trace.audit as never) : null}, tool_calls),
           model_turns = COALESCE(${trace?.turns ?? null}, model_turns),
           timings = COALESCE(timings, '{}'::jsonb) || COALESCE(${timings ? sql.json(timings as never) : null}::jsonb, '{}'::jsonb)

@@ -12,9 +12,11 @@ import {
   type Usage,
   windowReplies,
 } from './agent'
+import { sensitive } from './agent/memory'
 import { actionLabel, execute } from './execute'
 import { RECENT_LIMIT } from './ledger'
 import { log } from './log'
+import { isSecretNotice, scrubAudit, scrubCalls } from './redact'
 import {
   REPLY_AUDIO,
   REPLY_FAILED,
@@ -112,14 +114,24 @@ export function createProcessor(o: ProcessorOptions) {
   const fail = (
     c: Claim,
     reason: string,
-    trace?: { audit: unknown[]; turns: number },
+    trace?: { audit: AuditEntry[]; turns: number },
     stages?: Timings,
+    /** The message's text, when it is not the row's own (a voice note's transcript). */
+    text = c.body ?? '',
   ) =>
     once(
       'failure_notice',
       c,
       async () => {
-        const ok = await store.recordFailure(c, reason, trace, stages)
+        // A message that holds a secret leaves no trace of it, not even in a failed one.
+        const redact = sensitive(text)
+        const ok = await store.recordFailure(
+          c,
+          reason,
+          redact && trace ? { ...trace, audit: scrubAudit(trace.audit) } : trace,
+          stages,
+          redact,
+        )
         log(ok ? 'message_failed' : 'failure_skipped', { wamid: c.wamid, reason }, 'error')
         return ok
       },
@@ -238,10 +250,10 @@ export function createProcessor(o: ProcessorOptions) {
     const working = (async (): Promise<Worked> => {
       const readsAt = performance.now()
       const accountId = await store.upsertAccount(c.wa_id)
-      const [movements, conversation, memory] = await Promise.all([
+      let [movements, conversation, memory] = await Promise.all([
         store.recentMovements(accountId),
         store.conversation(c),
-        store.facts(accountId),
+        store.facts(accountId, c.body ?? ''),
       ])
       stages.reads_ms = Math.round(performance.now() - readsAt)
       const mediaAt = performance.now()
@@ -295,6 +307,8 @@ export function createProcessor(o: ProcessorOptions) {
       if (voice) {
         text = voice.heard
         heard = voice.heard
+        // The facts the message names are known only now that it is heard.
+        memory = await store.facts(accountId, text)
       }
       // A bare answer to the question we just asked, or a bare "deshacer", is code's job: no model call at all. Not for a
       // note of voice: a delete, a correction or an undo is never run on what a model of speech thought it heard. A
@@ -324,10 +338,12 @@ export function createProcessor(o: ProcessorOptions) {
         photo: Boolean(photo),
         voice: Boolean(voice),
         pending: conversation.question
-          ? {
-              asked: conversation.question.asked,
-              action: conversation.question.pending?.action ?? 'none',
-            }
+          ? conversation.question.pending?.action === 'forget_all'
+            ? { asked: [], action: 'forget_all' }
+            : {
+                asked: conversation.question.asked,
+                action: conversation.question.pending?.action ?? 'none',
+              }
           : null,
       }
       const result = await runAgent({
@@ -364,7 +380,7 @@ export function createProcessor(o: ProcessorOptions) {
     try {
       const outcome = await Promise.race([working, aborted])
       if (deadline.aborted)
-        return await fail(c, 'deadline passed before the commit point', undefined, stages)
+        return await fail(c, 'deadline passed before the commit point', undefined, stages, text)
       if (shutdown.signal.aborted) {
         // Nothing was committed and no send started: hand the row to the next process at once.
         await store.settle(c, 'pending', 'shutdown before the commit point')
@@ -377,20 +393,23 @@ export function createProcessor(o: ProcessorOptions) {
         // A failed message keeps what the agent tried; it writes nothing to the ledger.
         const trace = e instanceof AgentError ? { audit: e.audit, turns: e.turns } : undefined
         if (e instanceof AgentError) stages.turns = e.turnLog
-        return await fail(c, `parse failed: ${errorText(e)}`, trace, stages)
+        return await fail(c, `parse failed: ${errorText(e)}`, trace, stages, text)
       }
 
       const { accountId, actions, parsed, audit, turns, ms, usage, turnLog, facts, window, heard } =
         outcome.value
       stages.turns = turnLog
+      // A secret in the message, or one the model tried to store: it is stored nowhere (`redact.ts`).
+      const redact = sensitive(text) || actions.some(isSecretNotice)
 
       // The commit point. Nothing awaits between the signal check above and this call.
       let reply: string | null
       const committing = performance.now()
       try {
         reply = await store.commit(c, {
-          parsed,
-          command: actions,
+          parsed: redact ? scrubCalls(parsed) : parsed,
+          command: redact ? scrubCalls(actions) : actions,
+          redact,
           action: actionLabel(actions),
           turns,
           modelMs: ms,
@@ -406,6 +425,7 @@ export function createProcessor(o: ProcessorOptions) {
               facts,
               window,
               heard,
+              redact,
               render: { helpContact: o.helpContact },
             }),
         })

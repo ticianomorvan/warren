@@ -5,10 +5,11 @@ import { composeReply, type Say, type Step } from './agent/say'
 import type { Sql } from './db'
 import {
   allLiveFacts,
+  type FactRow,
+  findLive,
   forgetAll,
   forgetFact,
-  lockLiveFact,
-  lockLiveWithKey,
+  lockFacts,
   rememberFact,
 } from './facts'
 import {
@@ -22,8 +23,10 @@ import {
 } from './ledger'
 import { applyChanges, changedFields } from './movement'
 import { planSummary, type Resolved } from './range'
+import { scrubAudit } from './redact'
 import {
   REPLY_FACT_GONE,
+  REPLY_FACT_SECRET,
   REPLY_GONE,
   REPLY_SAY_FALLBACK,
   REPLY_UNDO_EXPIRED,
@@ -73,6 +76,8 @@ export interface ExecuteInput {
   render?: RenderOptions
   /** What was heard in a voice note: a reply with no record of a change starts with it, rendered by code. */
   heard?: string
+  /** The message held something Warren must not keep: no word of the model's and no transcript in the reply, and an audit with no input (`redact.ts`). */
+  redact?: boolean
 }
 
 /** The tools whose line is the record of a change. */
@@ -134,6 +139,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
     // A `reply` is all text: an empty one is still refused (and answered), never skipped.
     // (`ask_user` has no text: code asks, once.)
     if (
+      !i.redact &&
       action.tool !== 'notice' &&
       'text' in action.input &&
       (action.input.text?.trim() || action.tool === 'reply')
@@ -244,18 +250,16 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
       }
       case 'forget_fact': {
         const { id, key } = action.input
-        // By id the model was shown, or by key: either way only the sender's own live facts are looked up.
-        const found =
-          id > 0
-            ? [await lockLiveFact(tx, i.accountId, id)]
-            : await lockLiveWithKey(tx, i.accountId, key)
-        const facts = found.filter((f) => f !== null)
-        for (const fact of facts) {
-          await forgetFact(tx, fact.id, i.inboundId)
-          lines.push(renderForgot(fact))
+        await lockFacts(tx, i.accountId)
+        // By the id the model was shown, or by key: either way only the sender's own live facts are looked up.
+        const found = await findLive(tx, i.accountId, id > 0 ? { id } : { key }, { lock: true })
+        const gone: FactRow[] = []
+        for (const fact of found) {
+          if (await forgetFact(tx, fact.id, i.inboundId)) gone.push(fact)
         }
-        if (facts.length === 0) lines.push(id > 0 ? REPLY_FACT_GONE : renderForgotNone(key))
-        steps.push({ tool: action.tool, outcome: facts.length > 0 ? 'applied' : 'gone' })
+        for (const fact of gone) lines.push(renderForgot(fact))
+        if (gone.length === 0) lines.push(id > 0 ? REPLY_FACT_GONE : renderForgotNone(key))
+        steps.push({ tool: action.tool, outcome: gone.length > 0 ? 'applied' : 'gone' })
         break
       }
       case 'forget_all_facts': {
@@ -268,10 +272,8 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         }
         lines.push(renderForgetAllAsk(known.length))
         steps.push({ tool: action.tool, outcome: 'asked' })
-        if (!out.asked) {
-          out.asked = [{ number: 1, id: 0 }]
-          out.pending = { action: 'forget_all' }
-        }
+        // Its own kind of question: nothing is offered to pick, so no options are stored. Only this action asks (it goes alone).
+        out.pending = { action: 'forget_all' }
         break
       }
       case 'forget_all_confirmed': {
@@ -340,6 +342,8 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         steps.push({ tool: action.tool, outcome: 'applied' })
         break
       case 'reply':
+        // The model's own words could repeat what was said: answer a message that holds a secret with code's line.
+        if (i.redact) lines.push(REPLY_FACT_SECRET)
         steps.push({ tool: action.tool, outcome: 'applied' })
         break
     }
@@ -356,9 +360,12 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
     fallback: REPLY_SAY_FALLBACK,
     // The record of a change already shows what was understood, amounts included: say what was heard only for
     // answers, summaries, questions and the model's own words, where nothing else shows it.
-    heard: steps.some((s) => s.outcome === 'applied' && CHANGES.has(s.tool)) ? undefined : i.heard,
+    heard:
+      i.redact || steps.some((s) => s.outcome === 'applied' && CHANGES.has(s.tool))
+        ? undefined
+        : i.heard,
   })
-  const audit = i.audit.map((e) =>
+  const audit = (i.redact ? scrubAudit(i.audit) : i.audit).map((e) =>
     e.action === undefined
       ? e
       : {

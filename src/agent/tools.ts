@@ -23,7 +23,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   forget_fact:
     'Forget one remembered fact: its id from "Hechos" (only an id you were shown), or its key (the words) when it is not shown. Send one of the two and leave the other 0 or "". For "olvidate de lo de la visa". Never for a movement of the ledger.',
   forget_all_facts:
-    'The person asks you to forget everything you know about them ("olvidate de todo lo que sabés de mí"). Code asks "¿Seguro?" and only their "sí" confirms; you never do.',
+    'The person asks you to forget everything you know about them ("olvidate de todo lo que sabés de mí"). Code asks "¿Seguro?" and only their "sí" confirms; you never do. Never together with another action.',
   list_facts:
     'The person asks what you know or have noted about them ("¿qué sabés de mí?", "¿qué tenés anotado?"). Code lists every fact.',
 }

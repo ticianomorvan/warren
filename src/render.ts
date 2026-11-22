@@ -273,6 +273,8 @@ export const renderStale = (
 
 /** What a secret is answered with: nothing was stored. */
 export const REPLY_FACT_SECRET = 'No guardo claves, números de tarjeta, CBU/CVU ni documentos.'
+/** What a phone number or an email is answered with: nothing was stored. */
+export const REPLY_FACT_CONTACT = 'No guardo datos de contacto: teléfonos ni mails.'
 export const REPLY_FACTS_NONE = 'Todavía no tengo nada anotado de vos.'
 export const REPLY_FACT_GONE = '🧠 Eso ya lo había olvidado.'
 /** The most facts one account holds, and what to do about it. */

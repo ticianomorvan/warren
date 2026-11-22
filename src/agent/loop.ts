@@ -169,6 +169,8 @@ const REPAIR_OTHER =
   'Not run: a text of another call of this turn would not be sent. Send every action again, with that text fixed or null.'
 const ALONE =
   'undo_last undoes the previous batch of changes and cannot be sent with other actions. Send it alone, with a text for any other part of the message ("Mandame lo otro aparte."); or, if the person named one movement ("deshacé el café"), it is delete_movement or correct_movement instead.'
+const ALONE_FORGET =
+  'forget_all_facts asks "¿Seguro?" and waits for the person\'s answer, so it cannot be sent with other actions. Send it alone, with a text for any other part of the message ("Mandame lo otro aparte.").'
 const REFUSED =
   'Not run: another call of this turn was refused. Send all the actions again, corrected.'
 
@@ -330,18 +332,17 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     }
 
     // Undoing the last batch stands alone: it is about earlier messages, and a change beside it would be
-    // part of "the last thing", whichever order code ran them in.
-    const undo = checked.find(
-      (c) => c.result.kind === 'action' && c.result.action.tool === 'undo_last',
-    )
-    if (undo && checked.some((c) => c !== undo && c.result.kind === 'action')) {
-      undo.result = {
-        kind: 'rejected',
-        message: ALONE,
+    // part of "the last thing", whichever order code ran them in. Asking to forget everything stands alone too: the
+    // question it leaves open is what the person's next "sí" answers, and only one question can be open.
+    for (const tool of ['undo_last', 'forget_all_facts']) {
+      const alone = checked.find((c) => c.result.kind === 'action' && c.result.action.tool === tool)
+      if (alone && checked.some((c) => c !== alone && c.result.kind === 'action')) {
+        const message = tool === 'undo_last' ? ALONE : ALONE_FORGET
+        alone.result = { kind: 'rejected', message }
+        alone.text = message
+        alone.entry.status = 'rejected'
+        alone.entry.detail = message
       }
-      undo.text = ALONE
-      undo.entry.status = 'rejected'
-      undo.entry.detail = ALONE
     }
 
     for (const id of foundThisTurn) i.seen.add(id)

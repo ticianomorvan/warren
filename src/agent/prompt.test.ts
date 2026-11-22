@@ -321,7 +321,7 @@ describe('renderContext: facts about the person', () => {
   it('a pending "¿Seguro?" is described as code’s to confirm, and offers no movement to correct', () => {
     const context = renderContext({
       ...base,
-      pending: { asked: [{ number: 1, id: 0 }], action: 'forget_all' },
+      pending: { asked: [], action: 'forget_all' },
     })
     expect(context).toContain('Solo un "sí" suyo lo confirma, y lo hace el código')
     expect(context).not.toContain('UNA sola opción')

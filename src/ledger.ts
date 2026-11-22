@@ -158,8 +158,12 @@ export async function lastBatch(
       AND i.action IS NOT NULL AND i.reply_text IS NOT NULL AND i.undoes IS NULL
       AND (EXISTS (SELECT 1 FROM movement m WHERE m.inbound_message_id = i.id AND m.account_id = a.id)
         OR EXISTS (SELECT 1 FROM movement m WHERE m.deleted_by = i.id AND m.account_id = a.id)
-        OR EXISTS (SELECT 1 FROM fact f WHERE f.inbound_message_id = i.id AND f.account_id = a.id)
-        OR EXISTS (SELECT 1 FROM fact f WHERE f.forgotten_by = i.id AND f.account_id = a.id))
+        OR EXISTS (
+          SELECT 1 FROM fact f WHERE f.account_id = a.id AND (
+            -- a fact the message stored, unless it also forgot it and replaced nothing (a net of nothing)
+            (f.inbound_message_id = i.id
+              AND (f.forgotten_by IS DISTINCT FROM i.id OR EXISTS (SELECT 1 FROM fact p WHERE p.superseded_by = f.id)))
+            OR (f.forgotten_by = i.id AND f.inbound_message_id <> i.id))))
       AND NOT EXISTS (SELECT 1 FROM inbound_message u WHERE u.undoes = i.id)
     ORDER BY i.id DESC LIMIT 1`
   return row ?? null

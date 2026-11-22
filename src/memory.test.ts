@@ -1,8 +1,12 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { MAX_FACTS } from './agent/memory'
 import {
+  ask,
+  day,
   forget,
   forgetAll,
+  insist,
   listFacts,
   logOf,
   movement,
@@ -12,8 +16,24 @@ import {
   WA,
 } from './command-fixtures'
 import { execute } from './execute'
-import { REPLY_FACT_SECRET, REPLY_FACTS_NONE } from './render'
-import { bodies, messageBody, post, row, setup, sql, until, useDatabase } from './test-harness'
+import { findLive, forgetFact, supersedeFact } from './facts'
+import { REPLY_FACT_CONTACT, REPLY_FACT_SECRET, REPLY_FACTS_NONE } from './render'
+import {
+  bodies,
+  fakeGraph,
+  fakeTranscriber,
+  heard,
+  messageBody,
+  OGG,
+  photoBody,
+  post,
+  row,
+  setup,
+  sql,
+  until,
+  useDatabase,
+  voiceBody,
+} from './test-harness'
 
 useDatabase()
 
@@ -204,6 +224,29 @@ describe('what is not remembered', () => {
       remember('note', 'banco', 'ver mensaje'),
       'acordate que mi contraseña del banco es azul77',
     ))
+
+  it('a password said with no keyword, a card with odd separators, a phone and an email', async () => {
+    const cases: [ReturnType<typeof remember>, string, string][] = [
+      [remember('note', 'galicia', 'Perro123'), 'en el galicia uso Perro123', REPLY_FACT_SECRET],
+      [
+        remember('note', 'tarjeta', '4509_9535_6623_3704'),
+        'la tarjeta es 4509_9535_6623_3704',
+        REPLY_FACT_SECRET,
+      ],
+      [
+        remember('note', 'mama', '11 2345-6789'),
+        'el cel de mama es 11 2345-6789',
+        REPLY_FACT_CONTACT,
+      ],
+      [remember('note', 'mail', 'ana@x.com'), 'mi mail es ana@x.com', REPLY_FACT_CONTACT],
+    ]
+    for (const [call, message, expected] of cases) {
+      const app = await setup({ model: script(call) })
+      expect(await send(app, message), message).toBe(expected)
+      expect(await facts()).toEqual([])
+      app.close()
+    }
+  })
 
   it('a secret beside a log: the log is done and the person is told the secret was not kept', async () => {
     const app = await setup({
@@ -817,5 +860,291 @@ describe('a fact never moves the ledger', () => {
     await send(app, 'deshacer')
     expect(await ledger()).toEqual(before)
     app.close()
+  })
+})
+
+describe('a batch that did a fact and then undid it in the same message', () => {
+  it('"la visa es la del santander, olvidate de eso" after galicia: undo brings galicia back, as before the batch', async () => {
+    const app = await setup({
+      model: script(remember('alias', 'la visa', 'galicia'), [
+        remember('alias', 'la visa', 'santander'),
+        forget({ key: 'la visa' }),
+      ]),
+    })
+    await send(app, 'la visa es la del galicia')
+    expect(
+      (await send(app, 'la visa es la del santander, no, olvidate de la visa')).split('\n'),
+    ).toEqual([
+      '🧠 Me acuerdo: la visa = santander (antes galicia)',
+      '🧠 Me olvidé: la visa = santander',
+    ])
+    expect(await live()).toEqual([])
+    // The batch left nothing where galicia stood: undoing it puts galicia back (a new row).
+    expect(await send(app, 'deshacer')).toBe('↩︎ Deshice:\n• Volvió 🧠 la visa = galicia')
+    expect(await live()).toEqual(['la visa=galicia'])
+    // And the batch before it is next: the first remember is undone too.
+    expect(await send(app, 'deshacer')).toBe('↩︎ Deshice:\n• Olvidé 🧠 la visa = galicia')
+    expect(await live()).toEqual([])
+    expect(await send(app, 'deshacer')).toBe('No tengo nada para deshacer.')
+    app.close()
+  })
+
+  it('a batch that is a net of nothing is skipped, so the batch before it can still be undone', async () => {
+    const app = await setup({
+      model: script(logOf(movement({ payment: null })), [
+        remember('alias', 'la visa', 'galicia'),
+        forget({ key: 'la visa' }),
+      ]),
+    })
+    await send(app, 'café 3500')
+    await send(app, 'la visa es la del galicia, no, olvidate de eso')
+    expect(await send(app, 'deshacer')).toBe('↩︎ Deshice: Café $3.500')
+    expect(await send(app, 'deshacer')).toBe('No tengo nada para deshacer.')
+    app.close()
+  })
+})
+
+describe('"sí" answers the question that was asked, and only one is asked at a time', () => {
+  const asksToDelete = (id: number) => ask([id], { after: 'delete' })
+
+  it.each([
+    ['a question about a movement first', (id: number) => [asksToDelete(id), forgetAll]],
+    ['forgetting everything first', (id: number) => [forgetAll, asksToDelete(id)]],
+  ])('%s: forgetting everything is refused beside it, and sent alone', async (_, calls) => {
+    const [, café] = await day()
+    await seedFacts(WA, 2, 'cosa')
+    const app = await setup({ model: script(calls(café as number), forgetAll) })
+    expect(await send(app, 'borrá el café y olvidate de todo lo que sabés de mí')).toBe(
+      '¿Seguro que querés que me olvide de todo lo que sé de vos (2)? Respondé sí.',
+    )
+    const [asked] = await messages()
+    expect(JSON.stringify(asked?.tool_calls)).toContain('cannot be sent with other actions')
+    // Its question is its own kind: no options are stored, and a "sí" forgets the facts, never the café.
+    expect(asked).toMatchObject({
+      asked_numbers: null,
+      pending: { action: 'forget_all' },
+      model_turns: 2,
+    })
+    expect(await send(app, 'sí')).toBe('🧠 Me olvidé de todo lo que sabía de vos (2).')
+    expect(await live()).toEqual([])
+    expect(await sql`SELECT count(*)::int AS n FROM movement WHERE deleted_at IS NOT NULL`).toEqual(
+      [{ n: 0 }],
+    )
+    app.close()
+  })
+
+  it('a question about a movement, answered "sí", never forgets facts', async () => {
+    const [, café] = await day()
+    await seedFacts(WA, 2, 'cosa')
+    const app = await setup({ model: script(ask([café as number], { after: 'delete' })) })
+    await send(app, 'borrá un café')
+    await send(app, 'sí')
+    expect(await live()).toHaveLength(2)
+    expect(await sql`SELECT count(*)::int AS n FROM movement WHERE deleted_at IS NOT NULL`).toEqual(
+      [{ n: 1 }],
+    )
+    app.close()
+  })
+})
+
+/** Every text and jsonb column of every table, as one string: what the database knows. */
+const everything = async () =>
+  (
+    await Promise.all(
+      ['inbound_message', 'fact', 'movement', 'reply', 'account'].map(async (t) =>
+        (await sql.unsafe(`SELECT row_to_json(t)::text AS j FROM ${t} t`)).map((r) => r.j),
+      ),
+    )
+  )
+    .flat()
+    .join('\n')
+
+describe('a secret is not kept anywhere', () => {
+  const PLACEHOLDER = '[dato sensible, no guardado]'
+
+  it('not stored as a fact, not in the message, the raw webhook, the audit, what ran or the next conversation window', async () => {
+    const app = await setup({
+      model: script(remember('note', 'clave del galicia', 'Perro123'), replyCall('Hola.')),
+    })
+    expect(await send(app, 'mi clave del galicia es Perro123')).toBe(REPLY_FACT_SECRET)
+    const dump = await everything()
+    expect(dump).not.toContain('Perro123')
+    const [stored] =
+      await sql`SELECT body, payload, tool_calls, parsed, command FROM inbound_message`
+    expect(stored?.body).toBe(PLACEHOLDER)
+    expect(stored?.payload.text.body).toBe(PLACEHOLDER)
+    expect(JSON.stringify(stored?.tool_calls)).toContain('remember_fact')
+    expect(JSON.stringify(stored?.tool_calls)).toContain('"status":"applied"')
+    // The model's next context shows the placeholder, and what Warren answered.
+    await send(app, 'hola')
+    expect(contextOf(app, 1)).toContain(
+      `(persona, hace 0 min) ${PLACEHOLDER}\n(Warren) ${REPLY_FACT_SECRET}`,
+    )
+    expect(contextOf(app, 1)).not.toContain('Perro123')
+    app.close()
+  })
+
+  it('a secret the model tried to store but the message did not look like one: the same', async () => {
+    const app = await setup({ model: script(remember('note', 'mi viejo', '12345678')) })
+    expect(await send(app, 'mi viejo vive en 12345678')).toBe(REPLY_FACT_SECRET)
+    expect(await everything()).not.toContain('12345678')
+    app.close()
+  })
+
+  it('the model’s own words do not repeat it: a reply is code’s line, and a voice transcript is not echoed', async () => {
+    const app = await setup({ model: script(replyCall('Tu clave Perro123 no la guardo.')) })
+    expect(await send(app, 'mi clave es Perro123')).toBe(REPLY_FACT_SECRET)
+    expect(await everything()).not.toContain('Perro123')
+    app.close()
+  })
+
+  it('a message that fails leaves no trace of it either', async () => {
+    const app = await setup({ model: insist({ name: 'bogus', input: { x: 'Perro123' } }) })
+    await send(app, 'mi clave es Perro123')
+    const [failed] = await sql`SELECT status FROM inbound_message`
+    expect(failed?.status).toBe('failed')
+    expect(await everything()).not.toContain('Perro123')
+    app.close()
+  })
+
+  it('a photo’s caption is wiped from the raw webhook too', async () => {
+    const RECEIPT = readFileSync(
+      new URL('../evals/scenarios/fixtures/receipt-farmacia.png', import.meta.url),
+    )
+    const app = await setup({
+      fake: fakeGraph({ media: { m1: RECEIPT } }),
+      model: script(replyCall('No.')),
+    })
+    await post(app.base, photoBody('wamid.MEMP', 'm1', 'mi clave es Perro123', WA))
+    await until(async () => (await row('wamid.MEMP'))?.status === 'done')
+    expect(await everything()).not.toContain('Perro123')
+    app.close()
+  })
+
+  it('a voice note that says one: no transcript in the reply, the message or anywhere', async () => {
+    const app = await setup({
+      fake: fakeGraph({ media: { a1: OGG } }),
+      transcriber: fakeTranscriber(heard('mi clave del galicia es Perro123')).transcriber,
+      model: script(replyCall('Tu clave Perro123 no la guardo.')),
+    })
+    await post(app.base, voiceBody('wamid.MEMV', 'a1', WA))
+    await until(async () => (await row('wamid.MEMV'))?.status === 'done')
+    expect(bodies(app.calls).at(-1)).toBe(REPLY_FACT_SECRET)
+    expect(await everything()).not.toContain('Perro123')
+    expect((await row('wamid.MEMV'))?.body).toBe('[dato sensible, no guardado]')
+    app.close()
+  })
+
+  it('what is not a secret is kept as it was: the message, the audit and a CBU used to pay', async () => {
+    const app = await setup({ model: script(logOf(movement({ payment: 'transferencia' }))) })
+    await send(app, 'café 3500 por cbu 15000')
+    const [stored] = await sql`SELECT body, payload, tool_calls FROM inbound_message`
+    expect(stored?.body).toBe('café 3500 por cbu 15000')
+    expect(stored?.payload.text.body).toBe('café 3500 por cbu 15000')
+    expect(JSON.stringify(stored?.tool_calls)).toContain('"amount":"3500"')
+    app.close()
+  })
+
+  it('a secret beside a log: the log is done and shown, the secret is gone', async () => {
+    const app = await setup({
+      model: script([logOf(movement({ payment: null })), remember('note', 'pin', 'azul')]),
+    })
+    expect((await send(app, 'café 3500 y mi pin es azul77')).split('\n')).toEqual([
+      '✓ Café $3.500',
+      REPLY_FACT_SECRET,
+    ])
+    expect(await everything()).not.toContain('azul77')
+    expect(await movementCount()).toBe(1)
+    app.close()
+  })
+})
+
+describe('the facts the message names, beyond the newest 30', () => {
+  const oldAlias = async () => {
+    await seedFacts(WA, 1, 'brasil')
+    await sql`UPDATE fact SET kind = 'alias', key = 'la del brasil', value = 'la visa'`
+    await seedFacts(WA, 35, 'cosa')
+  }
+
+  it('an old alias the message uses is shown with the newest ones, and can be forgotten by its id', async () => {
+    await oldAlias()
+    const app = await setup({ model: script(replyCall('Hola.'), forget({ id: 1 })) })
+    await send(app, 'café 3000 con la del brasil')
+    const context = contextOf(app, 0)
+    expect(context.match(/^id=\d+ /gm)).toHaveLength(31)
+    expect(context).toContain('id=1 alias "la del brasil" = "la visa"')
+    expect(context).toContain('(Hay 5 hechos más que no se muestran')
+    // Shown, so its id is one the model may send.
+    expect(await send(app, 'olvidate de la del brasil')).toBe(
+      '🧠 Me olvidé: la del brasil = la visa',
+    )
+    app.close()
+  })
+
+  it('and not when the message does not say it', async () => {
+    await oldAlias()
+    const app = await setup({ model: script(replyCall('Hola.')) })
+    await send(app, 'café 3000')
+    expect(contextOf(app, 0)).not.toContain('la del brasil')
+    expect(contextOf(app, 0)).toContain('(Hay 6 hechos más que no se muestran')
+    app.close()
+  })
+
+  it('never another person’s, and at most 20 of them', async () => {
+    await seedFacts(OTHER, 1, 'brasil')
+    await sql`UPDATE fact SET kind = 'alias', key = 'la del brasil', value = 'la visa'`
+    await seedFacts(WA, 30, 'viejo')
+    await seedFacts(WA, 30, 'cosa')
+    const app = await setup({ model: script(replyCall('Hola.')) })
+    await send(
+      app,
+      `${Array.from({ length: 30 }, (_, k) => `viejo ${k + 1}`).join(' ')} la del brasil`,
+    )
+    const context = contextOf(app, 0)
+    expect(context).not.toContain('alias "la del brasil"')
+    // The 30 newest ("cosa"), and 20 of the 30 older ones, all of whose keys the message says.
+    expect(context.match(/^id=\d+ dato "cosa/gm)).toHaveLength(30)
+    expect(context.match(/^id=\d+ dato "viejo/gm)).toHaveLength(20)
+    app.close()
+  })
+})
+
+describe('the lookups of a live fact only find live facts', () => {
+  it('a forgotten or replaced fact is not found, not forgotten again and not replaced', async () => {
+    const [a, b] = await seedFacts(WA, 2, 'cosa')
+    const [account] = await sql`SELECT id::int AS id FROM account`
+    const [msg] = await sql`SELECT id::int AS id FROM inbound_message`
+    await sql
+      .begin(async (tx) => {
+        const t = tx as never
+        expect(await forgetFact(t, a as number, msg?.id as number)).toBe(true)
+        // Already forgotten: nothing is written and the caller is told.
+        expect(await forgetFact(t, a as number, msg?.id as number)).toBe(false)
+        expect(await findLive(t, account?.id as number, { id: a as number })).toEqual([])
+        expect(await findLive(t, account?.id as number, { id: b as number })).toHaveLength(1)
+        const [live1] = await findLive(t, account?.id as number, { id: b as number })
+        await supersedeFact(t, {
+          accountId: account?.id as number,
+          inboundId: msg?.id as number,
+          kind: 'note',
+          key: 'cosa 2',
+          value: 'nuevo',
+          old: live1 as never,
+        })
+        // The replaced row is not live: it is not found by id, and replacing it again is an error, not a second live fact.
+        expect(await findLive(t, account?.id as number, { id: b as number })).toEqual([])
+        await expect(
+          supersedeFact(t, {
+            accountId: account?.id as number,
+            inboundId: msg?.id as number,
+            kind: 'note',
+            key: 'cosa 2',
+            value: 'otro',
+            old: live1 as never,
+          }),
+        ).rejects.toThrow(/not live/)
+        throw new Error('rollback')
+      })
+      .catch((e) => expect(String(e)).toContain('rollback'))
   })
 })

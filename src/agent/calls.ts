@@ -1,7 +1,7 @@
 import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
 import { planSummary } from '../range'
-import { REPLY_FACT_SECRET } from '../render'
+import { REPLY_FACT_CONTACT, REPLY_FACT_SECRET } from '../render'
 import { checkFact, normalizeKey } from './memory'
 import { hasLongNumber, hasNumberWord } from './say'
 import {
@@ -214,8 +214,9 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
     case 'remember_fact': {
       const f = parsed.data as ToolInput<'remember_fact'>
       const checked = checkFact(f, guard.message ?? '')
-      if ('secret' in checked) {
-        return { kind: 'action', action: { tool: 'notice', input: { text: REPLY_FACT_SECRET } } }
+      if ('refused' in checked) {
+        const text = checked.refused === 'secret' ? REPLY_FACT_SECRET : REPLY_FACT_CONTACT
+        return { kind: 'action', action: { tool: 'notice', input: { text } } }
       }
       if (!checked.ok) return rejected(checked.message)
       const at = `${checked.fact.kind}:${checked.fact.key}`

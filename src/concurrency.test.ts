@@ -84,44 +84,45 @@ describe.skipIf(!url)('real Postgres: concurrency', () => {
     expect(rows).toHaveLength(ROUNDS + corrections)
   })
 
-  describe('an undo racing a correction of the same movement', () => {
-    /**
-     * Commits one message's actions in its own transaction. It waits `start` ms before it begins, and holds
-     * its locks `hold` ms after it acted, so a test can make either one go first without a race to win.
-     */
-    async function commitMessage(
-      store: ReturnType<typeof createStore>,
-      wamid: string,
-      actions: Action[],
-      o: { start?: number; hold?: number } = {},
-    ) {
-      const [account] = await sql`SELECT id::int AS id FROM account WHERE wa_id = ${WA}`
-      const [message] = await sql`
+  /**
+   * Commits one message's actions in its own transaction. It waits `start` ms before it begins, and holds
+   * its locks `hold` ms after it acted, so a test can make either one go first without a race to win.
+   */
+  async function commitMessage(
+    store: ReturnType<typeof createStore>,
+    wamid: string,
+    actions: Action[],
+    o: { start?: number; hold?: number } = {},
+  ) {
+    const [account] = await sql`SELECT id::int AS id FROM account WHERE wa_id = ${WA}`
+    const [message] = await sql`
         INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status, attempts)
         VALUES (${wamid}, ${WA}, 'text', 'x', '{}'::jsonb, 'processing', 1) RETURNING id::int AS id`
-      if (o.start) await new Promise((r) => setTimeout(r, o.start))
-      return store.commit({ id: message?.id ?? 0, attempts: 1 } as never, {
-        parsed: actions,
-        command: actions,
-        action: actions.some((a) => a.tool === 'undo_last') ? 'undo' : 'multi',
-        turns: 1,
-        modelMs: 1,
-        execute: async (tx: Sql) => {
-          const done = await execute(tx, {
-            accountId: account?.id ?? 0,
-            inboundId: message?.id ?? 0,
-            actions,
-            audit: [],
-            today: TODAY,
-            message: '',
-            facts: [],
-            window: [],
-          })
-          if (o.hold) await tx`SELECT pg_sleep(${o.hold / 1000})`
-          return done
-        },
-      })
-    }
+    if (o.start) await new Promise((r) => setTimeout(r, o.start))
+    return store.commit({ id: message?.id ?? 0, attempts: 1 } as never, {
+      parsed: actions,
+      command: actions,
+      action: actions.some((a) => a.tool === 'undo_last') ? 'undo' : 'multi',
+      turns: 1,
+      modelMs: 1,
+      execute: async (tx: Sql) => {
+        const done = await execute(tx, {
+          accountId: account?.id ?? 0,
+          inboundId: message?.id ?? 0,
+          actions,
+          audit: [],
+          today: TODAY,
+          message: '',
+          facts: [],
+          window: [],
+        })
+        if (o.hold) await tx`SELECT pg_sleep(${o.hold / 1000})`
+        return done
+      },
+    })
+  }
+
+  describe('an undo racing a correction of the same movement', () => {
     const undo: Action[] = [{ tool: 'undo_last', input: { text: null } }]
     const fix = (id: number): Action[] => [
       { tool: 'correct_movement', input: { id, changes: { amount: '3800' }, text: null } },
@@ -233,6 +234,90 @@ describe.skipIf(!url)('real Postgres: concurrency', () => {
         const second = await commitMessage(store, `race.u2.${round}`, undo)
         expect(second === REPLY_UNDO_NOTHING || second?.startsWith('↩︎')).toBe(true)
       }
+    })
+  })
+
+  describe('facts', () => {
+    const remember = (key: string, value: string): Action[] => [
+      { tool: 'remember_fact', input: { kind: 'alias', key, value, text: null } },
+    ]
+    const forgetByKey = (key: string): Action[] => [
+      { tool: 'forget_fact', input: { id: 0, key, text: null } },
+    ]
+    const live = async () =>
+      (
+        await sql`SELECT key, value FROM fact WHERE superseded_by IS NULL AND forgotten_at IS NULL ORDER BY id`
+      ).map((r) => `${r.key}=${r.value}`)
+    const store = () => createStore(sql, { staleMs: 60_000, maxAttempts: 3 })
+    const undo: Action[] = [{ tool: 'undo_last', input: { text: null } }]
+
+    it('two messages remembering the same key at once: neither fails, one value is live, the other was replaced', async () => {
+      for (let round = 0; round < 4; round++) {
+        await sql`TRUNCATE fact, movement, inbound_message, account RESTART IDENTITY CASCADE`
+        await sql`INSERT INTO account (wa_id) VALUES (${WA})`
+        const [a, b] = await Promise.all([
+          commitMessage(store(), `fact.a.${round}`, remember('la visa', 'galicia'), { hold: 150 }),
+          commitMessage(store(), `fact.b.${round}`, remember('la visa', 'santander'), {
+            hold: 150,
+          }),
+        ])
+        // Whoever went second saw the first one's row and replaced it; neither hit the unique index.
+        expect([a, b].every((r) => r?.startsWith('🧠 Me acuerdo'))).toBe(true)
+        expect([a, b].filter((r) => r?.includes('(antes'))).toHaveLength(1)
+        expect(await live()).toHaveLength(1)
+        const rows =
+          await sql`SELECT value, superseded_by IS NOT NULL AS replaced FROM fact ORDER BY id`
+        expect(rows.map((r) => r.replaced)).toEqual([true, false])
+      }
+    })
+
+    it('a forget waits for the remember that is still committing, then finds what it stored', async () => {
+      await sql`INSERT INTO account (wa_id) VALUES (${WA})`
+      const [stored, forgot] = await Promise.all([
+        commitMessage(store(), 'fact.r', remember('la visa', 'galicia'), { hold: 400 }),
+        commitMessage(store(), 'fact.f', forgetByKey('la visa'), { start: 150 }),
+      ])
+      expect(stored).toBe('🧠 Me acuerdo: la visa = galicia')
+      expect(forgot).toBe('🧠 Me olvidé: la visa = galicia')
+      expect(await live()).toEqual([])
+    })
+
+    describe('an undo racing a forget of the same fact', () => {
+      const arrange = async () => {
+        await sql`INSERT INTO account (wa_id) VALUES (${WA})`
+        // The fact was stored by a committed message: the batch an undo reaches.
+        await commitMessage(store(), 'fact.batch', remember('la visa', 'galicia'))
+        expect(await live()).toEqual(['la visa=galicia'])
+      }
+
+      it('the undo first: the forget waits for the lock, then finds nothing left', async () => {
+        await arrange()
+        const [undone, forgot] = await Promise.all([
+          commitMessage(store(), 'fact.u', undo, { hold: 400 }),
+          commitMessage(store(), 'fact.f', forgetByKey('la visa'), { start: 150 }),
+        ])
+        expect(undone).toBe('↩︎ Deshice:\n• Olvidé 🧠 la visa = galicia')
+        expect(forgot).toBe('🧠 No tengo nada anotado de "la visa".')
+        expect(await live()).toEqual([])
+      })
+
+      it('the forget first: the undo waits for the lock, then refuses and touches nothing', async () => {
+        await arrange()
+        const [forgot, undone] = await Promise.all([
+          commitMessage(store(), 'fact.f', forgetByKey('la visa'), { hold: 400 }),
+          commitMessage(store(), 'fact.u', undo, { start: 150 }),
+        ])
+        expect(forgot).toBe('🧠 Me olvidé: la visa = galicia')
+        expect(undone).toBe(
+          'No deshice nada: 🧠 la visa = galicia cambió después. Decime qué querés cambiar.',
+        )
+        const rows = await sql`SELECT forgotten_by IS NOT NULL AS forgotten FROM fact ORDER BY id`
+        expect(rows).toEqual([{ forgotten: true }])
+        expect(
+          (await sql`SELECT count(*)::int AS n FROM inbound_message WHERE undoes IS NOT NULL`)[0]
+            ?.n,
+        ).toBe(0)
+      })
     })
   })
 

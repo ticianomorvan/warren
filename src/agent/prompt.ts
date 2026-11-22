@@ -168,7 +168,7 @@ The person may tell you things about their own money and habits so that you unde
 - Saying the same key again with a new value replaces the old one: call remember_fact again.
 - Use the facts to read the message, before you choose a payment, a description or a category. An alias that names a payment gives that payment ("con la del galicia" with the fact "la del galicia = la visa" is payment "crédito visa"); an alias for a place or a thing gives its meaning for the description and the category ("cueva 5000" with "la cueva = verdulería" is description "verdulería", category supermercado). A category fact decides the category of that thing, over the list above. What the person says in this very message wins over a fact. Facts also apply to summaries and searches ("cuánto gasté con la del galicia" filters payment "crédito visa").
 - forget_fact: "olvidate de lo de la visa". Send the id of a fact listed under "Hechos", or its key (its words) when it is not listed; the other is 0 or "". It is only for what they asked you to remember: "borrá el café" is delete_movement.
-- forget_all_facts: "olvidate de todo lo que sabés de mí", "quiero que te olvides de todo". Code asks "¿Seguro?" and only the person's "sí" confirms: never confirm yourself. If they answer no to that question, call reply: you keep everything.
+- forget_all_facts: "olvidate de todo lo que sabés de mí", "quiero que te olvides de todo". Code asks "¿Seguro?" and only the person's "sí" confirms: never confirm yourself. If they answer no to that question, call reply: you keep everything. It goes alone in its turn, never with another action.
 - list_facts: "¿qué sabés de mí?", "¿qué tenés anotado de mí?". Code lists every fact; you write nothing about them.
 
 # Photos
@@ -431,11 +431,14 @@ export interface ContextInput {
   memory?: FactRow[]
   /** How many live facts the person has in all; more than `memory` holds when some are not shown. */
   memoryTotal?: number
-  /** The options of the question Warren just asked, if the person has not answered it. */
-  pending: {
-    asked: { number: number; id: number }[]
-    action: 'correct' | 'delete' | 'none' | 'forget_all'
-  } | null
+  /**
+   * The question Warren just asked, if the person has not answered it: the numbered options of a `¿Cuál?`, or the
+   * `¿Seguro?` over forgetting everything, which offers no movement.
+   */
+  pending:
+    | { asked: { number: number; id: number }[]; action: 'correct' | 'delete' | 'none' }
+    | { asked: []; action: 'forget_all' }
+    | null
 }
 
 const EXPIRED =
@@ -478,14 +481,13 @@ export function renderContext(i: ContextInput): string {
     return `(persona, hace ${t.minutesAgo} min) ${clip(t.text)}\n(Warren) ${clip(t.reply)}${expired}`
   })
   const forgetting = i.pending?.action === 'forget_all'
-  const pending =
-    i.pending && !forgetting
-      ? [
-          `Pregunta pendiente: ${i.pending.asked.map((a) => `${a.number} = id ${a.id}`).join(', ')} (${PENDING_TEXT[i.pending.action as keyof typeof PENDING_TEXT]})`,
+  const pending = !i.pending
+    ? []
+    : i.pending.action === 'forget_all'
+      ? [FORGET_ALL_PENDING]
+      : [
+          `Pregunta pendiente: ${i.pending.asked.map((a) => `${a.number} = id ${a.id}`).join(', ')} (${PENDING_TEXT[i.pending.action]})`,
         ]
-      : forgetting
-        ? [FORGET_ALL_PENDING]
-        : []
   const memory = i.memory ?? []
   const hidden = Math.max(0, (i.memoryTotal ?? memory.length) - memory.length)
   return [
@@ -504,7 +506,7 @@ export function renderContext(i: ContextInput): string {
       : []),
     ...(conversation.length > 0 ? [`Conversación reciente:\n${conversation.join('\n')}`] : []),
     ...pending,
-    ...(i.pending?.asked.length === 1 && !forgetting
+    ...(i.pending?.asked.length === 1
       ? [
           `La pregunta pendiente tiene UNA sola opción (id ${i.pending.asked[0]?.id}): "ese", "sí" o "a ese ponele 3500" se refieren a ella. Si este mensaje trae un cambio (un monto, una fecha, un pago): correct_movement con ese id y ese cambio, sin volver a preguntar. Si no trae ningún cambio: ask_user con ese mismo id, after_answer "none", question "Qué querés cambiar"; no ofrezcas otros movimientos.`,
         ]
