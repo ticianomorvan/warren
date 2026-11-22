@@ -97,7 +97,7 @@ export function liveByIds(sql: Sql, accountId: number, ids: number[]) {
     ORDER BY id DESC`
 }
 
-/** Inserts the corrected movement, linked to the correcting message, and points the old one at it. */
+/** Inserts the corrected movement, linked to the correcting message, and points the old one at it. Returns the new row's id. */
 export async function supersede(
   sql: Sql,
   o: {
@@ -107,7 +107,7 @@ export async function supersede(
     next: RecentMovement
     position: number
   },
-): Promise<void> {
+): Promise<number> {
   const [id] = await insertMovements(sql, {
     accountId: o.accountId,
     inboundId: o.inboundId,
@@ -119,6 +119,7 @@ export async function supersede(
     UPDATE movement SET created_at = old.created_at
     FROM movement old WHERE movement.id = ${id ?? null} AND old.id = ${o.old.id}`
   await sql`UPDATE movement SET superseded_by = ${id ?? null} WHERE id = ${o.old.id}`
+  return id as number
 }
 
 export async function softDelete(sql: Sql, id: number, inboundId: number): Promise<void> {
