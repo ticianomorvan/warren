@@ -85,11 +85,6 @@ export const ScheduleSchema = fields.superRefine((s, ctx) => {
 /** A parsed schedule: `time` and `interval` are always there. Build one with `ScheduleSchema.parse`. */
 export type Schedule = z.infer<typeof ScheduleSchema>
 
-/** A stored schedule, or a refusal. */
-export function parseSchedule(json: unknown): Schedule {
-  return ScheduleSchema.parse(json)
-}
-
 // Days are whole numbers of days since 1970-01-01 (a UTC midnight), so calendar arithmetic is integer arithmetic.
 
 function toDay(iso: string): number {

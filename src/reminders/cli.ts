@@ -1,14 +1,14 @@
 import { join } from 'node:path'
+import { reminderTemplate } from '../config'
 import { connect } from '../db'
 import { createGraph } from '../whatsapp/graph'
-import { insertReminder } from './db'
+import { insertReminder, TEMPLATE_LANGUAGE } from './db'
 import { ScheduleSchema } from './schedule'
-import { TEMPLATE_LANGUAGE } from './send'
 
 /**
  * Dev scripts for the reminders (docs/reminders-spec.md, slice 6.1). Secrets come from the gitignored `.env`
  * and are never printed.
- *   pnpm template:status                      the template's category and status at Meta (read only)
+ *   pnpm template:status [name]              the template's category and status at Meta (read only); REMINDER_TEMPLATE unless a name is given
  *   pnpm reminder:try-template <wa_id>        sends the template once to that number (a real message)
  *   pnpm reminder:add <wa_id> "<what>" <yyyy-mm-ddThh:mm>   a one-off reminder at that Argentine local time;
  *                                             the running server's tick sends it. No model is involved.
@@ -25,13 +25,22 @@ const need = (name: string): string => {
   }
   return value
 }
-const templateName = () => process.env.REMINDER_TEMPLATE?.trim() || 'warren_reminder'
+/** The template's name, read the way the server reads it (`REMINDER_TEMPLATE`), or the one given as an argument. */
+function templateName(arg?: string): string {
+  const name = reminderTemplate.parse(arg ?? process.env.REMINDER_TEMPLATE)
+  if (!name) {
+    console.error('Set REMINDER_TEMPLATE (in .env or the environment).')
+    process.exit(1)
+  }
+  return name
+}
 
-async function templateStatus() {
+async function templateStatus(arg?: string) {
+  const name = templateName(arg)
   const url = new URL(
     `https://graph.facebook.com/${need('GRAPH_API_VERSION')}/${need('WHATSAPP_BUSINESS_ACCOUNT_ID')}/message_templates`,
   )
-  url.searchParams.set('name', templateName())
+  url.searchParams.set('name', name)
   url.searchParams.set('fields', 'name,category,status')
   const res = await fetch(url, {
     headers: { authorization: `Bearer ${need('WHATSAPP_ACCESS_TOKEN')}` },
@@ -43,7 +52,7 @@ async function templateStatus() {
   const { data } = (await res.json()) as {
     data?: { name?: string; category?: string; status?: string }[]
   }
-  if (!data?.length) console.log(`${templateName()}: not found`)
+  if (!data?.length) console.log(`${name}: not found`)
   for (const t of data ?? []) console.log(`${t.name} category=${t.category} status=${t.status}`)
 }
 
@@ -92,7 +101,7 @@ async function add(waId: string | undefined, what: string | undefined, local: st
 }
 
 const [command, ...args] = process.argv.slice(2)
-if (command === 'template-status') await templateStatus()
+if (command === 'template-status') await templateStatus(args[0])
 else if (command === 'try-template') await tryTemplate(args[0])
 else if (command === 'add') await add(args[0], args[1], args[2])
 else {

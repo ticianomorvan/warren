@@ -187,3 +187,19 @@ What shipped, and where it differs from the text above.
 - Status webhooks: `store.recordStatus` first looks the wamid up in `reminder_send`; a reminder's wamid never creates a `reply` row. A status that arrives
   before the sender has stored the wamid (milliseconds) falls through to `reply`; accepted.
 - Not run here, by design: `template:status` and `reminder:try-template` (the live checks are the owner's agent's, after deploy).
+
+### Changes after review (same slice)
+
+- **131047 is mostly asynchronous.** Meta accepts the text (200) and later sends a `failed` status with 131047. `recordReminderStatus` now turns a
+  `kind='text'` row that is `sent` into `retry_template` (one guarded transaction; a redelivered webhook finds it no longer `sent` and does nothing) and
+  takes it out of `sent_count`; the sweep claims `retry_template` rows before due reminders, flips them to `started` as a template in the claim
+  transaction (at most once) and sends the template, under the same allow-list, per-person cap and unset-template rules. The synchronous 4xx path
+  still falls back at once. Migration `015_reminder_retry.sql` adds the status.
+- **Window:** measured from `COALESCE(meta_ts, received_at)` of the person's newest WhatsApp message (Meta redelivers after an outage, so `received_at` lags), and
+  text only if that is under 23 h old (was 23 h 50 m).
+- **`ALLOWED_WA_IDS`:** the sender takes the same list as the replies; an account no longer allowed has the occurrence spent as `failed` (logged), nothing sent.
+- **One reminder per claim transaction**, up to 20 a tick; `stop(timeoutMs = 10 s)` ends the loop and waits for the send in progress. Started rows turned `unknown` log an `alert` with their count.
+- A database error before any send (recording `kind = 'template'`) ends the send `failed`, not `unknown`. The no-template case is one place (`NoTemplate`). A `failed` status
+  decrements `sent_count`. `what` has runs of whitespace collapsed into one space (`tidyWhat`, applied by `insertReminder`; slice 6.2's tool goes through it). `parseSchedule` is gone
+  (`ScheduleSchema.parse`). `REMINDER_TEMPLATE` is read the same way by the server and the scripts (no default in the scripts; `template:status` also takes the name as an argument).
+  `recordReminderStatus` logs (`reminder_status_failed`); `recordStatus` returns nothing again.

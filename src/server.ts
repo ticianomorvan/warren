@@ -58,7 +58,12 @@ const processor = createProcessor({
     ? createTranscriber({ apiKey: config.OPENROUTER_API_KEY })
     : undefined,
 })
-const reminders = createReminderSender({ sql, graph, template: config.REMINDER_TEMPLATE })
+const reminders = createReminderSender({
+  sql,
+  graph,
+  allowed: config.ALLOWED_WA_IDS,
+  template: config.REMINDER_TEMPLATE,
+})
 const server = createApp({ store, config, processor, auth })
 
 server.listen(config.PORT, () => log('listening', { port: config.PORT }))

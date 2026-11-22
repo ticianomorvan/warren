@@ -129,10 +129,10 @@ export function createStore(sql: Sql, o: StoreOptions) {
 
     /**
      * One statement, any arrival order. A `read` also stands in for a missing `delivered`. A status for a
-     * reminder's wamid belongs to its `reminder_send` (a `failed` one ends it `failed`), not to `reply`.
+     * reminder's wamid belongs to its `reminder_send` (see `recordReminderStatus`), not to `reply`.
      */
-    async recordStatus(s: StatusInput): Promise<'reply' | 'reminder'> {
-      if (await recordReminderStatus(sql, s)) return 'reminder'
+    async recordStatus(s: StatusInput): Promise<void> {
+      if (await recordReminderStatus(sql, s)) return
       const delivered = s.status === 'delivered' || s.status === 'read' ? s.at : null
       await sql`
         INSERT INTO reply (outbound_wamid, delivered_at, read_at, failed_at)
@@ -143,7 +143,6 @@ export function createStore(sql: Sql, o: StoreOptions) {
           delivered_at = LEAST(reply.delivered_at, EXCLUDED.delivered_at),
           read_at = COALESCE(reply.read_at, EXCLUDED.read_at),
           failed_at = COALESCE(reply.failed_at, EXCLUDED.failed_at)`
-      return 'reply'
     },
 
     /**

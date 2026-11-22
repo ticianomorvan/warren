@@ -1,16 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fakeGraph, post, setup, sql, useDatabase } from '../test-harness'
+import { fakeGraph, gate, post, setup, sql, until, useDatabase } from '../test-harness'
 import { GraphError } from '../whatsapp/graph'
-import { insertReminder } from './db'
+import { insertReminder, TEMPLATE_LANGUAGE } from './db'
 import { ScheduleSchema } from './schedule'
-import {
-  createReminderSender,
-  DAILY_ALERT,
-  LATE_MS,
-  PERSON_CAP,
-  TEMPLATE_LANGUAGE,
-  WINDOW_MS,
-} from './send'
+import { createReminderSender, DAILY_ALERT, LATE_MS, PERSON_CAP, WINDOW_MS } from './send'
 
 vi.mock('../log', () => ({ log: vi.fn() }))
 const { log } = await import('../log')
@@ -44,10 +37,10 @@ async function account(waId: string): Promise<number> {
 }
 
 /** A message the person sent: it opens the 24 h window for `age` ms after it was received. */
-async function wrote(age: number, waId = WA) {
+async function wrote(age: number, waId = WA, receivedAge = age) {
   await sql`
-    INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status, received_at)
-    VALUES (${`in.${waId}.${age}.${Math.random()}`}, ${waId}, 'text', 'hola', '{}'::jsonb, 'done', ${ago(age)})`
+    INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status, meta_ts, received_at)
+    VALUES (${`in.${waId}.${age}.${Math.random()}`}, ${waId}, 'text', 'hola', '{}'::jsonb, 'done', ${ago(age)}, ${ago(receivedAge)})`
 }
 
 /** A reminder whose next occurrence is the given Argentine local moment. */
@@ -72,11 +65,14 @@ const sends = () =>
   sql`SELECT reminder_id::int AS reminder, due_at, kind, status, wamid, error_code FROM reminder_send ORDER BY id`
 const reminderRow = async (id: number) =>
   (await sql`SELECT next_due_at, sent_count FROM reminder WHERE id = ${id}`)[0]
-const sender = (graph: ReturnType<typeof fakeGraph>['graph'], template: string | null = TEMPLATE) =>
-  createReminderSender({ sql, graph, template: template ?? undefined, now: () => NOW })
+const sender = (
+  graph: ReturnType<typeof fakeGraph>['graph'],
+  template: string | null = TEMPLATE,
+  allowed: string[] = ['*'],
+) => createReminderSender({ sql, graph, allowed, template: template ?? undefined, now: () => NOW })
 
 describe('the window decides text or template', () => {
-  it('sends text when the person wrote less than 23 h 50 m ago', async () => {
+  it('sends text when the person wrote less than 23 h ago', async () => {
     await wrote(WINDOW_MS - minutes(1))
     const id = await remind('pagar la Visa', oneOff('2026-11-22 11:55'))
     const fake = fakeGraph()
@@ -279,6 +275,7 @@ describe('at most once', () => {
     await createReminderSender({
       sql,
       graph: fake.graph,
+      allowed: ['*'],
       template: TEMPLATE,
       now: () => new Date(NOW.getTime() + minutes(11)),
     }).sweep()
@@ -297,6 +294,7 @@ describe('recurring reminders and downtime', () => {
     await createReminderSender({
       sql,
       graph: fake.graph,
+      allowed: ['*'],
       template: TEMPLATE,
       now: () => new Date('2026-11-22T09:00:30-03:00'),
     }).sweep()
@@ -497,13 +495,8 @@ describe('delivery status webhooks', () => {
       const replies =
         await sql`SELECT count(*)::int AS n FROM reply WHERE outbound_wamid = 'wamid.OUT1'`
       expect(replies[0]?.n).toBe(0)
-      expect(
-        vi
-          .mocked(log)
-          .mock.calls.some(
-            ([e, f]) => e === 'status_failed' && (f as { reminder?: boolean }).reminder === true,
-          ),
-      ).toBe(true)
+      expect(vi.mocked(log).mock.calls.some(([e]) => e === 'reminder_status_failed')).toBe(true)
+      expect(await reminderRow(1)).toMatchObject({ sent_count: 0 })
     } finally {
       app.close()
     }
@@ -528,14 +521,308 @@ describe('insertReminder', () => {
     ).rejects.toThrow()
   })
 
-  it('refuses text that is not one line', async () => {
-    await expect(
-      insertReminder(sql, {
-        accountId,
-        what: 'a\nb',
-        schedule: oneOff('2026-11-23 09:00'),
-        now: NOW,
-      }),
-    ).rejects.toThrow()
+  it('collapses runs of whitespace into one space (a template parameter may hold none)', async () => {
+    const { id } = await insertReminder(sql, {
+      accountId,
+      what: '  pagar\n la   Visa\t\t   hoy      ',
+      schedule: oneOff('2026-11-23 09:00'),
+      now: NOW,
+    })
+    const [row] = await sql`SELECT what FROM reminder WHERE id = ${id}`
+    expect(row?.what).toBe('pagar la Visa hoy')
+  })
+
+  it('refuses text with a control character, and an empty one', async () => {
+    for (const what of ['a\u0001b', '  ']) {
+      await expect(
+        insertReminder(sql, { accountId, what, schedule: oneOff('2026-11-23 09:00'), now: NOW }),
+      ).rejects.toThrow()
+    }
+  })
+})
+
+describe('the window runs from when the person wrote', () => {
+  it('uses Meta’s time, not when we stored it: a message redelivered after an outage does not open it', async () => {
+    // Written 25 h ago (Meta's timestamp), stored 5 minutes ago (redelivered).
+    await wrote(25 * 3_600_000, WA, minutes(5))
+    await remind('x', oneOff('2026-11-22 11:55'))
+    const fake = fakeGraph()
+    await sender(fake.graph).sweep()
+    expect(fake.calls.sent).toEqual([])
+    expect(fake.calls.templates).toHaveLength(1)
+  })
+
+  it('closes an hour before Meta does: 23 h 30 m ago is the template', async () => {
+    await wrote(23 * 3_600_000 + minutes(30))
+    await remind('x', oneOff('2026-11-22 11:55'))
+    const fake = fakeGraph()
+    await sender(fake.graph).sweep()
+    expect(fake.calls.templates).toHaveLength(1)
+  })
+})
+
+describe('131047 reported by a status after a 200', () => {
+  const statusBody = (id: string, status: string, code?: number) =>
+    JSON.stringify({
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                statuses: [
+                  {
+                    id,
+                    status,
+                    timestamp: '1760000000',
+                    ...(code ? { errors: [{ code, title: 'x' }] } : {}),
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    })
+
+  /** A text reminder sent (wamid.OUT1) with the app behind a webhook. */
+  async function sentText() {
+    await wrote(minutes(5))
+    const id = await remind('pagar la Visa', oneOff('2026-11-22 11:55'))
+    const fake = fakeGraph()
+    const app = await setup({ fake })
+    await sender(fake.graph).sweep()
+    expect(await sends()).toMatchObject([{ kind: 'text', status: 'sent', wamid: 'wamid.OUT1' }])
+    return { id, fake, app }
+  }
+
+  it('sends the template once, however many times the webhook is delivered', async () => {
+    const { id, fake, app } = await sentText()
+    try {
+      await post(app.base, statusBody('wamid.OUT1', 'failed', 131047))
+      await post(app.base, statusBody('wamid.OUT1', 'failed', 131047)) // redelivered, before the sweep
+      expect(await sends()).toMatchObject([{ status: 'retry_template', error_code: 131047 }])
+      expect(await reminderRow(id)).toMatchObject({ sent_count: 0 })
+      expect(fake.calls.templates).toEqual([])
+
+      await sender(fake.graph).sweep()
+      expect(fake.calls.templates).toEqual([
+        { to: WA, name: TEMPLATE, lang: TEMPLATE_LANGUAGE, params: ['pagar la Visa'] },
+      ])
+      expect(await sends()).toMatchObject([
+        { kind: 'template', status: 'sent', wamid: 'wamid.TPL2' },
+      ])
+      expect(await reminderRow(id)).toMatchObject({ sent_count: 1 })
+
+      await post(app.base, statusBody('wamid.OUT1', 'failed', 131047)) // redelivered, after
+      await post(app.base, statusBody('wamid.TPL2', 'failed', 131047)) // the template's own is not retried
+      await sender(fake.graph).sweep()
+      expect(fake.calls.templates).toHaveLength(1)
+      expect(fake.calls.sent).toHaveLength(1)
+      expect(await sends()).toMatchObject([
+        { kind: 'template', status: 'failed', error_code: 131047 },
+      ])
+    } finally {
+      app.close()
+    }
+  })
+
+  it('two senders claiming the retry at once send the template once', async () => {
+    const { fake, app } = await sentText()
+    try {
+      await post(app.base, statusBody('wamid.OUT1', 'failed', 131047))
+      await Promise.all([sender(fake.graph).sweep(), sender(fake.graph).sweep()])
+      expect(fake.calls.templates).toHaveLength(1)
+    } finally {
+      app.close()
+    }
+  })
+
+  it('another failure code ends it failed, with no template, and the send is not counted', async () => {
+    const { id, fake, app } = await sentText()
+    try {
+      await post(app.base, statusBody('wamid.OUT1', 'failed', 131049))
+      await sender(fake.graph).sweep()
+      expect(fake.calls.templates).toEqual([])
+      expect(await sends()).toMatchObject([{ status: 'failed', error_code: 131049 }])
+      expect(await reminderRow(id)).toMatchObject({ sent_count: 0 })
+    } finally {
+      app.close()
+    }
+  })
+
+  it('without a template configured the retry ends failed with 131047, and logs it', async () => {
+    const { fake, app } = await sentText()
+    try {
+      await post(app.base, statusBody('wamid.OUT1', 'failed', 131047))
+      await sender(fake.graph, null).sweep()
+      expect(fake.calls.templates).toEqual([])
+      expect(await sends()).toMatchObject([{ status: 'failed', error_code: 131047 }])
+      expect(vi.mocked(log).mock.calls.some(([e]) => e === 'reminder_template_unset')).toBe(true)
+    } finally {
+      app.close()
+    }
+  })
+
+  it('respects the per-person cap: capped, nothing sent, an alert logged', async () => {
+    const { id, fake, app } = await sentText()
+    try {
+      for (let i = 0; i < PERSON_CAP; i++) {
+        await sql`INSERT INTO reminder_send (reminder_id, due_at, kind, started_at, status)
+          VALUES (${id}, ${new Date(Date.UTC(2026, 0, 1 + i))}, 'text', ${ago(minutes(30))}, 'sent')`
+      }
+      await post(app.base, statusBody('wamid.OUT1', 'failed', 131047))
+      await sender(fake.graph).sweep()
+      expect(fake.calls.templates).toEqual([])
+      expect((await sends())[0]).toMatchObject({ status: 'capped' })
+      expect(
+        vi
+          .mocked(log)
+          .mock.calls.some(
+            ([e, f]) => e === 'alert' && (f as { reason: string }).reason === 'reminder_person_cap',
+          ),
+      ).toBe(true)
+    } finally {
+      app.close()
+    }
+  })
+
+  it('does not retry for a person who is no longer allowed', async () => {
+    const { fake, app } = await sentText()
+    try {
+      await post(app.base, statusBody('wamid.OUT1', 'failed', 131047))
+      await sender(fake.graph, TEMPLATE, ['5491100000099']).sweep()
+      expect(fake.calls.templates).toEqual([])
+      expect(await sends()).toMatchObject([{ status: 'failed' }])
+    } finally {
+      app.close()
+    }
+  })
+})
+
+describe('who may be sent to', () => {
+  it('spends the occurrence as failed, logs it and sends nothing to an account no longer allowed', async () => {
+    await wrote(minutes(5))
+    const id = await remind('x', oneOff('2026-11-22 11:55'))
+    const fake = fakeGraph()
+    await sender(fake.graph, TEMPLATE, ['5491100000099']).sweep()
+    expect(fake.calls.attempts).toBe(0)
+    expect(await sends()).toMatchObject([{ status: 'failed', wamid: null }])
+    expect((await reminderRow(id))?.next_due_at).toBeNull()
+    expect(vi.mocked(log).mock.calls.some(([e]) => e === 'reminder_send_failed')).toBe(true)
+    // It does not come back when the person is allowed again: the occurrence is spent.
+    await sender(fake.graph).sweep()
+    expect(fake.calls.attempts).toBe(0)
+  })
+
+  it('sends to a listed number', async () => {
+    await wrote(minutes(5))
+    await remind('x', oneOff('2026-11-22 11:55'))
+    const fake = fakeGraph()
+    await sender(fake.graph, TEMPLATE, [WA]).sweep()
+    expect(fake.calls.sent).toHaveLength(1)
+  })
+})
+
+describe('shutdown and a send that never ended', () => {
+  it('claims one reminder at a time: stopping mid-batch strands only the send in progress', async () => {
+    await wrote(minutes(5))
+    for (let i = 0; i < 5; i++) await remind(`r${i}`, oneOff(`2026-11-22 11:5${i}`))
+    const hold = gate()
+    const fake = fakeGraph({
+      send: async (n) => {
+        if (n === 1) await hold.promise
+        return `wamid.OUT${n}`
+      },
+    })
+    const s = sender(fake.graph)
+    const sweeping = s.sweep()
+    await until(() => fake.calls.attempts === 1)
+    const stopped = s.stop()
+    hold.open()
+    await stopped
+    await sweeping
+    expect(fake.calls.attempts).toBe(1)
+    // The other four were never claimed: still due, no send row, nothing lost.
+    expect(await sends()).toHaveLength(1)
+    const [due] = await sql`SELECT count(*)::int AS n FROM reminder WHERE next_due_at IS NOT NULL`
+    expect(due?.n).toBe(4)
+    // And a later process sends them.
+    await sender(fake.graph).sweep()
+    expect(fake.calls.attempts).toBe(5)
+  })
+
+  it('stop gives up waiting for a send after its time limit', async () => {
+    await wrote(minutes(5))
+    await remind('x', oneOff('2026-11-22 11:55'))
+    const hold = gate()
+    const fake = fakeGraph({ send: () => hold.promise.then(() => 'wamid.LATE') })
+    const s = sender(fake.graph)
+    const sweeping = s.sweep()
+    await until(() => fake.calls.attempts === 1)
+    const t = Date.now()
+    await s.stop(60)
+    expect(Date.now() - t).toBeLessThan(2000)
+    hold.open()
+    await sweeping
+  })
+
+  it('does not sweep after stop', async () => {
+    await remind('x', oneOff('2026-11-22 11:55'))
+    const fake = fakeGraph()
+    const s = sender(fake.graph)
+    await s.stop()
+    await s.sweep()
+    expect(fake.calls.attempts).toBe(0)
+  })
+
+  it('logs an alert, with the count, when started rows are turned into unknown', async () => {
+    const id = await history()
+    for (let i = 0; i < 3; i++) {
+      await sql`INSERT INTO reminder_send (reminder_id, due_at, kind, started_at, status)
+        VALUES (${id}, ${new Date(Date.UTC(2026, 0, 1 + i))}, 'text', ${ago(minutes(30))}, 'started')`
+    }
+    await sender(fakeGraph().graph).sweep()
+    expect(vi.mocked(log).mock.calls).toContainEqual([
+      'alert',
+      { reason: 'reminder_send_unknown_after_stale', count: 3 },
+      'error',
+    ])
+    expect((await sends()).filter((r) => r.status === 'unknown')).toHaveLength(3)
+  })
+
+  it('does not alert when nothing was stale', async () => {
+    await sender(fakeGraph().graph).sweep()
+    expect(
+      vi
+        .mocked(log)
+        .mock.calls.some(
+          ([e, f]) =>
+            e === 'alert' &&
+            (f as { reason: string }).reason === 'reminder_send_unknown_after_stale',
+        ),
+    ).toBe(false)
+  })
+
+  it('a database failure before any send is failed, not unknown, and nothing is sent', async () => {
+    await wrote(minutes(5))
+    await remind('x', oneOff('2026-11-22 11:55'))
+    // 131047 on the text, then the row cannot be moved to the template.
+    await sql`CREATE FUNCTION no_template_kind() RETURNS trigger LANGUAGE plpgsql AS
+      $$ BEGIN RAISE EXCEPTION 'no'; END $$`
+    await sql`CREATE TRIGGER no_template_kind BEFORE UPDATE OF kind ON reminder_send
+      FOR EACH ROW EXECUTE FUNCTION no_template_kind()`
+    try {
+      const fake = fakeGraph({
+        send: async () => {
+          throw new GraphError(400, 'Re-engagement message', 131047)
+        },
+      })
+      await sender(fake.graph).sweep()
+      expect(fake.calls.templates).toEqual([])
+      expect(await sends()).toMatchObject([{ kind: 'text', status: 'failed', error_code: 131047 }])
+    } finally {
+      await sql`DROP TRIGGER no_template_kind ON reminder_send`
+      await sql`DROP FUNCTION no_template_kind()`
+    }
   })
 })

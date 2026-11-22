@@ -8,6 +8,22 @@ const list = z
   .default('')
   .transform((s) => s.split(',').map(normalizeId).filter(Boolean))
 
+/**
+ * The name of the approved WhatsApp template that carries a reminder outside the 24 h window (`warren_reminder`,
+ * language es_AR; docs/reminders-spec.md). Unset, Warren sends no template: a reminder that needs one is logged and
+ * marked failed. The server and the reminder scripts read it the same way.
+ */
+export const reminderTemplate = z
+  .string()
+  .optional()
+  .transform((s) => s?.trim() || undefined)
+  .pipe(
+    z
+      .string()
+      .regex(/^[a-z0-9_]{1,512}$/)
+      .optional(),
+  )
+
 const fields = z.object({
   DATABASE_URL: z.string().min(1),
   PORT: z.coerce.number().int().default(3000),
@@ -30,19 +46,7 @@ const fields = z.object({
     .string()
     .optional()
     .transform((s) => s?.trim() || undefined),
-  // The name of the approved WhatsApp template that carries a reminder outside the 24 h window
-  // (`warren_reminder`, language es_AR; docs/reminders-spec.md). Unset, Warren sends no template: a reminder
-  // that needs one is logged and marked failed.
-  REMINDER_TEMPLATE: z
-    .string()
-    .optional()
-    .transform((s) => s?.trim() || undefined)
-    .pipe(
-      z
-        .string()
-        .regex(/^[a-z0-9_]{1,512}$/)
-        .optional(),
-    ),
+  REMINDER_TEMPLATE: reminderTemplate,
   // The sign-in and OAuth server for MCP (docs/mcp-spec.md). `PUBLIC_URL` turns it on and makes the other two
   // required. Unset, none of its routes exist and none of the three is read.
   PUBLIC_URL: z
