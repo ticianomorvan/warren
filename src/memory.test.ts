@@ -3,7 +3,6 @@ import { MAX_FACTS } from './agent/memory'
 import {
   forget,
   forgetAll,
-  insist,
   listFacts,
   logOf,
   movement,
@@ -409,7 +408,7 @@ describe('forgetting', () => {
   it('with nothing to forget there is nothing to confirm', async () => {
     const app = await setup({ model: script(forgetAll) })
     expect(await send(app, 'olvidate de todo lo que sabés de mí')).toBe(REPLY_FACTS_NONE)
-    expect(((await messages())[0] ?? {}).pending).toBeNull()
+    expect((await messages())[0]?.pending).toBeNull()
     app.close()
   })
 
@@ -518,6 +517,19 @@ describe('undo of a fact', () => {
       'No deshice nada: 🧠 la visa = galicia cambió después. Decime qué querés cambiar.',
     )
     expect(await facts()).toEqual(before)
+    app.close()
+  })
+
+  it('a fact stored and forgotten by the same message is a net of nothing: there is nothing to undo', async () => {
+    const app = await setup({
+      model: script([remember('alias', 'la visa', 'galicia'), forget({ key: 'la visa' })]),
+    })
+    // Both are in order: stored, then forgotten (the forget finds it by key inside the same transaction).
+    expect((await send(app, 'la visa es la del galicia, no, olvidate de eso')).split('\n')).toEqual(
+      ['🧠 Me acuerdo: la visa = galicia', '🧠 Me olvidé: la visa = galicia'],
+    )
+    expect(await live()).toEqual([])
+    expect(await send(app, 'deshacer')).toBe('No tengo nada para deshacer.')
     app.close()
   })
 
