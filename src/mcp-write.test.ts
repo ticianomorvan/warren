@@ -14,7 +14,7 @@ import {
   whatsapp,
   withClaude,
 } from './auth-test-kit'
-import { correct } from './command-fixtures'
+import { ask, correct } from './command-fixtures'
 import * as kit from './mcp-test-kit'
 import { accountOf, call, ok, refusal } from './mcp-test-kit'
 import { REPLY_DISCONNECT } from './render'
@@ -597,6 +597,31 @@ describe('the MCP rows are not WhatsApp messages', () => {
     expect(context).toContain('(Warren) ✓ Café') // the WhatsApp turn
     expect(context).not.toMatch(/\(Warren\)[^"]*zzzmcp/i) // the MCP summary is not a turn
     expect(context).toMatch(/zzzmcp/i) // but the movement is in the person's list, as any is
+  })
+
+  it("an MCP write between WhatsApp's question and its bare answer does not take the question away", async () => {
+    app.close()
+    let ids: number[] = []
+    await boot(fakeModel(() => [ask(ids, { question: 'Cuál', after: 'delete' })]))
+    ids = ok(
+      await tool(
+        a.access_token,
+        'warren_log_movements',
+        log({ ...cafe, description: 'uno' }, { ...cafe, description: 'dos' }),
+      ),
+      'log',
+    ).movements.map((m) => m.id as number)
+    const [question] = await whatsapp(app, WA_A, 'borrá el café')
+    expect(question).toContain('1.')
+    // Between the question and the answer: an MCP write (its row is the newest of this sender).
+    ok(
+      await tool(a.access_token, 'warren_log_movements', log({ ...cafe, description: 'zzzmcp' })),
+      'log',
+    )
+    const modelCalls = app.model.n
+    const [answer] = await whatsapp(app, WA_A, '1')
+    expect(answer).toContain('✓ Borré')
+    expect(app.model.n).toBe(modelCalls) // answered by code, from the stored options
   })
 
   it('the claim and the sweep never pick up an MCP row, even one left pending', async () => {
