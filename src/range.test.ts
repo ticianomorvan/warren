@@ -268,29 +268,65 @@ describe('previousRange', () => {
     return show(previousRange(res.range))
   }
 
-  it('a month goes to the previous calendar month, whole, whatever days it covers', () => {
-    expect(prior(r('this_month'))).toBe('2026-10-01..2026-10-31 month')
+  it('a month that is over goes to the previous calendar month, whole', () => {
     expect(prior(r('last_month'))).toBe('2026-09-01..2026-09-30 month')
-    expect(prior(r('month', { month: 3 }), '2026-03-15')).toBe('2026-02-01..2026-02-28 month')
-    expect(prior(r('month', { month: 3 }), '2028-03-15')).toBe('2028-02-01..2028-02-29 month')
-    expect(prior(r('month', { month: 1 }), '2026-01-15')).toBe('2025-12-01..2025-12-31 month')
+    expect(prior(r('last_month'), '2026-10-10')).toBe('2026-08-01..2026-08-31 month') // September is shorter than August
+    expect(prior(r('last_month'), '2026-03-10')).toBe('2026-01-01..2026-01-31 month')
+    expect(prior(r('month', { month: 10 }))).toBe('2026-09-01..2026-09-30 month')
+    expect(prior(r('month', { month: 3 }), '2026-04-10')).toBe('2026-02-01..2026-02-28 month')
+    expect(prior(r('month', { month: 3 }), '2028-04-10')).toBe('2028-02-01..2028-02-29 month')
+    expect(prior(r('month', { month: 1 }), '2026-02-15')).toBe('2025-12-01..2025-12-31 month')
     expect(prior(r('dates', { from: '2026-10-01', to: '2026-10-31' }))).toBe(
       '2026-09-01..2026-09-30 month',
     )
   })
 
-  it('a week to the previous Monday-to-Sunday, a weekend to the weekend before, a day to the day before', () => {
-    expect(prior(r('this_week'))).toBe('2026-11-09..2026-11-15 week')
+  it('a month in progress is compared with the same stretch of the previous one', () => {
+    expect(prior(r('this_month'))).toBe('2026-10-01..2026-10-21 month') // 1–21 Nov against 1–21 Oct
+    expect(prior(r('this_month'), '2026-11-01')).toBe('2026-10-01..2026-10-01 month')
+    expect(prior(r('month', { month: 1 }), '2026-01-15')).toBe('2025-12-01..2025-12-15 month')
+    expect(prior(r('this_month'), '2026-12-31')).toBe('2026-11-01..2026-11-30 month') // the last day: the month is whole
+  })
+
+  it('the stretch is clamped to the last day of a shorter month, leap years included', () => {
+    expect(prior(r('this_month'), '2026-03-28')).toBe('2026-02-01..2026-02-28 month')
+    expect(prior(r('this_month'), '2026-03-29')).toBe('2026-02-01..2026-02-28 month')
+    expect(prior(r('this_month'), '2026-03-30')).toBe('2026-02-01..2026-02-28 month')
+    expect(prior(r('this_month'), '2026-03-31')).toBe('2026-02-01..2026-02-28 month')
+    expect(prior(r('this_month'), '2028-03-28')).toBe('2028-02-01..2028-02-28 month')
+    expect(prior(r('this_month'), '2028-03-29')).toBe('2028-02-01..2028-02-29 month')
+    expect(prior(r('this_month'), '2028-03-31')).toBe('2028-02-01..2028-02-29 month')
+    expect(prior(r('this_month'), '2026-05-31')).toBe('2026-04-01..2026-04-30 month')
+    expect(prior(r('this_month'), '2026-07-30')).toBe('2026-06-01..2026-06-30 month')
+    expect(prior(r('this_month'), '2026-08-31')).toBe('2026-07-01..2026-07-31 month')
+  })
+
+  it('a week in progress is compared with the same weekdays of the week before; a week that is over, whole', () => {
+    expect(prior(r('this_week'))).toBe('2026-11-09..2026-11-14 week') // Monday to Saturday
+    expect(prior(r('this_week'), '2026-11-16')).toBe('2026-11-09..2026-11-09 week') // Monday only
+    expect(prior(r('this_week'), '2026-11-22')).toBe('2026-11-09..2026-11-15 week') // Sunday: the week is whole
     expect(prior(r('last_week'))).toBe('2026-11-02..2026-11-08 week')
-    expect(prior(r('weekend'))).toBe('2026-11-14..2026-11-15 weekend')
+  })
+
+  it('a weekend in progress is a Saturday against the Saturday before; a weekend that is over, whole', () => {
+    expect(prior(r('weekend'))).toBe('2026-11-14..2026-11-14 weekend')
+    expect(prior(r('weekend'), '2026-11-22')).toBe('2026-11-14..2026-11-15 weekend')
     expect(prior(r('last_weekend'))).toBe('2026-11-07..2026-11-08 weekend')
+  })
+
+  it('a day goes to the day before', () => {
     expect(prior(r('today'))).toBe('2026-11-20..2026-11-20 day')
     expect(prior(r('yesterday'), '2026-12-01')).toBe('2026-11-29..2026-11-29 day')
     expect(prior(r('today'), '2028-03-01')).toBe('2028-02-29..2028-02-29 day')
   })
 
-  it('a year to the previous year, whole', () => {
-    expect(prior(r('this_year'))).toBe('2025-01-01..2025-12-31 year')
+  it('a year in progress is compared with the same days of the year before; a year that is over, whole', () => {
+    expect(prior(r('this_year'))).toBe('2025-01-01..2025-11-21 year')
+    expect(prior(r('this_year'), '2026-01-01')).toBe('2025-01-01..2025-01-01 year')
+    expect(prior(r('this_year'), '2028-02-29')).toBe('2027-01-01..2027-02-28 year') // 29 February: clamped
+    expect(prior(r('this_year'), '2029-02-28')).toBe('2028-01-01..2028-02-28 year')
+    expect(prior(r('this_year'), '2026-12-31')).toBe('2025-01-01..2025-12-31 year')
+    expect(prior(r('last_year'))).toBe('2024-01-01..2024-12-31 year')
     expect(prior(r('year', { year: 2025 }))).toBe('2024-01-01..2024-12-31 year')
   })
 

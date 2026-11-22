@@ -276,25 +276,41 @@ describe('Argentine midnight and month boundaries', () => {
 })
 
 describe('a comparison is two sums and code does the rest', () => {
-  it('this month against the one before: both totals, the difference and the percentage, per currency', async () => {
-    const a = await app(summarize('this_month', { compare_to: 'previous' }))
+  it('this month so far against the same days of the one before: both totals, the difference and the percentage, per currency', async () => {
+    const a = await app(
+      summarize('this_month', { compare_to: 'previous' }),
+      summarize('last_month', { compare_to: 'previous' }),
+    )
     const reply = await say(a, { text: 'gasté más que el mes pasado?' })
+    // 1–9 October against 1–9 September, not against all of September
     const now = await expected({ from: '2025-10-01', to: '2025-10-09' })
-    const before = await expected({ from: '2025-09-01', to: '2025-09-30' })
+    const before = await expected({ from: '2025-09-01', to: '2025-09-09' })
+    expect(before).toEqual({ total: 1000000n, n: 1 }) // only the súper of the 1st: the café of the 15th and the USD of the 10th are later
     const delta = now.total - before.total
-    const pct = (Number(delta) / Number(before.total)) * 100 // 28800 / 12000: 240, no tie
+    const pct = (Number(delta) / Number(before.total)) * 100 // 30800 / 10000: 308, no tie
     expect(Number.isInteger(pct)).toBe(true)
     expect(reply).toBe(
       [
         `Octubre (1–9, en curso) gastaste ${money(now.total)} (${plural(now.n)}).`,
-        `Septiembre (1–30) gastaste ${money(before.total)} (${plural(before.n)}).`,
+        `Septiembre (1–9) gastaste ${money(before.total)} (${plural(before.n)}).`,
         `Diferencia: ${money(delta)} más (+${pct}%).`,
         'Octubre (1–9, en curso) gastaste US$ 50 (1 movimiento).',
-        'Septiembre (1–30) gastaste US$ 100 (1 movimiento).',
-        'Diferencia: US$ 50 menos (-50%).',
+        'Septiembre (1–9): no hay gastos.',
+        'No hay gastos en Septiembre (1–9) para comparar.',
       ].join('\n'),
     )
-    expect(reply).toContain('Diferencia: $28.800 más (+240%).')
+    expect(reply).toContain('Diferencia: $30.800 más (+308%).')
+    // a month that is over is compared whole: September against August
+    expect(await say(a)).toBe(
+      [
+        'Septiembre (1–30) gastaste $12.000 (2 movimientos).',
+        'Agosto (1–31) gastaste $900 (1 movimiento).',
+        'Diferencia: $11.100 más (+1233,3%).', // 11.100 / 900
+        'Septiembre (1–30) gastaste US$ 100 (1 movimiento).',
+        'Agosto (1–31): no hay gastos.',
+        'No hay gastos en Agosto (1–31) para comparar.',
+      ].join('\n'),
+    )
     a.close()
   })
 
@@ -324,7 +340,9 @@ describe('a comparison is two sums and code does the rest', () => {
   })
 
   it('income compares like spending', async () => {
-    const a = await app(summarize('this_month', { direction: 'in', compare_to: 'previous' }))
+    const a = await app(
+      summarize('this_month', { direction: 'in', compare_to: 'range', other: 'last_month' }),
+    )
     expect(await say(a)).toBe(
       [
         'Octubre (1–9, en curso) cobraste $600.000 (1 movimiento).',
@@ -401,19 +419,94 @@ describe('a comparison is two sums and code does the rest', () => {
     expect(await say(a)).toBe(
       [
         'Octubre (1–9, en curso) gastaste $40.800 (7 movimientos).',
-        'Septiembre (1–30) gastaste $12.000 (2 movimientos).',
-        'Diferencia: $28.800 más (+240%).',
+        'Septiembre (1–9) gastaste $10.000 (1 movimiento).',
+        'Diferencia: $30.800 más (+308%).',
         'Por categoría:',
         '• Súper $21.000 vs $10.000 (+110%)',
-        '• Restaurantes $9.300 vs $2.000 (+365%)', // 7.300 / 2.000
+        '• Restaurantes $9.300 vs $0',
         '• Combustible $5.000 vs $0',
         '• Entretenimiento $4.000 vs $0',
         '• Transporte $1.500 vs $0',
         'Octubre (1–9, en curso) gastaste US$ 50 (1 movimiento).',
-        'Septiembre (1–30) gastaste US$ 100 (1 movimiento).',
-        'Diferencia: US$ 50 menos (-50%).',
+        'Septiembre (1–9): no hay gastos.',
+        'No hay gastos en Septiembre (1–9) para comparar.',
         'Por categoría:',
-        '• Viajes US$ 50 vs US$ 100 (-50%)',
+        '• Viajes US$ 50 vs US$ 0',
+      ].join('\n'),
+    )
+    a.close()
+  })
+})
+
+describe('a period in progress is compared with the same stretch of the one before', () => {
+  const seedMarch = () =>
+    seed([
+      { on: '2025-03-30', amount: '120' },
+      { on: '2025-03-31', amount: '999' }, // a day later than the stretch: left out
+      { on: '2025-12-01', amount: '777' }, // later in the year: left out
+      { on: '2026-02-01', amount: '100' },
+      { on: '2026-02-28', amount: '200' },
+      { on: '2026-03-01', amount: '50' },
+      { on: '2026-03-05', amount: '300' },
+      { on: '2026-03-17', amount: '20' }, // Tuesday of the week before
+      { on: '2026-03-19', amount: '500' }, // Thursday of the week before: after the stretch
+      { on: '2026-03-24', amount: '10' }, // Tuesday of the week asked about
+      { on: '2026-03-30', amount: '1000' },
+      { on: '2026-03-31', amount: '400' },
+    ])
+
+  it('a month: 1–30 March against 1–28 February, and the whole of March against the whole of February on the 31st', async () => {
+    await seedMarch()
+    const a = await setup({
+      model: script(
+        summarize('this_month', { compare_to: 'previous' }),
+        summarize('this_month', { compare_to: 'previous' }),
+      ),
+    })
+    // every March movement up to the 30th: 50 + 300 + 20 + 500 + 10 + 1.000, against 100 + 200 of February
+    const march30 = await expected({ from: '2026-03-01', to: '2026-03-30' })
+    expect(march30).toEqual({ total: 188000n, n: 6 })
+    expect(await say(a, { at: '2026-03-30T15:00:00Z' })).toBe(
+      [
+        'Marzo (1–30, en curso) gastaste $1.880 (6 movimientos).',
+        'Febrero (1–28) gastaste $300 (2 movimientos).',
+        'Diferencia: $1.580 más (+526,7%).', // 1.580 / 300
+      ].join('\n'),
+    )
+    const march31 = await expected({ from: '2026-03-01', to: '2026-03-31' })
+    expect(await say(a, { at: '2026-03-31T15:00:00Z' })).toContain(
+      `Marzo (1–31) gastaste ${money(march31.total)} (${plural(march31.n)}).\nFebrero (1–28) gastaste $300 (2 movimientos).`,
+    )
+    a.close()
+  })
+
+  it('the year so far against the same days of last year, and a week so far against the same weekdays', async () => {
+    await seedMarch()
+    const a = await setup({
+      model: script(
+        summarize('this_year', { compare_to: 'previous' }),
+        summarize('this_week', { compare_to: 'previous' }),
+      ),
+    })
+    const now = await expected({ from: '2026-01-01', to: '2026-03-30' })
+    const before = await expected({ from: '2025-01-01', to: '2025-03-30' })
+    expect([now, before]).toEqual([
+      { total: 218000n, n: 8 },
+      { total: 12000n, n: 1 },
+    ])
+    expect(await say(a, { at: '2026-03-30T15:00:00Z' })).toBe(
+      [
+        'Año 2026 (1 ene–30 mar, en curso) gastaste $2.180 (8 movimientos).',
+        'Año 2025 (1 ene–30 mar 2025) gastaste $120 (1 movimiento).',
+        'Diferencia: $2.060 más (+1716,7%).', // 2.060 / 120
+      ].join('\n'),
+    )
+    // Wednesday 25 March: Monday to Wednesday against Monday to Wednesday of the week before (the 500 of Thursday is not in it)
+    expect(await say(a, { at: '2026-03-25T15:00:00Z' })).toBe(
+      [
+        'Esta semana (23–25 mar, en curso) gastaste $10 (1 movimiento).',
+        'Semana pasada (16–18 mar) gastaste $20 (1 movimiento).',
+        'Diferencia: $10 menos (-50%).',
       ].join('\n'),
     )
     a.close()
@@ -624,7 +717,7 @@ describe('the record', () => {
     await say(a)
     const stored = await row(lastWamid)
     expect(((stored?.tool_calls ?? []) as { detail?: string }[])[0]?.detail).toBe(
-      '2025-10-01..2025-10-09 vs 2025-09-01..2025-09-30 by category',
+      '2025-10-01..2025-10-09 vs 2025-09-01..2025-09-09 by category',
     )
     expect(stored?.action).toBe('summarize')
     a.close()

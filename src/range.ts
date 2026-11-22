@@ -321,12 +321,16 @@ export function parseOther(text: string): RangeInput | string {
 }
 
 /**
- * The range right before: a day goes to the day before, a week to the previous Monday-to-Sunday, a weekend to
- * the one before, a month to the previous calendar month, a year to the previous year (always whole), and a
- * custom range to the same number of days ending the day before it starts.
+ * The range to compare with: a day goes to the day before, a week to the previous Monday-to-Sunday, a weekend to the
+ * one before, a month to the previous calendar month, a year to the previous year, and a custom range to the same
+ * number of days ending the day before it starts. While the period asked about is still running (`partial`), the one
+ * before is cut to the same stretch, so like is compared with like: 1–21 November against 1–21 October (clamped to the
+ * last day of a shorter month: 30 March against 1–28 February), this year so far against the same days of last
+ * year, a week so far against the same weekdays of the week before. A period that is over is compared whole.
  */
 export function previousRange(r: Resolved): Resolved {
   const [y, m] = parts(r.from)
+  const [, tm, td] = parts(r.to)
   const whole = (w: Whole): Resolved => ({ ...w, partial: false })
   switch (r.kind) {
     case 'day': {
@@ -334,15 +338,28 @@ export function previousRange(r: Resolved): Resolved {
       return whole({ from: day, to: day, kind: 'day' })
     }
     case 'week':
-      return whole({ from: addDays(r.from, -7), to: addDays(r.from, -1), kind: 'week' })
+      return whole({
+        from: addDays(r.from, -7),
+        to: addDays(r.partial ? r.to : r.from, r.partial ? -7 : -1),
+        kind: 'week',
+      })
     case 'weekend':
-      return whole({ from: addDays(r.from, -7), to: addDays(r.from, -6), kind: 'weekend' })
+      return whole({
+        from: addDays(r.from, -7),
+        to: addDays(r.partial ? r.to : r.from, r.partial ? -7 : -6),
+        kind: 'weekend',
+      })
     case 'month': {
       const before = new Date(Date.UTC(y, m - 2, 1))
-      return whole(monthOf(before.getUTCFullYear(), before.getUTCMonth() + 1))
+      const [py, pm] = [before.getUTCFullYear(), before.getUTCMonth() + 1]
+      const last = daysIn(py, pm)
+      return whole({ ...monthOf(py, pm), to: iso(py, pm, r.partial ? Math.min(td, last) : last) })
     }
     case 'year':
-      return whole(yearOf(y - 1))
+      return whole({
+        ...yearOf(y - 1),
+        to: r.partial ? iso(y - 1, tm, Math.min(td, daysIn(y - 1, tm))) : iso(y - 1, 12, 31),
+      })
     case 'custom': {
       const days = rangeDays(r)
       return whole({ from: addDays(r.from, -days), to: addDays(r.from, -1), kind: 'custom' })
