@@ -150,3 +150,19 @@ the smallest step that keeps undo shared, and the overhaul can replace it with t
    auth adapter is a config change: the tables are the same.
 2. Writes are in this slice.
 3. Connector URL `https://heywarren.app/mcp`. Apex `ALIAS` → Railway added on Vercel DNS.
+
+## Slice 1 as built (2026-11-22)
+
+Decided while building, changing the text above:
+
+- No QR code (it needs a package). The sign-in page shows the code, the WhatsApp number in readable form and the
+  `https://wa.me/<number>?text=vincular%20<code>` button, which also works on WhatsApp Desktop and Web.
+- OAuth, MCP and sign-in routes answer only on `PUBLIC_URL`'s host; the webhook answers on any host.
+- When a sign-in code and a forget-all confirmation are both open, the newest question owns the next "sí".
+- The issuer is `PUBLIC_URL` itself (`jwt.issuer`), so both `.well-known` documents live at the root; better-auth's
+  endpoints are under `/api/auth`.
+- Schema: the better-auth CLI for 1.7 (`auth`) is 1.7.27, under the 3-day release age. `src/auth/print-schema.ts` runs the same
+  `getMigrations(...).compileMigrations()` the CLI's `generate` runs. A drift test replaces regenerating by hand.
+- Senders that are not allowed are ignored like any message (no reply), not refused: AGENTS.md says an empty or unmatched allow-list answers nobody.
+- The `@modelcontextprotocol/*` packages come with slice 2, the first to use them.
+- The browser secret is spent when the session is made; a reload of the sign-in page keeps its code while the request is open.
