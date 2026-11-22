@@ -28,9 +28,9 @@ describe('TOOLS', () => {
     expect(Object.keys(TOOL_INPUTS)).toEqual(TOOLS.map((t) => t.name))
   })
 
-  it('makes every tool strict, and every object closed with its required keys listed', () => {
+  it('makes no tool strict (strict decoding cost about 0.35 s a call), and every object closed with its required keys listed', () => {
     for (const tool of TOOLS) {
-      expect(tool.strict, tool.name).toBe(true)
+      expect(tool.strict, tool.name).toBeUndefined()
       for (const o of objects(tool.input_schema)) {
         expect(o.additionalProperties, tool.name).toBe(false)
         const keys = Object.keys(o.properties as Json)
@@ -41,25 +41,6 @@ describe('TOOLS', () => {
         ).toBe(true)
       }
     }
-  })
-
-  it('stays inside the strict-mode limits: 24 optional parameters, 16 with a union type', () => {
-    let optional = 0
-    let unions = 0
-    const count = (node: unknown) => {
-      if (Array.isArray(node)) return node.forEach(count)
-      if (!node || typeof node !== 'object') return
-      const o = node as Json
-      if (o.type === 'object') {
-        const required = new Set((o.required ?? []) as string[])
-        optional += Object.keys(o.properties as Json).filter((k) => !required.has(k)).length
-      }
-      if (Array.isArray(o.type) || 'anyOf' in o) unions++
-      Object.values(o).forEach(count)
-    }
-    for (const tool of TOOLS) count(tool.input_schema)
-    expect(optional).toBeLessThanOrEqual(24)
-    expect(unions).toBeLessThanOrEqual(16)
   })
 
   it('has no bounds, $schema or $ref, which the API rejects', () => {
@@ -125,9 +106,53 @@ describe('TOOL_INPUTS', () => {
     expect(TOOL_INPUTS.help().safeParse({}).success).toBe(true)
   })
 
-  it('always carries the text key of the write tools (strict tools send every required key)', () => {
-    expect(TOOL_INPUTS.delete_movement().safeParse({ id: 4 }).success).toBe(false)
-    expect(TOOL_INPUTS.log_movements().safeParse({ movements: [movement] }).success).toBe(false)
+  it('lists the text key of the write tools as required, but reads one the model left out as null', () => {
+    for (const name of [
+      'delete_movement',
+      'log_movements',
+      'correct_movement',
+      'summarize',
+      'undo_last',
+    ]) {
+      const tool = TOOLS.find((t) => t.name === name)
+      expect(((tool?.input_schema ?? {}) as { required?: string[] }).required, name).toContain(
+        'text',
+      )
+    }
+    expect(TOOL_INPUTS.delete_movement().parse({ id: 4 })).toEqual({ id: 4, text: null })
+    const log = TOOL_INPUTS.log_movements().parse({
+      movements: [{ ...movement, payment: undefined }],
+    })
+    expect(log.text).toBeNull()
+    expect(log.movements[0]?.payment).toBeNull()
+  })
+
+  it('reads the range fields a period does not use, and the nullable filters, as their placeholders', () => {
+    const q = TOOL_INPUTS.summarize().parse({
+      range: { period: 'this_month' },
+      group_by: 'none',
+      compare_to: 'none',
+    })
+    expect(q.range).toEqual({ period: 'this_month', month: 0, year: 0, from: '', to: '' })
+    expect([q.other, q.direction, q.category, q.payment, q.description, q.text]).toEqual([
+      '',
+      null,
+      null,
+      null,
+      null,
+      null,
+    ])
+  })
+
+  it('shows the model no defaults: the schema it sees has every field required and no "default"', () => {
+    const json = JSON.stringify(TOOLS.map((t) => t.input_schema))
+    expect(json).not.toContain('"default"')
+    const summarize = TOOLS.find((t) => t.name === 'summarize')?.input_schema as {
+      required: string[]
+      properties: { range: { required: string[] } }
+    }
+    expect(summarize.properties.range.required).toEqual(['period', 'month', 'year', 'from', 'to'])
+    expect(summarize.required).toContain('other')
   })
 
   it('has no text on ask_user: code asks the question once, so the model has nothing to add to it', () => {

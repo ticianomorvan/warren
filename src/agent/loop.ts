@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import type { FindFilter, MovementRow } from '../ledger'
+import type { TurnTiming } from '../timings'
 import { type Checked, checkCall, type Guard } from './calls'
 import { MODELS, type ModelKey, type Usage } from './models'
 import { movementFact, movementLine, SYSTEM_PROMPT } from './prompt'
@@ -32,6 +33,8 @@ export class AgentError extends Error {
     message: string,
     readonly audit: AuditEntry[] = [],
     readonly turns = 0,
+    /** The model calls it made, for the failed message's stored timings. */
+    readonly turnLog: TurnTiming[] = [],
   ) {
     super(message)
   }
@@ -102,9 +105,20 @@ export interface AgentResult {
   audit: AuditEntry[]
   turns: number
   usage: Usage
+  /** Each model call: its own time, the reads that followed it and its tokens (`Timings.turns`). */
+  turnLog: TurnTiming[]
   /** Wall time of the whole loop, reads included. */
   ms: number
 }
+
+/**
+ * How long the frozen prefix stays cached. One hour, not the default five minutes: a person writes every 10 to
+ * 30 minutes, so with 5 minutes nearly every message is a miss that writes the whole prefix again (12.5 times the
+ * price of reading it), and with one hour nearly every message is a read. The write costs 2x the input price
+ * instead of 1.25x (agent-spec, speed pass notes). The startup warm-up goes through `requestBase`, so it writes
+ * the same TTL.
+ */
+export const CACHE_TTL = '1h' as const
 
 /**
  * Everything of a request that does not change between messages: the model, the tools and the system
@@ -116,14 +130,17 @@ export const requestBase = (model: ModelKey) => ({
   output_config: { effort: 'low' as const },
   tools: TOOLS,
   system: [
-    { type: 'text' as const, text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' as const } },
+    {
+      type: 'text' as const,
+      text: SYSTEM_PROMPT,
+      cache_control: { type: 'ephemeral' as const, ttl: CACHE_TTL },
+    },
   ],
 })
 
 /**
- * One tiny request at startup. The API compiles the strict tool grammar on the first request after
- * the tool schema changes (about 10 s, measured 2026-11-21) and caches it; this makes the first
- * person's message not pay for that, and it writes the prompt cache.
+ * One tiny request at startup: it writes the prompt cache (with the TTL of every request) and opens the
+ * connection, so the first person's message pays for neither.
  */
 export async function warmUp(client: Anthropic, model: ModelKey): Promise<void> {
   await client.messages.create({
@@ -199,21 +216,40 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     })
   }
   const audit: AuditEntry[] = []
-  const usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+  const usage: Usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+  }
+  const turnLog: TurnTiming[] = []
   const started = performance.now()
 
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
+    const calledAt = performance.now()
     const response = await i.client.messages.create(
       { ...requestBase(i.model), max_tokens: 2048, messages },
       i.signal ? { signal: i.signal } : undefined,
     )
+    const timing: TurnTiming = {
+      model_ms: Math.round(performance.now() - calledAt),
+      find_ms: 0,
+      input: response.usage.input_tokens,
+      output: response.usage.output_tokens,
+      cache_read: response.usage.cache_read_input_tokens ?? 0,
+      cache_write: response.usage.cache_creation_input_tokens ?? 0,
+      text_chars: response.content.reduce((n, b) => n + (b.type === 'text' ? b.text.length : 0), 0),
+    }
+    turnLog.push(timing)
     usage.inputTokens += response.usage.input_tokens
     usage.outputTokens += response.usage.output_tokens
     usage.cacheReadTokens += response.usage.cache_read_input_tokens ?? 0
     usage.cacheWriteTokens += response.usage.cache_creation_input_tokens ?? 0
+    usage.cacheWrite1hTokens += response.usage.cache_creation?.ephemeral_1h_input_tokens ?? 0
 
     if (response.stop_reason === 'max_tokens')
-      throw new AgentError(`turn ${turn}: cut off`, audit, turn)
+      throw new AgentError(`turn ${turn}: cut off`, audit, turn, turnLog)
     const calls = response.content.filter((b) => b.type === 'tool_use')
     if (calls.length === 0) {
       // The model wrote text instead of acting (tool use cannot be forced on every model). Say so once
@@ -259,6 +295,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       let status = 'ok'
       if (result.kind === 'read') {
         const rows = await i.env.find(result.filter)
+        timing.find_ms += Math.round(performance.now() - t0)
         for (const row of rows) {
           foundThisTurn.push(row.id)
           found.set(row.id, row)
@@ -331,6 +368,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
         audit,
         turns: turn,
         usage,
+        turnLog,
         ms: performance.now() - started,
       }
     }
@@ -352,5 +390,5 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     if (turn === MAX_TURNS - 1) results.push({ type: 'text', text: LAST_TURN })
     messages.push({ role: 'user', content: results })
   }
-  throw new AgentError(`no valid action after ${MAX_TURNS} model turns`, audit, MAX_TURNS)
+  throw new AgentError(`no valid action after ${MAX_TURNS} model turns`, audit, MAX_TURNS, turnLog)
 }

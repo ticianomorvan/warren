@@ -28,7 +28,7 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 ## Layout
 
 ```
-src/agent/    The agent: schema.ts (tool inputs, categories, the range of a summary), tools.ts (the strict tool list, frozen),
+src/agent/    The agent: schema.ts (tool inputs, categories, the range of a summary), tools.ts (the tool list, frozen; not strict),
               prompt.ts (frozen system prompt + the per-message context + `contextFacts`), calls.ts (the guards
               that need no database), loop.ts (the manual loop, warm-up, held writes, the photo block),
               say.ts (the numbers check for the model's own words: pure), validate.ts (the value rules),
@@ -62,7 +62,8 @@ src/whatsapp/ signature.ts (HMAC), payload.ts (Zod parse of webhooks, photos inc
               send, read and typing, and the photo and voice-note downloads with their limits)
 src/config.ts Zod-validated env; src/db.ts postgres.js + migrations; src/log.ts JSON logs
 src/migrations/  Plain SQL, `NNN_name.sql`, applied once at startup under an advisory lock
-src/latency.ts  `pnpm latency` report, by action
+src/latency.ts  `pnpm latency` (the query and the print); latency-report.ts: the pure report, by action and by stage
+src/timings.ts  The per-stage times stored on `inbound_message.timings` with every sent reply (claim, reads, each model turn with its tokens, commit, send)
 evals/        cases.jsonl (dev/test split, one command per message), command.ts (that command shape), agent.ts
               (runs the agent on a case and maps it to a command), grade.ts, run.ts, results/ (gitignored but summary.md)
 evals/voice-probe.ts  Local probe: real audio files through the real transcription service, printing the transcript and the gate verdict
@@ -83,7 +84,8 @@ PG_TEST_URL=postgres://postgres:test@localhost:55432/postgres pnpm test src/conc
                    # Throwaway database only, it is truncated. docker run --rm -d --name warren-pg-test -p 55432:5432 -e POSTGRES_PASSWORD=test postgres:17
 pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the WhatsApp variables (see src/config.ts);
                    # OPENROUTER_API_KEY turns voice notes on (unset: they are answered with a request for text)
-pnpm latency [--last N]   # p50/p95 per stage, model time, log-only reply time, from DATABASE_URL (Railway: the Postgres public URL)
+pnpm latency [--last N]   # p50/p95 received -> typing/reply, by action, then where the time goes (claim, reads, model turns, commit, send, tokens, cache misses), from DATABASE_URL (Railway: the Postgres public URL)
+pnpm tsx evals/cache-probe.ts pairs|strict|gap   # real-API probes: cold vs warm prefix, strict vs not, the TTL after a gap (spends ~US$0.02-0.04 each)
 pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # one message at a time through the agent, needs .env
 pnpm eval:scenarios [--split dev|test|all] [--budget 0.30] [--only s001,s002]   # multi-turn scenarios, real pipeline and model, needs .env
                    # (voice scenarios also call the real transcription service: OPENROUTER_API_KEY)
@@ -190,8 +192,11 @@ wrong changes. Its test split is held out like the other: never print or tune on
   is one `AbortSignal` checked right before the commit; a deadline that fires mid-commit loses (committed
   means the reply goes out). `today` comes from the message's own time (`meta_ts`), not the clock.
 - **The agent (slice B; `docs/agent-spec.md`, Slice B notes).** `src/agent/loop.ts` is a manual loop on
-  `client.messages.create` (Haiku 5.5, effort low, thinking off, strict tools, a frozen system prompt and tool
-  list under one cache breakpoint; `usage.cache_read_input_tokens` is logged at every commit). The volatile
+  `client.messages.create` (Haiku 5.5, effort low, thinking off, tools that are **not** strict (strict decoding cost 0.2-0.3 s a call; code
+  parses and checks every input), a frozen system prompt and tool list under one cache breakpoint with the
+  **1-hour TTL** (`CACHE_TTL`; the startup warm-up writes the same one); `usage.cache_read_input_tokens` is logged
+  at every commit). When the list holds fewer than 10 movements it is the person's whole history, and the context says
+  so: the model does not spend a turn on `find_movements`. The volatile
   context comes after the breakpoint: the Argentine date and time, a 14-day calendar, the 10 newest live
   movements with position, **id** and logged time, the conversation window (the sender's committed turns of the
   last 30 minutes, at most 6, from `inbound_message.body` and `reply_text`) and, within 10 minutes, the
@@ -277,5 +282,6 @@ wrong changes. Its test split is held out like the other: never print or tune on
   ends today. The payment filter is
   accent- and case-insensitive contains (`translate`, no `unaccent` extension). `supermercado` reads as "Súper".
   Changing `tools.ts`, `schema.ts` or `prompt.ts` means rerunning `pnpm eval` and `pnpm eval:scenarios` (dev
-  first). The first request after a tool-schema change compiles the strict-tool grammar (~10 s): the server
-  sends one tiny warm-up request at startup.
+  first). The server sends one tiny warm-up request at startup, which writes the prompt cache. Each sent reply stores
+  its stages in `inbound_message.timings` (`src/timings.ts`; a failed message keeps the ones it reached); a speed change is judged with `pnpm latency` on real
+  traffic and `pnpm eval:scenarios` (per-turn p50/p95, second-turn rate and causes, output tokens per action).

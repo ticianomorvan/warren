@@ -33,6 +33,12 @@ export interface Summary {
   byAction: Partial<Record<Action, Latency>>
   /** Turns that needed a second model call, over the turns that called the model at all. */
   secondTurn: { turns: number; withModel: number }
+  /** Turns that said how many model calls they should need, and how many used more. */
+  turnCap: { capped: number; over: number }
+  /** Why the turns with a second model call needed it: `tool:status` of every call of their first model turn. */
+  secondTurnCauses: Record<string, number>
+  /** Mean output tokens the model wrote per turn, by action, over the turns that called it. */
+  outputTokens: { mean: number; byAction: Partial<Record<Action, { n: number; mean: number }>> }
   costUsd: number
   costPerTurnUsd: number
   gate: { passRate: boolean; noSilentWrong: boolean; noInvented: boolean; complete: boolean }
@@ -44,6 +50,34 @@ const latency = (values: number[]): Latency => ({
   p50: percentile(values, 50),
   p95: percentile(values, 95),
 })
+
+const ACTIONS = ['log', 'correct', 'delete', 'undo', 'query', 'ask', 'multi', 'other'] as const
+
+/** Counts, over the turns with a second model call, `tool:status` of every call the first model turn made. */
+function secondTurnCauses(turns: TurnResult[]): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const t of turns) {
+    if ((t.modelTurns ?? 0) <= 1) continue
+    for (const a of t.audit ?? []) {
+      if (a.turn !== 1) continue
+      const key = `${a.tool}:${a.status}`
+      out[key] = (out[key] ?? 0) + 1
+    }
+  }
+  return out
+}
+
+function outputTokens(turns: TurnResult[]): Summary['outputTokens'] {
+  const called = turns.filter((t) => t.outputTokens !== null && t.outputTokens !== undefined)
+  const byAction: Summary['outputTokens']['byAction'] = {}
+  for (const action of ACTIONS) {
+    const of = called.filter((t) => t.action === action)
+    if (of.length > 0) {
+      byAction[action] = { n: of.length, mean: mean(of.map((t) => t.outputTokens ?? 0)) }
+    }
+  }
+  return { mean: mean(called.map((t) => t.outputTokens ?? 0)), byAction }
+}
 
 /** Gate from docs/agent-spec.md: at least 95% of scenarios fully right, no silent wrong change, no invented number. */
 export const GATE_PASS_RATE = 0.95
@@ -103,6 +137,12 @@ export function summarize(results: ScenarioResult[]): Summary {
       turns: turns.filter((t) => (t.modelTurns ?? 0) > 1).length,
       withModel: turns.filter((t) => (t.modelTurns ?? 0) > 0).length,
     },
+    turnCap: {
+      capped: turns.filter((t) => t.capped).length,
+      over: turns.filter((t) => t.overTurnCap).length,
+    },
+    secondTurnCauses: secondTurnCauses(turns),
+    outputTokens: outputTokens(turns),
     costUsd: turns.reduce((sum, t) => sum + t.costUsd, 0),
     costPerTurnUsd: mean(turns.map((t) => t.costUsd)),
     gate,
@@ -122,6 +162,17 @@ export function renderSummary(s: Summary): string[] {
     `invented numbers: ${s.inventedNumbers}`,
     `turns: ${s.turns}; per turn p50 ${ms(s.turnMs.p50)}, p95 ${ms(s.turnMs.p95)} (model alone p50 ${ms(s.modelMs.p50)}, p95 ${ms(s.modelMs.p95)})`,
     `second model turn: ${s.secondTurn.turns} of ${s.secondTurn.withModel} turns that called the model (${pct(s.secondTurn.withModel === 0 ? 0 : s.secondTurn.turns / s.secondTurn.withModel)})`,
+    `turns over their model-turn cap: ${s.turnCap.over} of ${s.turnCap.capped} capped`,
+    `second-turn causes (calls of their first model turn): ${
+      Object.entries(s.secondTurnCauses)
+        .map(([k, n]) => `${k} ${n}`)
+        .join(', ') || 'none'
+    }`,
+    `output tokens per turn: mean ${s.outputTokens.mean.toFixed(0)}; by action ${Object.entries(
+      s.outputTokens.byAction,
+    )
+      .map(([a, o]) => `${a} ${o.mean.toFixed(0)} (n ${o.n})`)
+      .join(', ')}`,
     `cost: US$${s.costUsd.toFixed(4)} (US$${s.costPerTurnUsd.toFixed(5)} per turn)`,
   ]
   for (const [action, l] of Object.entries(s.byAction)) {

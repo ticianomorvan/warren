@@ -36,6 +36,18 @@ export interface Guard {
 
 const MAX_QUESTION_WORDS = 6
 
+/** The most issues a refusal names; a longer list says how many more there are, never cuts one in half. */
+const MAX_ISSUES = 12
+
+/** What is wrong with an input, one `path: reason` per issue, so the model can fix all of them in one turn. */
+export function issueList(error: z.ZodError): string {
+  const lines = error.issues.map(
+    (i) => `${i.path.length > 0 ? i.path.join('.') : 'input'}: ${i.message}`,
+  )
+  const shown = lines.slice(0, MAX_ISSUES).join('; ')
+  return lines.length > MAX_ISSUES ? `${shown}; and ${lines.length - MAX_ISSUES} more` : shown
+}
+
 /** Why a summary cannot run, in words for the model; null when it can. */
 export function checkSummary(q: ToolInput<'summarize'>, today: string): string | null {
   const plan = planSummary(q, today)
@@ -77,7 +89,7 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
   if (!(name in TOOL_INPUTS)) return rejected(`unknown tool ${name}`)
   const tool = name as ToolName
   const parsed = (TOOL_INPUTS[tool]() as z.ZodType).safeParse(input)
-  if (!parsed.success) return rejected(`invalid input: ${parsed.error.message.slice(0, 300)}`)
+  if (!parsed.success) return rejected(`invalid input: ${issueList(parsed.error)}`)
 
   switch (tool) {
     case 'find_movements': {

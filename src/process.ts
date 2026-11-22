@@ -13,6 +13,7 @@ import {
   windowReplies,
 } from './agent'
 import { actionLabel, execute } from './execute'
+import { RECENT_LIMIT } from './ledger'
 import { log } from './log'
 import {
   REPLY_AUDIO,
@@ -25,6 +26,7 @@ import {
 import { answerAction, undoRequest } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
+import type { Timings, TurnTiming } from './timings'
 import { judgeTranscript, type Transcriber, TranscriptionError } from './transcribe'
 import { type Graph, GraphError, type Image, MediaError } from './whatsapp/graph'
 
@@ -107,12 +109,17 @@ export function createProcessor(o: ProcessorOptions) {
   }
 
   /** The failure path: one notice, only if the reply send never started and nothing was committed. */
-  const fail = (c: Claim, reason: string, trace?: { audit: unknown[]; turns: number }) =>
+  const fail = (
+    c: Claim,
+    reason: string,
+    trace?: { audit: unknown[]; turns: number },
+    stages?: Timings,
+  ) =>
     once(
       'failure_notice',
       c,
       async () => {
-        const ok = await store.recordFailure(c, reason, trace)
+        const ok = await store.recordFailure(c, reason, trace, stages)
         log(ok ? 'message_failed' : 'failure_skipped', { wamid: c.wamid, reason }, 'error')
         return ok
       },
@@ -125,11 +132,15 @@ export function createProcessor(o: ProcessorOptions) {
     c: Claim,
     text: string,
     timings: Record<string, number | undefined>,
+    stages: Timings = { claimed_ms: Math.round(c.ageMs) },
   ): Promise<boolean> {
+    const stamping = performance.now()
     if (!(await store.recordSendStarted(c))) {
       log('claim_lost', { wamid: c.wamid, attempt: c.attempts })
       return false
     }
+    const sending = performance.now()
+    stages.stamp_ms = Math.round(sending - stamping)
 
     let outbound: string
     try {
@@ -153,12 +164,14 @@ export function createProcessor(o: ProcessorOptions) {
     }
 
     // The reply is out. If this write fails the row goes `unknown` by staleness, never resent.
-    const replyMs = await store.recordReplySent(c, outbound)
+    stages.send_ms = Math.round(performance.now() - sending)
+    const replyMs = await store.recordReplySent(c, outbound, stages)
     log('message_done', {
       wamid: c.wamid,
       attempt: c.attempts,
       outbound,
       ...timings,
+      send_ms: stages.send_ms,
       ...(replyMs === null ? { late: true } : { reply_ms: Math.round(replyMs) }),
     })
     return true
@@ -221,14 +234,19 @@ export function createProcessor(o: ProcessorOptions) {
     hearing?.catch(() => {})
     let text = c.body ?? ''
     let heard: string | undefined
+    const stages: Timings = { claimed_ms: Math.round(c.ageMs) }
     const working = (async (): Promise<Worked> => {
+      const readsAt = performance.now()
       const accountId = await store.upsertAccount(c.wa_id)
       const [movements, conversation] = await Promise.all([
         store.recentMovements(accountId),
         store.conversation(c),
       ])
+      stages.reads_ms = Math.round(performance.now() - readsAt)
+      const mediaAt = performance.now()
       const photo = await download
       const voice = await hearing
+      if (download || hearing) stages.media_ms = Math.round(performance.now() - mediaAt)
       // Answers that need no model: a photo or voice note that cannot be used, a bare answer to our question.
       const unprompted = (
         action: Action,
@@ -241,6 +259,7 @@ export function createProcessor(o: ProcessorOptions) {
         turns: 0,
         ms: 0,
         usage: null,
+        turnLog: [],
         facts: [],
         window: [],
       })
@@ -296,6 +315,8 @@ export function createProcessor(o: ProcessorOptions) {
         today,
         time: argentinaTime(c.messageAt),
         movements,
+        // Fewer than the list holds: it is everything they have, and a search could find nothing more.
+        complete: movements.length > 0 && movements.length < RECENT_LIMIT,
         conversation: conversation.turns,
         photo: Boolean(photo),
         voice: Boolean(voice),
@@ -338,7 +359,8 @@ export function createProcessor(o: ProcessorOptions) {
 
     try {
       const outcome = await Promise.race([working, aborted])
-      if (deadline.aborted) return await fail(c, 'deadline passed before the commit point')
+      if (deadline.aborted)
+        return await fail(c, 'deadline passed before the commit point', undefined, stages)
       if (shutdown.signal.aborted) {
         // Nothing was committed and no send started: hand the row to the next process at once.
         await store.settle(c, 'pending', 'shutdown before the commit point')
@@ -350,14 +372,17 @@ export function createProcessor(o: ProcessorOptions) {
         const e = outcome.error
         // A failed message keeps what the agent tried; it writes nothing to the ledger.
         const trace = e instanceof AgentError ? { audit: e.audit, turns: e.turns } : undefined
-        return await fail(c, `parse failed: ${errorText(e)}`, trace)
+        if (e instanceof AgentError) stages.turns = e.turnLog
+        return await fail(c, `parse failed: ${errorText(e)}`, trace, stages)
       }
 
-      const { accountId, actions, parsed, audit, turns, ms, usage, facts, window, heard } =
+      const { accountId, actions, parsed, audit, turns, ms, usage, turnLog, facts, window, heard } =
         outcome.value
+      stages.turns = turnLog
 
       // The commit point. Nothing awaits between the signal check above and this call.
       let reply: string | null
+      const committing = performance.now()
       try {
         reply = await store.commit(c, {
           parsed,
@@ -381,8 +406,9 @@ export function createProcessor(o: ProcessorOptions) {
             }),
         })
       } catch (err) {
-        return await fail(c, `commit failed: ${errorText(err)}`)
+        return await fail(c, `commit failed: ${errorText(err)}`, undefined, stages)
       }
+      stages.commit_ms = Math.round(performance.now() - committing)
       if (reply === null) {
         log('claim_lost', { wamid: c.wamid, attempt: c.attempts })
         return
@@ -400,7 +426,7 @@ export function createProcessor(o: ProcessorOptions) {
       // What this message changed is stored: the sender's next message may start its parse.
       release()
       await closeInterim()
-      await deliver(c, reply, { typing_ms: await typing, model_ms })
+      await deliver(c, reply, { typing_ms: await typing, model_ms }, stages)
     } finally {
       await closeInterim()
       await typing
@@ -432,7 +458,9 @@ export function createProcessor(o: ProcessorOptions) {
     // A sweep claims many rows and works them in turn: age each from when its own work starts.
     const age = c.ageMs + (performance.now() - c.claimedAt)
     if (age >= deadlineMs) {
-      await fail(c, 'deadline passed before the commit point')
+      await fail(c, 'deadline passed before the commit point', undefined, {
+        claimed_ms: Math.round(c.ageMs),
+      })
       return
     }
     await parseAndAnswer(c, age, release)
@@ -550,6 +578,8 @@ interface Worked {
   turns: number
   ms: number
   usage: Usage | null
+  /** Each model call, for the stored timings. */
+  turnLog: TurnTiming[]
   /** What the model's words may take numbers from (see `contextFacts`). */
   facts: string[]
   /** What Warren answered earlier (see `windowReplies`). */

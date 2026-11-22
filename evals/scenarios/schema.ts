@@ -126,6 +126,11 @@ export const TurnSchema = z
     ops: z.array(OpSchema).default([]),
     /** True: the reply must be a question (starts with ¿). With `ops` on the turn it must not be one. */
     ask: z.boolean().default(false),
+    /**
+     * Speed, not correctness: the most model calls this turn should use. A turn over it is counted in the
+     * report ("over their model-turn cap") and does not fail the scenario.
+     */
+    maxModelTurns: z.number().int().min(1).optional(),
     reply: ReplySchema.default({ has: [], any: [], not: [] }),
   })
   .refine((t) => !(t.image && t.audio), 'a turn has an image or an audio, not both')
