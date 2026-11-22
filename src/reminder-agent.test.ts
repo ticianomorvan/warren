@@ -219,6 +219,20 @@ describe('set_reminder', () => {
   })
 })
 
+describe('a time of today that has passed', () => {
+  it('is refused, not set for tomorrow, when the model sends tomorrow for "hoy a las 5"', async () => {
+    const app = await setup({
+      model: script(setRem('llamar al banco', { start: '2025-10-10', time: '05:00' })),
+    })
+    expect(await say(app, { text: 'recordame hoy a las 5 llamar al banco' })).toBe(
+      REPLY_REMINDER_PAST,
+    )
+    expect(await reminders()).toEqual([])
+    expect(app.model.n).toBe(1)
+    app.close()
+  })
+})
+
 describe('what the model is shown', () => {
   it('lists the live reminders with an id and the date in words, and the days ahead', async () => {
     const alquiler = await seedReminder('pagar el alquiler', {

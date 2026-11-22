@@ -280,6 +280,68 @@ describe('set_reminder: a start that has passed is not drained', () => {
   })
 })
 
+describe('set_reminder: a time of today that has passed is never moved to another day', () => {
+  const NOW_4PM = new Date('2026-11-18T19:00:00Z') // 16:00, Wednesday
+  const at4 = (message: string, schedule: Record<string, unknown>) =>
+    set(reminder({}, schedule), { now: NOW_4PM, message })
+  const TOMORROW = { start: '2026-11-19', time: '09:00' }
+
+  it('refuses (code tells the person) when the model sends tomorrow for "hoy a las 9"', () => {
+    expect(notice(at4('recordame hoy a las 9 pagar el gas', TOMORROW))).toBe(REPLY_REMINDER_PAST)
+    expect(
+      notice(at4('avisame a las 8 de hoy que saque la basura', { ...TOMORROW, time: '08:00' })),
+    ).toBe(REPLY_REMINDER_PAST)
+  })
+
+  it('refuses when a one-time monthly or weekly schedule would roll to another day', () => {
+    // "hoy a las 9" sent as "the 18th, once": today's 09:00 has gone, so it would roll to next month.
+    const rolled = {
+      start: '2026-11-18',
+      time: '09:00',
+      every: 'month',
+      month_days: [18],
+      count: 1,
+    }
+    expect(notice(at4('recordame hoy a las 9 pagar el gas', rolled))).toBe(REPLY_REMINDER_PAST)
+    const weekly = {
+      start: '2026-11-18',
+      time: '09:00',
+      every: 'week',
+      weekdays: ['wed'],
+      count: 1,
+    }
+    expect(notice(at4('recordame hoy a las 9 pagar el gas', weekly))).toBe(REPLY_REMINDER_PAST)
+  })
+
+  it('still sets a time later today, and a day the person did name', () => {
+    expect(
+      at4('recordame hoy a las 18 pagar el gas', { start: '2026-11-18', time: '18:00' }).kind,
+    ).toBe('action')
+    expect(
+      notice(at4('recordame hoy a las 18 pagar el gas', { start: '2026-11-18', time: '18:00' })),
+    ).toBeNull()
+    // "hoy" names no time of today here, or another day is named beside it.
+    expect(
+      notice(
+        at4('hoy gasté 3500 en café, recordame el viernes pagar el gas', {
+          start: '2026-11-20',
+          time: '09:00',
+        }),
+      ),
+    ).toBeNull()
+    expect(
+      notice(at4('hoy a las 9 no puedo, recordame mañana a las 9 pagar el gas', TOMORROW)),
+    ).toBeNull()
+  })
+
+  it('leaves a repeating schedule alone: "todos los días a las 8" from tomorrow is shown as "desde mañana"', () => {
+    const daily = { start: '2026-11-18', time: '08:00', every: 'day', count: 5 }
+    expect(
+      notice(at4('hoy a las 8 y todos los días, 5 veces, recordame la pastilla', daily)),
+    ).toBeNull()
+  })
+})
+
 describe('cancel_reminder', () => {
   it('needs an id the model was shown', () => {
     const input = { id: 7, text: null }

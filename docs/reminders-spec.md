@@ -282,3 +282,14 @@ Decided by Ticiano: no BAJA. Stopping reminders is an ordinary request to the mo
 - **MCP's undo refusal** for reminder batches is unchanged.
 - **Scenarios:** `s192` is "cancelá todos los recordatorios" then "deshacer" (dev, since its wording is in the prompt); `s204` ("no quiero más recordatorios") and `s205` ("cancelá este" with one live) are dev;
   `s206` ("borrame todos los recordatorios que tengo") and `s207` (cancel one by name, keep the other) are test.
+
+### A time of today that has passed (after the BAJA removal)
+
+A held-out scenario ("recordame hoy a las 10 llamar al banco" at 15:00) failed about 3 runs in 8 with a silent wrong change. Dev scenarios of the same class (`s212`–`s214`) showed why: the prompt said
+"never a time that has already passed", so the model dodged the refusal by sending **tomorrow's** date ("Las 8 de hoy ya pasaron, te lo dejo para mañana"), and the reply, rendered from that schedule, said
+"mañana": a reminder on a day the person never named. Two fixes, at two layers:
+
+- **Prompt:** send the time they said even if it has passed today (code tells them and asks for another day); never move a reminder to another day, and never turn a time of today into tomorrow.
+- **Code** (`checkCall`, the conversation layer): when the message names a time of today ("hoy a las 9", "a las 8 de hoy") and no other day beside it ("mañana", "pasado"), a one-time schedule whose first occurrence is
+  not today is refused with `REPLY_REMINDER_PAST`, whoever moved it: the model sending tomorrow, or a one-time monthly or weekly schedule that `normalizeSchedule` would roll forward. A repeating schedule is still rolled
+  ("todos los días a las 8, 5 veces" at 14:00 is from tomorrow, and the reply says "desde mañana"), and "hoy gasté 3500, recordame el viernes…" names no time of today, so it is untouched.
