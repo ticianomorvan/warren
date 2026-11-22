@@ -304,7 +304,9 @@ export function skipLine(part: string, reason: SkipReason): string {
  * Several options are numbered in the order shown, and the instruction says what a bare number will do; one option is shown as it is.
  */
 export function askLine(options: MovementRow[], then: Then, today: string): string {
-  const question = options.length > 1 ? 'Cuál' : 'Qué querés cambiar'
+  // As v1 asked it: "¿Cuál?" whenever the answer is a choice or a yes to delete or correct what is shown, and "¿Qué querés
+  // cambiar?" only for one option when the person gave no change (a "sí" asks what).
+  const question = options.length > 1 || then.do !== 'ask_change' ? 'Cuál' : 'Qué querés cambiar'
   if (options.length === 0) return `¿${question}?`
   if (options.length === 1) {
     const [m] = options as [MovementRow]

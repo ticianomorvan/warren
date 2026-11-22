@@ -431,6 +431,8 @@ export const EXAMPLES: Example[] = [
     calls: [summarize(range('this_year', { group_by: 'month', direction: 'out' }))],
   },
   { message: 'hola, que podes hacer?', calls: [call('help', {})] },
+  { message: 'buen dia, para que sirve esto?', calls: [call('help', {})] },
+  { message: 'ey, como funciona esto?', calls: [call('help', {})] },
   {
     message: 'cuanto sale el dolar oficial',
     calls: [call('reply', { text: 'Eso no lo sé: solo llevo tus gastos e ingresos.' })],

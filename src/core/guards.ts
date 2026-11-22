@@ -118,12 +118,6 @@ const VALUES = {
     return typeof plan === 'string' ? rejected(plan) : ok('summarize', q)
   },
   ask_user: (a, env) => {
-    // One movement to delete is not a question: the person said which, so the delete is the answer.
-    if (a.then.do === 'delete' && new Set(a.movement_ids).size === 1) {
-      return rejected(
-        'ask_user with then delete needs two or more movements. If the one movement is what they want gone, call delete_movement with its id; if nothing fits, reply',
-      )
-    }
     if (a.then.do === 'correct') {
       const issues = checkChanges(a.then.changes, env.today, 'then.changes')
       if (issues.length > 0) return rejected(issueText(issues))

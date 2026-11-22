@@ -45,6 +45,11 @@ describe('the lines code says that v1 did not', () => {
     expect(askLine([SAID.one], { do: 'ask_change' }, TODAY)).toMatch(
       /^¿Qué querés cambiar\? Nafta YPF/,
     )
+    // One movement the person says yes to (v1's wording): which, not what to change.
+    expect(askLine([SAID.one], { do: 'delete' }, TODAY)).toMatch(/^¿Cuál\? Nafta YPF/)
+    expect(askLine([SAID.one], { do: 'correct', changes: { amount: '3000' } }, TODAY)).toMatch(
+      /^¿Cuál\? Nafta YPF/,
+    )
     expect(askLine(SAID.options, { do: 'delete' }, TODAY)).toMatch(
       /^¿Cuál\? 1\. .*\nRespondé con el número, por ejemplo "el 1"\.$/,
     )
