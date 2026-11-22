@@ -28,19 +28,22 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
 ## Layout
 
 ```
-src/agent/    The agent: schema.ts (tool inputs, categories, periods), tools.ts (the strict tool list, frozen),
+src/agent/    The agent: schema.ts (tool inputs, categories, the range of a summary), tools.ts (the strict tool list, frozen),
               prompt.ts (frozen system prompt + the per-message context + `contextFacts`), calls.ts (the guards
               that need no database), loop.ts (the manual loop, warm-up, held writes, the photo block),
               say.ts (the numbers check for the model's own words: pure), validate.ts (the value rules),
               models.ts (Haiku/Sonnet configs, prices), index.ts
-src/time.ts   The Argentine calendar day and clock, and the date range of a summary period
+src/time.ts   The Argentine calendar day and clock, and date arithmetic
+src/range.ts  Pure: a summary's range (a named period, a month, a year or explicit days) resolved to Argentine days, the range before it, and the refusals (not started, reversed, over two years)
+src/summary.ts  Pure: the difference and the percentage of two totals, in integer cents (`bigint`), never a float or a division by zero
+src/render-summary.ts  Pure: the reply to a summary (the range in words, totals, groups, comparisons), from SQL results only
 src/server.ts Entry point: config, migrate, warm-up, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
 src/store.ts  The rules of the tables (inbound_message, reply, account): due predicate, claim, the
               conversation window, the commit transaction (guard, then the actions' effects, then the stored
               reply and the audit), ownership-guarded writes
 src/ledger.ts All SQL on `movement`: live movements (not superseded, not deleted), find, insert, lock,
-              supersede, soft delete, summary totals, and what undo reads and writes (last batch, a batch's rows, the chain of a movement, `copyVersion`)
+              supersede, soft delete, summary totals and groups, and what undo reads and writes (last batch, a batch's rows, the chain of a movement, `copyVersion`)
 src/movement.ts Pure: text normalizing, applying a correction's changes, which fields changed
 src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a question we asked (done in code), and `undoRequest`, a typed bare "deshacer" (done in code)
 src/undo.ts   Undo of the sender's last write batch (agent slice C): which batch, the stale-state guard, the append-only reversal; runs inside the commit transaction
@@ -253,9 +256,25 @@ wrong changes. Its test split is held out like the other: never print or tune on
   - Stored on the message: `parsed` what the model asked for (null when no model ran), `command` what ran (both
     lists of `{tool, input}`), `action` (log, correct, delete, summarize, ask, reply, undo, multi), `tool_calls` the
     audit (every call with turn, input, outcome, ms), `model_turns`, `model_ms`.
+- **Summaries (slice D; `docs/agent-spec.md`, Agent slice D notes).** `summarize` is `{range, group_by, compare_to, other?, direction, category,
+  payment, description, text}`. `range` is always `{period, month, year, from, to}`: a named period (`today`, `yesterday`, `this_week`,
+  `last_week`, `weekend`, `last_weekend`, `this_month`, `last_month`, `this_year`, `last_year`), or `month` (a month number, the year
+  optional), `year`, or `dates` (`from`/`to` as `yyyy-mm-dd`, `mm-dd` or `dd`, the way a person says them). A field a period does not use is
+  `0` or `""`; a stray one is refused. `src/range.ts` resolves it in Argentine days from the message's own time: weeks are Monday to Sunday,
+  "el finde" is Saturday and Sunday, a period that is not over ends today ("en lo que va del año"), "el 5" is this month's unless that is still
+  to come, "octubre" is the latest October that has started, and "5 de octubre" the latest such day not in the future. A range that has not
+  started, a reversed one, or one over 731 days (two years) is refused with the reason the model reads and `checkCall` answers it like any
+  other refusal. `group_by` is `none`, `category`, `payment`, `day`, `week` or `month`; `compare_to` is `none`, `previous` (the same-length
+  range before; the previous calendar month for a month, week for a week, year for a year, **cut to the same stretch while the period is
+  still running**: 1–21 November against 1–21 October, clamped to a shorter month, the year so far against the same days of last year;
+  a custom range that is a whole month counts as one) or `range` (with `other`, a second range). A comparison cannot be grouped by time. Totals and groups are `sum()`/`count()` in SQL over
+  live movements, by direction and currency, never converted; a payment group ignores case and accents; a comparison is two SQL results, and
+  `summary.ts` computes the difference and the percentage (tenths of a percent, half away from zero; no percentage when there is nothing
+  before). `render-summary.ts` names the range in words ("Octubre (1–31)", "Semana pasada (9–15 nov)"), lists at most 8 groups (then
+  "• … y N más") or at most 31 days, weeks or months (the newest, then "• … y N anteriores"), and goes through `fitReply`.
 - **Weeks, periods and queries.** Weeks are Monday to Sunday and whole, so `this_week` can end after today; months
-  and years are calendar ones; all ranges are Argentine days (`periodRange`, from the message's own time).
-  Summary totals are `sum()` in SQL, grouped by direction and currency, never converted; the payment filter is
+  and years are calendar ones; all ranges are Argentine days (`resolveRange`, from the message's own time), and a period still in progress
+  ends today. The payment filter is
   accent- and case-insensitive contains (`translate`, no `unaccent` extension). `supermercado` reads as "Súper".
   Changing `tools.ts`, `schema.ts` or `prompt.ts` means rerunning `pnpm eval` and `pnpm eval:scenarios` (dev
   first). The first request after a tool-schema change compiles the strict-tool grammar (~10 s): the server

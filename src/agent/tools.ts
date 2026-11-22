@@ -10,7 +10,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Change fields of one existing movement, by id. Only the fields that change are sent.',
   delete_movement: 'Delete one existing movement, by id.',
   summarize:
-    'Answer how much the person spent or received in a period, or how many movements there were. Code computes the totals and the counts; you only choose the period and the filters (including the words of a description, for "cuántos cafés").',
+    'Answer how much the person spent or received over any days (a named period, a month, a year or explicit days), optionally split by category, payment, day, week or month, or compared with the period before or a second range. Code resolves the days and computes every total, count, difference and percentage; you only choose the range, the split, the comparison and the filters (including the words of a description, for "cuántos cafés").',
   ask_user:
     'Ask the person a question when you cannot act. Code writes the question and lists the movements you give.',
   reply:

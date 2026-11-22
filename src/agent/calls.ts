@@ -1,5 +1,6 @@
 import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
+import { planSummary } from '../range'
 import { hasLongNumber, hasNumberWord } from './say'
 import { MAX_FOUND, type ModelAction, TOOL_INPUTS, type ToolInput, type ToolName } from './schema'
 import {
@@ -34,6 +35,12 @@ export interface Guard {
 }
 
 const MAX_QUESTION_WORDS = 6
+
+/** Why a summary cannot run, in words for the model; null when it can. */
+export function checkSummary(q: ToolInput<'summarize'>, today: string): string | null {
+  const plan = planSummary(q, today)
+  return typeof plan === 'string' ? plan : null
+}
 
 /** Whether a message holds an amount at all, in digits or in words ("tres mil"): without one there is no new value to send. */
 const hasValue = (message: string | undefined) =>
@@ -172,12 +179,12 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       }
     }
     case 'summarize': {
-      // The description and the payment are copied into the line code renders, as written.
       const q = parsed.data as ToolInput<'summarize'>
+      // The description and the payment are copied into the line code renders, as written.
       const bad = [q.description, q.payment].some((w) => w != null && hasLongNumber(w))
-      return bad
-        ? rejected('description and payment may not hold a number of 4 or more digits')
-        : { kind: 'action', action: { tool, input: q } }
+      if (bad) return rejected('description and payment may not hold a number of 4 or more digits')
+      const why = checkSummary(q, guard.today)
+      return why ? rejected(why) : { kind: 'action', action: { tool, input: q } }
     }
     default: // reply, help: any input of the right shape is fine
       return { kind: 'action', action: { tool, input: parsed.data } as ModelAction }

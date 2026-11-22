@@ -488,7 +488,7 @@ describe('after an undo', () => {
       await sql`SELECT sum(amount)::text AS t FROM movement WHERE superseded_by IS NULL AND deleted_by IS NULL`
     )[0]?.t
     expect(total).toBe('8500')
-    expect(await send(app, 'cuánto gasté hoy')).toBe('Hoy gastaste $8.500 (2 movimientos).')
+    expect(await send(app, 'cuánto gasté hoy')).toBe('Hoy (9 oct) gastaste $8.500 (2 movimientos).')
     await expectLive(['café 3500', 'súper 5000'])
     // The restored row is live and corrigible, and the chain grows from it.
     const [restored] =

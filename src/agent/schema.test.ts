@@ -103,7 +103,10 @@ describe('TOOL_INPUTS', () => {
     expect(TOOL_INPUTS.delete_movement().safeParse({ id: 4, text: null }).success).toBe(true)
     expect(
       TOOL_INPUTS.summarize().safeParse({
-        period: 'this_month',
+        range: { period: 'this_month', month: 0, year: 0, from: '', to: '' },
+        group_by: 'none',
+        compare_to: 'none',
+        other: '',
         direction: 'out',
         category: null,
         payment: null,
@@ -151,7 +154,10 @@ describe('TOOL_INPUTS', () => {
     expect(TOOL_INPUTS.delete_movement().safeParse({ id: 1.5, text: null }).success).toBe(false)
     expect(
       TOOL_INPUTS.summarize().safeParse({
-        period: 'forever',
+        range: { period: 'forever', month: 0, year: 0, from: '', to: '' },
+        group_by: 'none',
+        compare_to: 'none',
+        other: '',
         direction: null,
         category: null,
         payment: null,

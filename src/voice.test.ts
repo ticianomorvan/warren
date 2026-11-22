@@ -106,7 +106,10 @@ describe('a voice note', () => {
         script({
           name: 'summarize',
           input: {
-            period: 'this_month',
+            range: { period: 'this_month', month: 0, year: 0, from: '', to: '' },
+            group_by: 'none',
+            compare_to: 'none',
+            other: '',
             direction: 'out',
             category: null,
             payment: null,
@@ -114,7 +117,7 @@ describe('a voice note', () => {
             text: null,
           },
         }),
-      /^🎙️ "¿cuánto voy\?"\nEste mes gastaste/,
+      /^🎙️ "¿cuánto voy\?"\nOctubre \(1–9, en curso\) gastaste/,
     ],
     ['a question', () => script(ask([1, 2], { after: 'none' })), /^🎙️ "¿cuánto voy\?"\n¿Cuál\?/],
     [

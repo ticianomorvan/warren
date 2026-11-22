@@ -743,11 +743,11 @@ describe('summarize', () => {
       ),
     })
     expect(await say(app, { text: 'cuantos cafes anote hoy' })).toBe(
-      'Hoy gastaste $7.400 en café (3 movimientos).',
+      'Hoy (9 oct) gastaste $7.400 en café (3 movimientos).',
     )
-    expect(await say(app)).toBe('Hoy gastaste $20.000 en nafta (1 movimiento).')
-    expect(await say(app)).toBe('Hoy gastaste $1.000 en cafe leche (1 movimiento).')
-    expect(await say(app)).toBe('No encontré gastos hoy en Súper, café.')
+    expect(await say(app)).toBe('Hoy (9 oct) gastaste $20.000 en nafta (1 movimiento).')
+    expect(await say(app)).toBe('Hoy (9 oct) gastaste $1.000 en cafe leche (1 movimiento).')
+    expect(await say(app)).toBe('Hoy (9 oct): no encontré gastos en Súper, café.')
     app.close()
   })
 
@@ -773,9 +773,11 @@ describe('summarize', () => {
     )
     expect(expected).toBe('24500.50')
     expect(reply).toBe(
-      'Este mes gastaste $24.500,50 en Súper (3 movimientos).\nY US$ 33 (1 movimiento).',
+      'Octubre (1–9, en curso) gastaste $24.500,50 en Súper (3 movimientos).\nY US$ 33 (1 movimiento).',
     )
-    expect(await say(app)).toBe('Este mes gastaste $12.000 en Súper con CREDITO (1 movimiento).')
+    expect(await say(app)).toBe(
+      'Octubre (1–9, en curso) gastaste $12.000 en Súper con CREDITO (1 movimiento).',
+    )
     expect((await row(lastWamid))?.action).toBe('summarize')
     app.close()
   })
@@ -794,9 +796,13 @@ describe('summarize', () => {
         summarize('this_month', { payment: 'mp' }),
       ),
     })
-    expect(await say(app)).toBe('Este mes gastaste $300 con crédito VISA (2 movimientos).')
-    expect(await say(app)).toBe('Este mes gastaste $700 con CRÉDITO (3 movimientos).')
-    expect(await say(app)).toBe('No encontré gastos este mes con mp.')
+    expect(await say(app)).toBe(
+      'Octubre (1–9, en curso) gastaste $300 con crédito VISA (2 movimientos).',
+    )
+    expect(await say(app)).toBe(
+      'Octubre (1–9, en curso) gastaste $700 con CRÉDITO (3 movimientos).',
+    )
+    expect(await say(app)).toBe('Octubre (1–9, en curso): no encontré gastos con mp.')
     app.close()
   })
 
@@ -809,7 +815,7 @@ describe('summarize', () => {
     ])
     const app = await setup({ model: script(summarize('this_month')) })
     expect(await say(app)).toBe(
-      'Este mes gastaste $3.000,50 (2 movimientos).\nY US$ 75,25 (2 movimientos).',
+      'Octubre (1–9, en curso) gastaste $3.000,50 (2 movimientos).\nY US$ 75,25 (2 movimientos).',
     )
     expect(await sum(`currency = 'USD'`)).toBe('75.25')
     expect(await sum(`currency = 'ARS'`)).toBe('3000.5')
@@ -828,11 +834,11 @@ describe('summarize', () => {
       ),
     })
     await say(app)
-    expect(await say(app)).toBe('Este mes gastaste $3.000 (2 movimientos).')
+    expect(await say(app)).toBe('Octubre (1–9, en curso) gastaste $3.000 (2 movimientos).')
     await say(app)
-    expect(await say(app)).toBe('Este mes gastaste $3.500 (2 movimientos).')
+    expect(await say(app)).toBe('Octubre (1–9, en curso) gastaste $3.500 (2 movimientos).')
     await say(app)
-    expect(await say(app)).toBe('Este mes gastaste $1.000 (1 movimiento).')
+    expect(await say(app)).toBe('Octubre (1–9, en curso) gastaste $1.000 (1 movimiento).')
     expect(await sum('superseded_by IS NULL AND deleted_at IS NULL')).toBe('1000')
     expect(await history()).toHaveLength(3) // nothing was removed
     app.close()
@@ -846,7 +852,7 @@ describe('summarize', () => {
     await sql`INSERT INTO movement (account_id, inbound_message_id, position, direction, amount, currency, occurred_on, description, category, confidence)
       VALUES (${other?.id}, ${inbound?.id}, 0, 'out', 77, 'ARS', '2025-10-03', 'ajeno', 'otros', 'high')`
     const app = await setup({ model: script(summarize('this_month')) })
-    expect(await say(app)).toBe('Este mes gastaste $1.000 (1 movimiento).')
+    expect(await say(app)).toBe('Octubre (1–9, en curso) gastaste $1.000 (1 movimiento).')
     app.close()
   })
 })
@@ -872,11 +878,11 @@ describe('periods in Argentine time', () => {
       {
         today: '$64',
         yesterday: '$32',
-        this_week: '$448',
+        this_week: '$64', // Monday: only today so far
         last_week: '$48',
         this_month: '$120',
         last_month: '$4',
-        this_year: '$510',
+        this_year: '$126', // what is dated after today does not count
       },
     ],
     [
@@ -885,11 +891,11 @@ describe('periods in Argentine time', () => {
       {
         today: '$128',
         yesterday: '$64',
-        this_week: '$448',
+        this_week: '$192',
         last_week: '$48',
-        this_month: '$384',
+        this_month: '$128',
         last_month: '$120',
-        this_year: '$510',
+        this_year: '$254',
       },
     ],
   ]
@@ -911,8 +917,10 @@ describe('periods in Argentine time', () => {
   it('the independent SQL sums agree with the literals above', async () => {
     await seed(days.map(([on, amount]) => ({ on, amount })))
     expect(await sum(`occurred_on BETWEEN '2026-11-01' AND '2026-11-30'`)).toBe('120')
-    expect(await sum(`occurred_on BETWEEN '2026-11-30' AND '2026-12-06'`)).toBe('448')
-    expect(await sum(`occurred_on BETWEEN '2026-01-01' AND '2026-12-31'`)).toBe('510')
+    expect(await sum(`occurred_on = '2026-11-30'`)).toBe('64')
+    expect(await sum(`occurred_on BETWEEN '2026-11-30' AND '2026-12-01'`)).toBe('192')
+    expect(await sum(`occurred_on BETWEEN '2026-01-01' AND '2026-11-30'`)).toBe('126')
+    expect(await sum(`occurred_on BETWEEN '2026-01-01' AND '2026-12-01'`)).toBe('254')
   })
 })
 

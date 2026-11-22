@@ -26,6 +26,8 @@ export const TAGS = [
   'other',
   /** Taking back the last batch of changes ("deshacer"): graded as the delete, the correction or the log it comes to. */
   'undo',
+  /** A total over a range, split or compared (agent slice D): graded on the figures of the reply. */
+  'summary',
   /** A voice note: its latency includes the transcription, so it is kept apart from the other tags. */
   'voice',
 ] as const

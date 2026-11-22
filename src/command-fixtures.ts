@@ -37,6 +37,11 @@ export const saying = (call: ToolCall, text: string): ToolCall => ({
   ...call,
   input: { ...(call.input as object), text },
 })
+/** A range as the model sends it: a named period, or `month`, `year` or `dates` with what they use. */
+export const range = (
+  period: string,
+  o: { month?: number; year?: number; from?: string; to?: string } = {},
+) => ({ period, month: 0, year: 0, from: '', to: '', ...o })
 export const summarize = (
   period: string,
   o: {
@@ -44,11 +49,20 @@ export const summarize = (
     category?: string | null
     payment?: string | null
     description?: string | null
+    /** A range that is not a bare period (`month`, `year`, `dates`). */
+    range?: ReturnType<typeof range>
+    group_by?: string
+    compare_to?: 'none' | 'previous' | 'range'
+    /** The second range of a comparison, as text: `month:10`, `last_month`... */
+    other?: string
   } = {},
 ): ToolCall => ({
   name: 'summarize',
   input: {
-    period,
+    range: range(period),
+    group_by: 'none',
+    compare_to: 'none',
+    other: '',
     direction: 'out',
     category: null,
     payment: null,
