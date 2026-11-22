@@ -108,3 +108,33 @@ describe('answerAction', () => {
     expect(answerAction('sí', { asked, pending: { action: 'delete' } })).toBeNull() // two options
   })
 })
+
+describe('answerAction: the confirmation of forgetting everything', () => {
+  const question = { asked: [{ number: 1, id: 0 }], pending: { action: 'forget_all' as const } }
+  const confirmed = { tool: 'forget_all_confirmed', input: {} }
+
+  it('only a bare yes confirms it', () => {
+    for (const yes of ['sí', 'si', 'Sí.', 'dale', 'ok', 'sí, dale', 'bueno'])
+      expect(answerAction(yes, question), yes).toEqual(confirmed)
+  })
+
+  it('not a number, "ese", an ordinal, a no or anything with more in it', () => {
+    for (const no of [
+      '1',
+      'el 1',
+      'ese',
+      'el primero',
+      'no',
+      'mejor no',
+      'sí, pero la visa no',
+      'borrá todo',
+      'café 3500',
+    ]) {
+      expect(answerAction(no, question), no).toBeNull()
+    }
+  })
+
+  it('without the question there is nothing to confirm', () => {
+    expect(answerAction('sí', null)).toBeNull()
+  })
+})

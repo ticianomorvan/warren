@@ -64,6 +64,10 @@ export interface PendingQuestion {
  */
 export function answerAction(text: string, question: PendingQuestion | null): Action | null {
   if (!question) return null
+  // "¿Seguro?" over forgetting everything: only a yes is an answer (never "1", "ese" or "el primero"), and nothing else is read as one.
+  if (question.pending?.action === 'forget_all') {
+    return YES.test(normalizeText(text)) ? { tool: 'forget_all_confirmed', input: {} } : null
+  }
   const n = answerNumber(
     text,
     question.asked.map((a) => a.number),

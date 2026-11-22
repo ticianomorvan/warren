@@ -46,6 +46,10 @@ export const TIME_GROUPS = ['day', 'week', 'month'] as const
 export const isTimeGroup = (by: string): by is (typeof TIME_GROUPS)[number] =>
   (TIME_GROUPS as readonly string[]).includes(by)
 
+/** What a fact is: a name for a payment, a place or a thing; where a kind of expense goes; or anything else, kept for later. */
+export const FACT_KINDS = ['alias', 'category', 'note'] as const
+export type FactKind = (typeof FACT_KINDS)[number]
+
 /** What a summary is compared with: nothing, the period before, or a second range the person named. */
 export const COMPARES = ['none', 'previous', 'range'] as const
 
@@ -189,6 +193,16 @@ export const TOOL_INPUTS = {
   help: () => z.object({}),
   /** Reverts the sender's last write batch (everything one earlier message changed). Code finds the batch: the model sends no id. */
   undo_last: () => z.object({ text: Say() }),
+  /** Memory (slice F). Code checks every value (`checkFact`) and writes the record; `key` and `value` are the person's words. */
+  remember_fact: () =>
+    z.object({ kind: z.enum(FACT_KINDS), key: z.string(), value: z.string(), text: Say() }),
+  /** One fact, by an id the model was shown or by its key (0 and "" are the unused one). */
+  forget_fact: () =>
+    z.object({ id: z.number().int().default(0), key: z.string().default(''), text: Say() }),
+  /** Starts forgetting everything: code asks "¿Seguro?" and only the person's "sí" confirms. The model never does. */
+  forget_all_facts: () => z.object({ text: Say() }),
+  /** Code lists every fact the person has told Warren. */
+  list_facts: () => z.object({ text: Say() }),
 } as const
 
 export type ToolName = keyof typeof TOOL_INPUTS
@@ -203,8 +217,18 @@ export type ModelAction = {
 /** A reply code decides on its own, never the model (a photo that cannot be read): sent as written. */
 export type Notice = { tool: 'notice'; input: { text: string } }
 
-/** What runs at the commit point: the model's terminal calls, or a notice from code. */
-export type Action = ModelAction | Notice
+/** The person's "sí" to "¿Seguro?": code's own action, never one the model can send. */
+export type ConfirmedForget = { tool: 'forget_all_confirmed'; input: Record<string, never> }
+
+/** What code runs by itself: a notice, or a confirmed forget. A model call never comes to these except a refused secret, which is a notice. */
+export type CodeAction = Notice | ConfirmedForget
+
+/** What runs at the commit point: the model's terminal calls, or an action of code's own. */
+export type Action = ModelAction | CodeAction
 
 /** What `ask_user` leaves for the answer path: run this on the option the person picks. */
-export type Pending = { action: 'correct'; changes: Changes } | { action: 'delete' }
+export type Pending =
+  | { action: 'correct'; changes: Changes }
+  | { action: 'delete' }
+  /** "¿Seguro?" over forgetting everything: only a bare "sí" runs it. */
+  | { action: 'forget_all' }

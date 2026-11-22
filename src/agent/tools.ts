@@ -18,6 +18,14 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   help: 'Send the canned help text: only when the person asks for help or what you can do, or greets you.',
   undo_last:
     'Undo the person\'s LAST batch of changes as a whole (everything one earlier message logged, corrected or deleted): "deshacer", "volvé atrás", "anulá lo que hiciste", "no, eso no" right after a record. Code finds the batch and writes what it undid; you send no id. Never for one named movement (that is delete_movement or correct_movement), and never together with another action.',
+  remember_fact:
+    'Remember ONE fact the person states about their own money or habits, so you understand later messages: an alias (a name they use for a payment, a place or a thing: "la del galicia" is "la visa"), a category (where a kind of expense goes: "café" is entretenimiento) or a note (anything else: "cobro" is "el 5"). Only what they say, explicitly ("acordate que...") or as a clear statement; never a guess, never something you inferred. It logs, corrects and deletes nothing. A new value for the same key replaces the old one. Code checks it and writes the record.',
+  forget_fact:
+    'Forget one remembered fact: its id from "Hechos" (only an id you were shown), or its key (the words) when it is not shown. Send one of the two and leave the other 0 or "". For "olvidate de lo de la visa". Never for a movement of the ledger.',
+  forget_all_facts:
+    'The person asks you to forget everything you know about them ("olvidate de todo lo que sabés de mí"). Code asks "¿Seguro?" and only their "sí" confirms; you never do. Never together with another action.',
+  list_facts:
+    'The person asks what you know or have noted about them ("¿qué sabés de mí?", "¿qué tenés anotado?"). Code lists every fact.',
 }
 
 /** The JSON schema of a zod schema, without numeric bounds, defaults and the `$schema` key (a default is how code reads a field the model left out, not something to show the model) (the checks of a value are code's: `validate.ts`). */

@@ -33,6 +33,8 @@ export interface TurnInput {
   failed: boolean
   /** The command that ran (`query` replies hold sums, which the ledger check cannot vouch for). */
   commandType: string | null
+  /** How many live facts the person has after the turn (agent slice F); the turn's `liveFacts` is checked against it. */
+  liveFacts?: number
 }
 
 export interface TurnGrade {
@@ -41,7 +43,7 @@ export interface TurnGrade {
   problems: string[]
   /** The ledger got a write the scenario does not allow: a wrong row ended, a wrong value, an extra row. */
   wrongWrite: boolean
-  /** The reply says it worked (starts with ✓). */
+  /** The reply says it worked (starts with ✓, ↩︎ or 🧠). */
   claimsSuccess: boolean
   /** A wrong write under a reply that claims success. Must never happen. */
   silentWrong: boolean
@@ -258,7 +260,7 @@ export function gradeTurn(input: TurnInput): TurnGrade {
 
   // The reply.
   const text = withoutHeard(reply).trim()
-  const claimsSuccess = text.startsWith('✓') || text.startsWith('↩︎')
+  const claimsSuccess = text.startsWith('✓') || text.startsWith('↩︎') || text.startsWith('🧠')
   const asked = text.startsWith('¿')
   const flat = norm(reply)
   if (input.failed) problems.push('the message failed (failure notice)')
@@ -271,6 +273,9 @@ export function gradeTurn(input: TurnInput): TurnGrade {
     problems.push(`reply does not match /${turn.reply.re}/`)
   }
   if (turn.ask && !asked) problems.push('the reply should be a question')
+  if (turn.liveFacts !== undefined && input.liveFacts !== turn.liveFacts) {
+    problems.push(`${input.liveFacts ?? 'unknown'} live facts, expected ${turn.liveFacts}`)
+  }
   const unnecessaryQuestion = turn.ops.length > 0 && asked && !ledgerChanged
   if (unnecessaryQuestion) problems.push('asked a question instead of acting')
 

@@ -82,6 +82,10 @@ export interface Applied {
   corrected: boolean
   logged: boolean
   undone: boolean
+  /** A fact was stored or updated (`remember_fact`). */
+  remembered: boolean
+  /** A fact, or all of them, was forgotten. */
+  forgotten: boolean
 }
 
 const KIND_OF_TOOL = {
@@ -89,6 +93,9 @@ const KIND_OF_TOOL = {
   correct_movement: 'corrected',
   log_movements: 'logged',
   undo_last: 'undone',
+  remember_fact: 'remembered',
+  forget_fact: 'forgotten',
+  forget_all_confirmed: 'forgotten',
 } as const
 
 /**
@@ -99,7 +106,12 @@ const KIND_OF_TOOL = {
  * risk is that an old line proves a claim about a thing it did not do (the same word, another movement).
  */
 const NOT = '(?<!\\bno )(?<!\\bno lo )(?<!\\bno te )'
-const CLAIMS: { said: RegExp; kind: keyof Applied | 'any'; window: RegExp; what: string }[] = [
+const CLAIMS: {
+  said: RegExp
+  kind: keyof Applied | (keyof Applied)[] | 'any'
+  window: RegExp
+  what: string
+}[] = [
   {
     said: new RegExp(`${NOT}\\b(?:borre|elimine|saque)\\b`),
     kind: 'deleted',
@@ -114,9 +126,29 @@ const CLAIMS: { said: RegExp; kind: keyof Applied | 'any'; window: RegExp; what:
   },
   {
     said: new RegExp(`${NOT}\\b(?:anote|registre|agregue|guarde)\\b`),
-    kind: 'logged',
-    window: /✓ (?!borre\b|corregido\b)/,
-    what: 'a new movement',
+    kind: ['logged', 'remembered'],
+    window: /✓ (?!borre\b|corregido\b)|🧠 me acuerdo/,
+    what: 'a new movement or fact',
+  },
+  {
+    // "Anotado como dato: ...", "Tomo nota": a reply that opens by saying it took note. Only a log or a stored fact makes that
+    // true. Only at the start of a sentence: "la nafta fue $20.000, anotada hoy" describes what is stored.
+    said: /(?:^|[.!?:] ?)(?:anotado|anotada|guardado|guardada|tomo nota|tome nota)\b/,
+    kind: ['logged', 'remembered'],
+    window: /✓ (?!borre\b|corregido\b)|🧠 me acuerdo/,
+    what: 'a note taken',
+  },
+  {
+    said: new RegExp(`${NOT}\\b(?:me acuerdo|me acorde|ya lo recuerdo|lo recordare)\\b`),
+    kind: 'remembered',
+    window: /🧠 me acuerdo/,
+    what: 'a fact remembered',
+  },
+  {
+    said: new RegExp(`${NOT}\\b(?:me olvide|olvide)\\b`),
+    kind: 'forgotten',
+    window: /🧠 me olvide/,
+    what: 'a fact forgotten',
   },
   {
     said: new RegExp(`${NOT}\\b(?:deshice|anule|reverti|volvi atras)\\b`),
@@ -308,8 +340,8 @@ export function checkSay(text: string, e: Evidence): SayCheck {
   if (one === '') return { ok: false, reason: 'empty' }
   if (one.length > MAX_SAY_LENGTH)
     return { ok: false, reason: `longer than ${MAX_SAY_LENGTH} characters` }
-  if (one.includes('✓') || one.includes('↩'))
-    return { ok: false, reason: 'imitates a code-rendered line (✓, ↩︎)' }
+  if (one.includes('✓') || one.includes('↩') || one.includes('🧠'))
+    return { ok: false, reason: 'imitates a code-rendered line (✓, ↩︎, 🧠)' }
   if (e.message !== undefined && echoes(one, e.message)) {
     return { ok: false, reason: "echoes the person's message", echo: true }
   }
@@ -339,7 +371,9 @@ export function checkSay(text: string, e: Evidence): SayCheck {
     const word = claim.said.exec(mine)?.[0]
     if (!word) continue
     const done =
-      claim.kind === 'any' ? Object.values(e.applied).some(Boolean) : e.applied[claim.kind]
+      claim.kind === 'any'
+        ? Object.values(e.applied).some(Boolean)
+        : [claim.kind].flat().some((kind) => e.applied[kind])
     if (!done && !proof.some((src) => claim.window.test(src))) {
       return { ok: false, reason: `claims ${claim.what} this message did not make: ${word}` }
     }
@@ -362,6 +396,22 @@ export const hasLongNumber = (value: string) =>
   [...value.normalize('NFKC').matchAll(/\d+(?:[.,]\d+)*/g)].some(
     (m) => m[0].replace(/\D/g, '').length >= 4,
   )
+
+/**
+ * The numbers in `text` that `message` does not hold: a figure in digits (compared by what it means, `12.000` =
+ * `12000`) or a number word the person did not write. Empty means every number is theirs. What a stored fact may
+ * contain: code never lets the model put a number of its own into the person's memory.
+ */
+export function unwritten(text: string, message: string): string[] {
+  const known = new Set(tokens(message.normalize('NFKC')).flatMap((t) => t.provides))
+  const spelled = new Set(fold(message).match(NUMBER_WORD_RE) ?? [])
+  return [
+    ...tokens(text.normalize('NFKC'))
+      .filter((t) => !known.has(t.needs))
+      .map((t) => t.written),
+    ...(fold(text).match(NUMBER_WORD_RE) ?? []).filter((w) => !spelled.has(w)),
+  ]
+}
 
 /** Any number spelled in words, or a digit not 0-9: a short phrase that is not a figure never has one. */
 export const hasNumberWord = (value: string) =>
@@ -404,7 +454,14 @@ export function composeReply(i: {
   /** What was heard in a voice note: the reply starts with it. */
   heard?: string
 }): { reply: string; verdicts: Map<number, Verdict> } {
-  const applied: Applied = { deleted: false, corrected: false, logged: false, undone: false }
+  const applied: Applied = {
+    deleted: false,
+    corrected: false,
+    logged: false,
+    undone: false,
+    remembered: false,
+    forgotten: false,
+  }
   for (const step of i.steps) {
     const kind = KIND_OF_TOOL[step.tool as keyof typeof KIND_OF_TOOL]
     if (kind && step.outcome === 'applied') applied[kind] = true

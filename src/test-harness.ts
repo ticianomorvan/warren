@@ -64,7 +64,7 @@ export function useDatabase(real?: { url: string; max: number }) {
   })
 
   beforeEach(async () => {
-    await sql`TRUNCATE movement, reply, inbound_message, account RESTART IDENTITY CASCADE`
+    await sql`TRUNCATE fact, movement, reply, inbound_message, account RESTART IDENTITY CASCADE`
   })
 }
 

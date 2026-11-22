@@ -24,13 +24,19 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
    undoing a correction is a new row with the old values that supersedes the correction, undoing a delete is a new row
    (`restores` names the deleted one). No row is edited, removed or un-deleted, and the undo is itself a recorded batch.
 4. **Secrets live only in the gitignored `.env`.** Never in code, logs, eval output or commits.
+5. **What Warren remembers about a person is only what they said, and is theirs alone.** A fact (`fact` table) is append-only like a
+   movement: a new value supersedes the old row, a forget stamps `forgotten_by`, an undo inserts a new row. Code refuses anything that looks like
+   a secret, any number the person did not write, and a key that is not their words; a fact never logs, corrects or deletes a movement; the model
+   only ever sees its own sender's facts, in the per-message context and never in the cached prefix; forgetting everything runs only on the person's
+   own "sí" to code's "¿Seguro?". A secret is not kept anywhere: when a message holds one (or the model tried to store one), the message's
+   stored text and raw webhook become `[dato sensible, no guardado]` and the audit and what ran lose their inputs.
 
 ## Layout
 
 ```
 src/agent/    The agent: schema.ts (tool inputs, categories, the range of a summary), tools.ts (the tool list, frozen; not strict),
-              prompt.ts (frozen system prompt + the per-message context + `contextFacts`), calls.ts (the guards
-              that need no database), loop.ts (the manual loop, warm-up, held writes, the photo block),
+              prompt.ts (frozen system prompt + the per-message context, with the person's facts, + `contextFacts`), calls.ts (the guards
+              that need no database), memory.ts (pure: the rules of a fact: secrets, caps, the person's own words and numbers), loop.ts (the manual loop, warm-up, held writes, the photo block),
               say.ts (the numbers check for the model's own words: pure), validate.ts (the value rules),
               models.ts (Haiku/Sonnet configs, prices), index.ts
 src/time.ts   The Argentine calendar day and clock, and date arithmetic
@@ -45,8 +51,11 @@ src/store.ts  The rules of the tables (inbound_message, reply, account): due pre
 src/ledger.ts All SQL on `movement`: live movements (not superseded, not deleted), find, insert, lock,
               supersede, soft delete, summary totals and groups, and what undo reads and writes (last batch, a batch's rows, the chain of a movement, `copyVersion`)
 src/movement.ts Pure: text normalizing, applying a correction's changes, which fields changed
-src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a question we asked (done in code), and `undoRequest`, a typed bare "deshacer" (done in code)
+src/facts.ts  All SQL on `fact` (agent slice F): live facts, remember (insert or supersede, capped, under a per-account lock), forget, forget all, and what undo reads
+src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a question we asked (done in code, including the "sí" of "¿Seguro?" over forgetting everything), and `undoRequest`, a typed bare "deshacer" (done in code)
 src/undo.ts   Undo of the sender's last write batch (agent slice C): which batch, the stale-state guard, the append-only reversal; runs inside the commit transaction
+src/redact.ts Pure: what a message that holds a secret leaves behind (a placeholder for its text, scrubbed audit and calls; agent slice F)
+src/undo-facts.ts  The facts half of an undo (slice F): what the batch stored or forgot, whether each still stands as it was left, and the reversal
 src/execute.ts  Runs a message's actions inside the commit transaction and returns the reply to store
 src/process.ts  Per message: ignored vs reply; for text, typing + agent together, the 10 s interim note, the 30 s
               deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
@@ -67,7 +76,7 @@ src/timings.ts  The per-stage times stored on `inbound_message.timings` with eve
 evals/        cases.jsonl (dev/test split, one command per message), command.ts (that command shape), agent.ts
               (runs the agent on a case and maps it to a command), grade.ts, run.ts, results/ (gitignored but summary.md)
 evals/voice-probe.ts  Local probe: real audio files through the real transcription service, printing the transcript and the gate verdict
-evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl (a turn may carry an `image` or an `audio`, a file of fixtures/;
+evals/scenarios/  Multi-turn scenario eval: scenarios.jsonl (a scenario may seed `facts`, a turn may check `liveFacts`, carry an `image` or an `audio`, a file of fixtures/;
               `fixtures/make-voice.sh` makes the synthetic voice notes), schema.ts, grade.ts (database-state grading), drive.ts (plays a scenario through the real pipeline), report.ts (pass rate, latency by action and by tag), run.ts, results/baseline.md
 docs/spec.md  Source of truth for what is built and in which order; docs/agent-spec.md the agent design
 ```
@@ -285,3 +294,15 @@ wrong changes. Its test split is held out like the other: never print or tune on
   first). The server sends one tiny warm-up request at startup, which writes the prompt cache. Each sent reply stores
   its stages in `inbound_message.timings` (`src/timings.ts`; a failed message keeps the ones it reached); a speed change is judged with `pnpm latency` on real
   traffic and `pnpm eval:scenarios` (per-turn p50/p95, second-turn rate and causes, output tokens per action).
+- **Memory (slice F; `docs/agent-spec.md`, Agent slice F notes).** What a person tells Warren about their money and habits is kept in `fact`
+  (account, `kind` alias | category | note, a normalized `key`, `value`, the source message, `superseded_by`, `forgotten_by`, `restores`), one live
+  fact per account, kind and key (a partial unique index). Tools, all terminal and rendered by code (`🧠 Me acuerdo: la visa = Galicia`, `🧠 Me olvidé: ...`):
+  - `remember_fact({kind, key, value, text})`: only what the person states. `checkFact` (`src/agent/memory.ts`) refuses a secret (card or CBU/CVU number,
+    password or PIN, DNI; an email or a phone is "datos de contacto": the person is told "No guardo ...", by a code `notice`, with no second model turn), a key that is not words of the person's own message,
+    a number they did not write, a key over 40 characters or 4 words, a value over 100, a category value outside the list. The account holds at most 100 live facts (`full`).
+  - `forget_fact({id, key, text})`: an id must be one the model was shown (the 30 newest live facts and those whose key the message says, in the context as "Hechos"), or a key,
+    looked up among the sender's own (one `findLive` query behind every lookup). It takes the account's facts lock. `forget_all_facts` goes alone in its turn (like `undo_last`),
+    only asks "¿Seguro...? Respondé sí." and stores `pending: {action: 'forget_all'}` with no options; a bare "sí" next (`answerAction`, no model call) runs
+    `forget_all_confirmed`, which no model call can produce. `list_facts` is code listing every live fact.
+  - The facts are in the volatile context, never in the cached prefix; the model reads them to resolve aliases and categories; the ledger stays the truth, and a fact never logs, corrects or deletes by itself.
+  - Undo (slice C) reaches facts: a batch is any message that stored or forgot a fact too, and `undo-facts.ts` reverses it append-only, refusing the whole undo when a fact is no longer as the batch left it.

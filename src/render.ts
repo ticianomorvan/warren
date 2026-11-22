@@ -1,4 +1,5 @@
 import type { Movement, RecentMovement } from './agent'
+import type { FactRow } from './facts'
 import type { MovementRow } from './ledger'
 import type { ChangedField } from './movement'
 import { addDays } from './time'
@@ -213,16 +214,23 @@ export const REPLY_UNDO_NOTHING = 'No tengo nada para deshacer.'
 export const REPLY_UNDO_EXPIRED =
   'Lo último que hice fue hace más de 24 horas y ya no lo deshago solo. Decime qué querés corregir o borrar.'
 
-/** What undoing the last batch did to one movement. Code writes the record from it, never the model. */
-export interface UndoLine {
-  kind: 'logged' | 'corrected' | 'deleted'
-  /** The movement as it is after the undo (a logged one: as it was when removed). */
-  movement: RecentMovement
-  /** `corrected` only: the movement as the correction had left it. */
-  from?: RecentMovement
-  /** `corrected` only: the fields the undo changed back. */
-  changed?: ChangedField[]
-}
+/** What undoing the last batch did to one movement, or one fact. Code writes the record from it, never the model. */
+export type UndoLine =
+  | {
+      kind: 'logged' | 'corrected' | 'deleted'
+      /** The movement as it is after the undo (a logged one: as it was when removed). */
+      movement: RecentMovement
+      /** `corrected` only: the movement as the correction had left it. */
+      from?: RecentMovement
+      /** `corrected` only: the fields the undo changed back. */
+      changed?: ChangedField[]
+    }
+  /** A fact the batch stored is forgotten now; one the batch forgot is back; one the batch updated has its old value back (`was` is the value undone). */
+  | { kind: 'fact_removed'; fact: FactRow }
+  | { kind: 'fact_restored'; fact: FactRow }
+  | { kind: 'fact_reverted'; fact: FactRow; was: string }
+
+type MovementUndo = Extract<UndoLine, { movement: RecentMovement }>
 
 /**
  * The record of an undo. Only logs undone: `↩︎ Deshice: Súper $5.000 · Panadería $3.000`. Anything else (a correction
@@ -230,10 +238,16 @@ export interface UndoLine {
  */
 export function renderUndo(lines: UndoLine[], today: string): string {
   const dated = (m: RecentMovement) => `${movementText(m)}${when(m.date, today)}`
-  if (lines.every((l) => l.kind === 'logged')) {
-    return `↩︎ Deshice: ${lines.map((l) => dated(l.movement)).join(' · ')}`
+  const logs = lines.filter((l): l is MovementUndo => l.kind === 'logged')
+  if (logs.length === lines.length) {
+    return `↩︎ Deshice: ${logs.map((l) => dated(l.movement)).join(' · ')}`
   }
   const bullets = lines.map((l) => {
+    if (l.kind === 'fact_removed') return `Olvidé 🧠 ${renderFact(l.fact)}`
+    if (l.kind === 'fact_restored') return `Volvió 🧠 ${renderFact(l.fact)}`
+    if (l.kind === 'fact_reverted') {
+      return `🧠 ${renderFact(l.fact)} (estaba ${factValue({ kind: l.fact.kind, value: l.was })})`
+    }
     if (l.kind === 'logged') return `Quité ${dated(l.movement)}`
     if (l.kind === 'deleted') return `Volvió ${dated(l.movement)}`
     const was = l.from && l.changed ? ` (estaba ${wasText(l.from, l.changed, today)})` : ''
@@ -243,8 +257,60 @@ export function renderUndo(lines: UndoLine[], today: string): string {
 }
 
 /** The refusal of an undo whose movements changed since the batch: which ones, and that nothing was touched. */
-export const renderStale = (moved: RecentMovement[], today: string): string =>
-  `No deshice nada: ${moved.map((m) => `${movementText(m)}${when(m.date, today)}`).join(' · ')} ${moved.length === 1 ? 'cambió' : 'cambiaron'} después. Decime qué querés cambiar.`
+export const renderStale = (
+  moved: RecentMovement[],
+  today: string,
+  facts: FactRow[] = [],
+): string => {
+  const what = [
+    ...moved.map((m) => `${movementText(m)}${when(m.date, today)}`),
+    ...facts.map((f) => `🧠 ${renderFact(f)}`),
+  ]
+  return `No deshice nada: ${what.join(' · ')} ${what.length === 1 ? 'cambió' : 'cambiaron'} después. Decime qué querés cambiar.`
+}
+
+// ---- Memory (agent slice F). Every line about a fact is code's, from the stored row.
+
+/** What a secret is answered with: nothing was stored. */
+export const REPLY_FACT_SECRET = 'No guardo claves, números de tarjeta, CBU/CVU ni documentos.'
+/** What a phone number or an email is answered with: nothing was stored. */
+export const REPLY_FACT_CONTACT = 'No guardo datos de contacto: teléfonos ni mails.'
+export const REPLY_FACTS_NONE = 'Todavía no tengo nada anotado de vos.'
+export const REPLY_FACT_GONE = '🧠 Eso ya lo había olvidado.'
+/** The most facts one account holds, and what to do about it. */
+export const renderFactsFull = (max: number) =>
+  `Ya tengo ${max} cosas anotadas de vos y no me entran más. Decime de cuál me olvido y lo guardo.`
+
+/** A fact's value as a person reads it: a category by its label. */
+function factValue(f: Pick<FactRow, 'kind' | 'value'>): string {
+  return f.kind === 'category'
+    ? (CATEGORY_LABEL[f.value as RecentMovement['category']] ?? f.value)
+    : f.value
+}
+
+/** `la visa = Galicia` (an alias), `café → Entretenimiento` (a category), `cobro: el 5` (a note). */
+export function renderFact(f: Pick<FactRow, 'kind' | 'key' | 'value'>): string {
+  if (f.kind === 'alias') return `${f.key} = ${f.value}`
+  return f.kind === 'category' ? `${f.key} → ${factValue(f)}` : `${f.key}: ${f.value}`
+}
+
+/** A fact stored, or updated (`before` is the old value). */
+export const renderRemembered = (f: FactRow, before?: string) =>
+  `🧠 Me acuerdo: ${renderFact(f)}${before === undefined ? '' : ` (antes ${factValue({ kind: f.kind, value: before })})`}`
+export const renderKnown = (f: FactRow) => `🧠 Ya lo tenía anotado: ${renderFact(f)}`
+export const renderForgot = (f: FactRow) => `🧠 Me olvidé: ${renderFact(f)}`
+export const renderForgotNone = (key: string) => `🧠 No tengo nada anotado de "${key}".`
+/** The question before forgetting everything: code asks it, and only a bare "sí" answers it. */
+export const renderForgetAllAsk = (count: number) =>
+  `¿Seguro que querés que me olvide de todo lo que sé de vos (${count})? Respondé sí.`
+export const renderForgotAll = (count: number) =>
+  `🧠 Me olvidé de todo lo que sabía de vos (${count}).`
+
+/** Every fact of the account, by kind and key: a bulleted list, which `fitReply` collapses when it is long. */
+export const renderFacts = (facts: FactRow[]) =>
+  facts.length === 0
+    ? REPLY_FACTS_NONE
+    : ['🧠 Esto es lo que sé de vos:', ...facts.map((f) => `${BULLET}${renderFact(f)}`)].join('\n')
 
 /** A movement of a question's options, with its number. */
 export interface Numbered {

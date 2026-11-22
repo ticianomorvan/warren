@@ -1,4 +1,5 @@
 import type { Sql } from './db'
+import type { FactRow } from './facts'
 import {
   type BatchRow,
   batchRows,
@@ -13,6 +14,7 @@ import {
   settledBatches,
   softDelete,
 } from './ledger'
+import { applyFactUndo, type FactUndone, planFactUndo } from './undo-facts'
 
 /** How long a batch can be undone: past it, the person is told and nothing is touched. */
 export const UNDO_WINDOW_HOURS = 24
@@ -25,6 +27,8 @@ export type Undone =
   | { kind: 'corrected'; from: MovementRow; to: MovementRow }
   /** The batch deleted it: it is back. */
   | { kind: 'deleted'; movement: MovementRow }
+  /** What the batch did to a fact (agent slice F). */
+  | FactUndone
 
 export type UndoOutcome =
   | { kind: 'undone'; batch: number; items: Undone[] }
@@ -32,8 +36,8 @@ export type UndoOutcome =
   | { kind: 'nothing' }
   /** Their last batch is older than the window. */
   | { kind: 'expired' }
-  /** A movement of the batch is no longer as the batch left it: nothing was changed. `moved` are those movements. */
-  | { kind: 'stale'; moved: MovementRow[] }
+  /** A movement or a fact of the batch is no longer as the batch left it: nothing was changed. `moved` and `facts` are those. */
+  | { kind: 'stale'; moved: MovementRow[]; facts: FactRow[] }
 
 /** The movements a batch left behind, by what it did to them. */
 interface Effects {
@@ -82,8 +86,15 @@ export async function undoLast(
   const fx = effectsOf(rows, last.id)
   const roots = [...fx.logged, ...fx.corrected.map((c) => c.now)].sort((a, b) => a.id - b.id)
   const touched = [...rows.map((r) => r.id), ...fx.corrected.map((c) => c.before)]
-  if (touched.length === 0) return { kind: 'nothing' }
   await lockRows(tx, o.accountId, touched)
+  // What the batch did to facts (slice F): read and checked now, written below with the movements.
+  const facts = await planFactUndo(tx, o.accountId, last.id)
+  if (
+    touched.length === 0 &&
+    facts.made.length + facts.forgotten.length + facts.moved.length === 0
+  ) {
+    return { kind: 'nothing' }
+  }
 
   // Where each movement stands now. Read after the locks, so a concurrent change has been committed or waits.
   const links = await followForward(
@@ -103,12 +114,14 @@ export async function undoLast(
     if (asLeft && head) heads.set(root.id, head.id)
     else moved.push(root)
   }
-  if (moved.length > 0) return { kind: 'stale', moved }
+  if (moved.length > 0 || facts.moved.length > 0) {
+    return { kind: 'stale', moved, facts: facts.moved }
+  }
   // The heads are locked live: a change that slipped in between is refused here too.
   for (const head of new Set(heads.values())) {
     if (!(await lockLive(tx, o.accountId, head))) {
       const root = roots.find((r) => heads.get(r.id) === head)
-      return { kind: 'stale', moved: root ? [root] : [] }
+      return { kind: 'stale', moved: root ? [root] : [], facts: [] }
     }
   }
 
@@ -154,6 +167,7 @@ export async function undoLast(
     })
     items.push({ kind: 'deleted', movement: row })
   }
+  items.push(...(await applyFactUndo(tx, o, facts)))
   await markUndone(tx, o.inboundId, last.id)
   return { kind: 'undone', batch: last.id, items }
 }
