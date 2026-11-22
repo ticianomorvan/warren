@@ -1,5 +1,5 @@
-import type { Movement, Period, RecentMovement } from './agent'
-import type { MovementRow, QueryTotal } from './ledger'
+import type { Movement, RecentMovement } from './agent'
+import type { MovementRow } from './ledger'
 import type { ChangedField } from './movement'
 import { addDays } from './time'
 import type { MediaProblem } from './whatsapp/graph'
@@ -135,7 +135,7 @@ function dayName(date: string, today: string): string {
 /** The date suffix of a movement's line; nothing for today. */
 const when = (date: string, today: string) => (date === today ? '' : ` · ${dayName(date, today)}`)
 
-const CATEGORY_LABEL: Record<RecentMovement['category'], string> = {
+export const CATEGORY_LABEL: Record<RecentMovement['category'], string> = {
   supermercado: 'Súper',
   restaurantes: 'Restaurantes',
   transporte: 'Transporte',
@@ -156,7 +156,7 @@ const CATEGORY_LABEL: Record<RecentMovement['category'], string> = {
   otros: 'Otros',
 }
 
-const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+export const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
 /** A movement's text, money and payment, no date and no mark. */
 function movementText(m: RecentMovement): string {
@@ -290,57 +290,6 @@ function listOptions(candidates: Numbered[], today: string): string {
       return `${l.number}. ${l.text}${alike && l.time ? ` · ${l.time}` : ''}`
     })
     .join(' · ')
-}
-
-const PERIOD_TEXT: Record<Period, string> = {
-  today: 'hoy',
-  yesterday: 'ayer',
-  this_week: 'esta semana',
-  last_week: 'la semana pasada',
-  this_month: 'este mes',
-  last_month: 'el mes pasado',
-  this_year: 'este año',
-}
-
-export interface QueryScope {
-  period: Period
-  direction: Movement['direction'] | null
-  category: Movement['category'] | null
-  payment: string | null
-  /** Words of the description the totals are about ("café"). */
-  description?: string | null
-}
-
-const movements = (n: number) => `${n} ${n === 1 ? 'movimiento' : 'movimientos'}`
-
-/**
- * The answer to a query from its SQL totals: one block per direction, ARS first and USD on its
- * own line. The two currencies are never added together.
- */
-export function renderQuery(q: QueryScope, totals: QueryTotal[]): string {
-  const period = PERIOD_TEXT[q.period]
-  const payment = q.payment?.trim()
-  const about = [
-    q.category ? CATEGORY_LABEL[q.category] : '',
-    q.description?.trim().toLowerCase() ?? '',
-  ].filter(Boolean)
-  const scope = `${about.length > 0 ? ` en ${about.join(', ')}` : ''}${payment ? ` con ${payment}` : ''}`
-  if (totals.length === 0) {
-    const what =
-      q.direction === 'out' ? 'gastos' : q.direction === 'in' ? 'ingresos' : 'movimientos'
-    return `No encontré ${what} ${period}${scope}.`
-  }
-  const blocks = (['out', 'in'] as const).flatMap((direction) => {
-    const rows = totals.filter((t) => t.direction === direction)
-    return rows.map((t, i) => {
-      const money = formatMoney(t.total, t.currency)
-      const verb = direction === 'out' ? 'gastaste' : 'cobraste'
-      return i === 0
-        ? `${capitalize(period)} ${verb} ${money}${scope} (${movements(t.count)}).`
-        : `Y ${money} (${movements(t.count)}).`
-    })
-  })
-  return blocks.join('\n')
 }
 
 export interface RenderOptions {

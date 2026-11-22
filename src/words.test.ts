@@ -129,7 +129,7 @@ describe('the model’s own words', () => {
       model: insist(saying(summarize('today'), 'En total $43.300 entre todo.')),
     })
     const reply = await say(app, { text: 'cuanto gaste hoy' })
-    expect(reply).toBe('Hoy gastaste $43.800 (5 movimientos).')
+    expect(reply).toBe('Hoy (9 oct) gastaste $43.800 (5 movimientos).')
     expect((await audit())[0]).toMatchObject({ text: 'dropped' })
     app.close()
   })
@@ -453,7 +453,7 @@ describe('a text that is refused is repaired, not replaced by the fallback (live
       ),
     })
     expect(await say(app, { text: 'cuantos cafe anoté hoy?' })).toBe(
-      'Hoy gastaste $6.400 en café (2 movimientos).',
+      'Hoy (9 oct) gastaste $6.400 en café (2 movimientos).',
     )
     app.close()
   })
@@ -466,7 +466,7 @@ describe('a text that only repeats the person (live message 58)', () => {
       model: script(saying(summarize('this_month'), 'cuanto voy este mes')),
     })
     const reply = await say(app, { text: 'cuanto voy este mes?' })
-    expect(reply).toBe('Este mes gastaste $43.800 (5 movimientos).')
+    expect(reply).toBe('Octubre (1–9, en curso) gastaste $43.800 (5 movimientos).')
     expect(app.model.n).toBe(1)
     expect((await audit())[0]).toMatchObject({
       text: 'dropped',

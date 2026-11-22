@@ -21,15 +21,28 @@ export const CATEGORIES = [
   'otros',
 ] as const
 
-export const PERIODS = [
+/** Periods code resolves from today alone, in Argentine time. */
+export const NAMED_PERIODS = [
   'today',
   'yesterday',
   'this_week',
   'last_week',
+  'weekend',
+  'last_weekend',
   'this_month',
   'last_month',
   'this_year',
+  'last_year',
 ] as const
+
+/** The named periods, plus the three that need the fields of the range: a month, a year, explicit days. */
+export const PERIODS = [...NAMED_PERIODS, 'month', 'year', 'dates'] as const
+
+/** How a summary splits its totals: not at all, by what was bought, by how it was paid, or by time. */
+export const GROUPS = ['none', 'category', 'payment', 'day', 'week', 'month'] as const
+
+/** What a summary is compared with: nothing, the period before, or a second range the person named. */
+export const COMPARES = ['none', 'previous', 'range'] as const
 
 // Factories, not shared instances: the API rejects the $defs that a reused schema produces.
 const Direction = () => z.enum(['in', 'out'])
@@ -71,7 +84,29 @@ export const ChangesSchema = () =>
     payment: z.string().optional(),
   })
 
+/**
+ * The days a summary covers. Every field is always present (strict tools allow few optional or union
+ * fields, and the others are used up): a field the period does not use is 0 or "". Code resolves it to
+ * Argentine days (`resolveRange`), so the model never works out where a week or a month starts.
+ */
+export const RangeSchema = () =>
+  z.object({
+    period: z.enum(PERIODS),
+    /** `month` only: 1 to 12 ("octubre" is 10). */
+    month: z.number().int(),
+    /** `month` (0 = the latest one that is not in the future) and `year` (the year). */
+    year: z.number().int(),
+    /** `dates` only: yyyy-mm-dd, mm-dd or dd, as the person said it (code picks the latest such day that is not in the future). */
+    from: z.string(),
+    /** `dates` only: same forms; "" is the same day as `from`. */
+    to: z.string(),
+  })
+
 export type Period = (typeof PERIODS)[number]
+export type NamedPeriod = (typeof NAMED_PERIODS)[number]
+export type GroupBy = (typeof GROUPS)[number]
+export type CompareTo = (typeof COMPARES)[number]
+export type RangeInput = z.infer<ReturnType<typeof RangeSchema>>
 export type Category = (typeof CATEGORIES)[number]
 export type Movement = z.infer<ReturnType<typeof MovementSchema>>
 export type Changes = z.infer<ReturnType<typeof ChangesSchema>>
@@ -115,7 +150,11 @@ export const TOOL_INPUTS = {
   delete_movement: () => z.object({ id: z.number().int(), text: Say() }),
   summarize: () =>
     z.object({
-      period: z.enum(PERIODS),
+      range: RangeSchema(),
+      group_by: z.enum(GROUPS),
+      compare_to: z.enum(COMPARES),
+      /** Only with `compare_to: "range"`: the second range ("noviembre vs octubre": range November, other October). */
+      other: RangeSchema().optional(),
       direction: Direction().nullable(),
       category: Category().nullable(),
       payment: z.string().nullable(),

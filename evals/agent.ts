@@ -10,9 +10,10 @@ import {
   type Usage,
   windowReplies,
 } from '../src/agent'
-import { MAX_FOUND } from '../src/agent/schema'
+import { MAX_FOUND, NAMED_PERIODS } from '../src/agent/schema'
 import type { FindFilter, MovementRow } from '../src/ledger'
 import { normalizeText } from '../src/movement'
+import { resolveRange } from '../src/range'
 import { argentinaTime } from '../src/time'
 import type { Changes, Command } from './command'
 import type { EvalCase } from './grade'
@@ -60,7 +61,7 @@ const optionsOf = (reply: string, list: MovementRow[]) =>
     .filter((a) => a.id > 0)
 
 /** The agent's first action as the command the case grades; an `ask_user` is a low-confidence command. */
-export function toCommand(actions: Action[], list: MovementRow[]): Command {
+export function toCommand(actions: Action[], list: MovementRow[], today: string): Command {
   const [first] = actions
   const index = (id: number) => {
     const k = list.findIndex((m) => m.id === id)
@@ -88,8 +89,16 @@ export function toCommand(actions: Action[], list: MovementRow[]): Command {
         target_index: index(first.input.id),
         confidence: 'high',
       }
-    case 'summarize':
-      return { type: 'query', ...first.input }
+    case 'summarize': {
+      const { range, direction, category, payment } = first.input
+      // The same days asked for in another way ("en noviembre" as month 11) are the same period.
+      const days = resolveRange(range, today)
+      const named = NAMED_PERIODS.find((p) => {
+        const r = resolveRange({ ...range, period: p, month: 0, year: 0, from: '', to: '' }, today)
+        return days.ok && r.ok && r.range.from === days.range.from && r.range.to === days.range.to
+      })
+      return { type: 'query', period: named ?? range.period, direction, category, payment }
+    }
     case 'ask_user':
       return first.input.after_answer === 'delete'
         ? { type: 'delete', target: first.input.question, target_index: null, confidence: 'low' }
@@ -147,7 +156,7 @@ export async function runCase(
     seen: new Set([...list.map((m) => m.id), ...asked.map((a) => a.id)]),
   })
   return {
-    command: toCommand(result.actions, list),
+    command: toCommand(result.actions, list, c.today),
     actions: result.actions,
     usage: result.usage,
     turns: result.turns,

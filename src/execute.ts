@@ -7,11 +7,12 @@ import {
   liveByIds,
   lockLive,
   newestLiveId,
-  queryTotals,
   softDelete,
+  summaryRows,
   supersede,
 } from './ledger'
 import { applyChanges, changedFields } from './movement'
+import { previousRange, type Resolved, resolveRange } from './range'
 import {
   REPLY_GONE,
   REPLY_SAY_FALLBACK,
@@ -23,14 +24,13 @@ import {
   renderDeletion,
   renderHelp,
   renderLog,
-  renderQuery,
   renderStale,
   renderUnchanged,
   renderUndo,
   type UndoLine,
 } from './render'
+import { renderSummary, type Side } from './render-summary'
 import type { Executed } from './store'
-import { periodRange } from './time'
 import { type Undone, undoLast } from './undo'
 
 export interface ExecuteInput {
@@ -185,16 +185,44 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         break
       }
       case 'summarize': {
-        const { period, direction, category, payment, description } = action.input
-        const totals = await queryTotals(tx, i.accountId, {
-          direction,
-          category,
-          payment,
-          description,
-          range: periodRange(period, today),
+        const { range, group_by, compare_to, other, direction, category, payment, description } =
+          action.input
+        // `checkCall` already resolved these against the same day: a failure here is a bug, not a refusal.
+        const resolved = (spec: typeof range): Resolved => {
+          const r = resolveRange(spec, today)
+          if (!r.ok) throw new Error(`summarize: ${r.reason}`)
+          return r.range
+        }
+        const asked = resolved(range)
+        const before =
+          compare_to === 'previous'
+            ? previousRange(asked)
+            : compare_to === 'range' && other
+              ? resolved(other)
+              : null
+        const side = async (r: Resolved): Promise<Side> => ({
+          range: r,
+          ...(await summaryRows(
+            tx,
+            i.accountId,
+            { direction, category, payment, description, range: r },
+            group_by,
+          )),
         })
-        lines.push(renderQuery({ period, direction, category, payment, description }, totals))
+        const now = await side(asked)
+        lines.push(
+          renderSummary(
+            { direction, category, payment, description, groupBy: group_by },
+            today,
+            now,
+            before ? await side(before) : null,
+          ),
+        )
         steps.push({ tool: action.tool, outcome: 'applied' })
+        details.set(
+          index,
+          `${asked.from}..${asked.to}${before ? ` vs ${before.from}..${before.to}` : ''}${group_by === 'none' ? '' : ` by ${group_by}`}`,
+        )
         break
       }
       case 'ask_user': {
