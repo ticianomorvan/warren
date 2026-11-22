@@ -94,6 +94,10 @@ export interface AgentInput {
   seen: Set<number>
   /** Ids of the facts the model is shown (`ContextInput.memory`): the only ones `forget_fact` may name by id. */
   seenFacts?: ReadonlySet<number>
+  /** Ids of the reminders the model is shown ("Recordatorios"): the only ones `cancel_reminder` may name. */
+  seenReminders?: ReadonlySet<number>
+  /** The instant of the message: a reminder's first occurrence must be after it. */
+  now: Date
   /** The only option of the pending question, when it has exactly one (see `Guard.sole`). */
   sole?: number
   /** Aborts the call and the SDK's retries: the message deadline and the shutdown. */
@@ -209,9 +213,11 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       undone: acts.some((a) => a.tool === 'undo_last'),
       remembered: acts.some((a) => a.tool === 'remember_fact'),
       forgotten: acts.some((a) => a.tool === 'forget_fact'),
+      reminded: acts.some((a) => a.tool === 'set_reminder'),
+      unreminded: acts.some((a) => a.tool === 'cancel_reminder'),
     }
     return acts.flatMap((action) => {
-      if (!('text' in action.input)) return []
+      if (!('text' in action.input) || action.tool === 'set_reminder') return []
       const text = action.input.text ?? ''
       if (text.trim() === '' && action.tool !== 'reply') return []
       const check = checkSay(text, {
@@ -289,6 +295,8 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       sole: i.sole,
       message: i.message,
       seenFacts: i.seenFacts,
+      seenReminders: i.seenReminders,
+      now: i.now,
       remembered: new Set(),
     }
     const foundThisTurn: number[] = []

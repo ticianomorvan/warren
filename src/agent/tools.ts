@@ -26,6 +26,12 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'The person asks you to forget everything you know about them ("olvidate de todo lo que sabés de mí"). Code asks "¿Seguro?" and only their "sí" confirms; you never do. Never together with another action.',
   list_facts:
     'The person asks what you know or have noted about them ("¿qué sabés de mí?", "¿qué tenés anotado?"). Code lists every fact.',
+  set_reminder:
+    'Set a reminder: Warren sends the person a WhatsApp message with `what` at the time the schedule says. `what` is what to remind them of, in their words, one line, no numbers they did not write. `schedule` is typed: `start` (yyyy-mm-dd, the first day it may fire, today or later), `time` (HH:MM, "09:00" unless they said another), and, for a repeating one, `every` (day, week, month, year) with `interval` (1 unless "cada 2…"); weekdays for week (mon..sun); month_days for month or year (1 to 31, -1 is the last day); nth ({n: 1..4 or -1, weekday}) for "el primer lunes"; month (1..12) for year; until or count to end it. Leave out every field that does not apply (no nulls). Code works out the first date, checks it is in the future and writes the confirmation from the schedule.',
+  cancel_reminder:
+    'Cancel one live reminder, by an id from "Recordatorios" (only an id you were shown). For "cancelá el del alquiler", "ya no me recuerdes la pastilla". Never for a movement of the ledger.',
+  list_reminders:
+    'The person asks which reminders they have ("¿qué recordatorios tengo?", "¿qué me ibas a recordar?"). Code lists every live reminder.',
 }
 
 /** The JSON schema of a zod schema, without numeric bounds, defaults and the `$schema` key (a default is how code reads a field the model left out, not something to show the model) (the checks of a value are code's: `validate.ts`). */

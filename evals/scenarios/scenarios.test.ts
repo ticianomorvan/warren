@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { SYSTEM_PROMPT } from '../../src/agent'
 import { logOf, movement } from '../../src/command-fixtures'
+import { nextOccurrence } from '../../src/reminders/schedule'
 import { createTestDatabase, fakeModel } from '../../src/test-harness'
 import { Meter, runScenario } from './drive'
 import { isLive } from './grade'
@@ -66,6 +67,15 @@ describe('scenarios.jsonl', () => {
             if (op.op === 'delete') live.delete(op.ref)
           }
         }
+      }
+    }
+  })
+
+  it('seeds only reminders that are live at the first turn', () => {
+    for (const s of scenarios) {
+      const first = new Date(`${s.turns[0]?.now}:00-03:00`)
+      for (const r of s.reminders) {
+        expect(nextOccurrence(r.schedule, first), `${s.id}: ${r.what}`).not.toBeNull()
       }
     }
   })

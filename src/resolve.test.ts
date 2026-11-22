@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   answerAction,
   answerNumber,
+  bajaRequest,
   disconnectRequest,
   linkCode,
   type PendingQuestion,
@@ -212,6 +213,41 @@ describe('disconnectRequest', () => {
       '',
     ]) {
       expect(disconnectRequest(no), no).toBeNull()
+    }
+  })
+})
+
+describe('bajaRequest', () => {
+  it('reads a typed message that is only BAJA, in any case, and nothing with more in it', () => {
+    for (const yes of [
+      'BAJA',
+      'baja',
+      'Baja.',
+      '¡BAJA!',
+      'dame de baja',
+      'dar de baja',
+      'quiero la baja',
+      'por favor baja',
+      'quiero darme de baja',
+      'darme de baja',
+      'quiero la baja',
+      'quiero baja',
+      'baja porfa',
+    ]) {
+      expect(bajaRequest(yes), yes).toEqual({ tool: 'cancel_all_reminders', input: {} })
+    }
+    for (const no of [
+      'baja el precio',
+      'dar de baja la visa',
+      'quiero darme de baja de la visa',
+      'quiero baja de sueldo',
+      'dar de baja el recordatorio del alquiler',
+      'no baja',
+      'cuanto baja el dolar',
+      'café baja 3500',
+      '',
+    ]) {
+      expect(bajaRequest(no), no).toBeNull()
     }
   })
 })

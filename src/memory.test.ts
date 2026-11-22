@@ -645,6 +645,7 @@ describe('whose facts they are', () => {
         inboundId: msg?.id as number,
         actions: [{ tool: 'forget_fact', input: { id: theirs as number, key: '', text: null } }],
         audit: [],
+        now: new Date(),
         today: '2025-10-09',
         message: 'x',
         facts: [],

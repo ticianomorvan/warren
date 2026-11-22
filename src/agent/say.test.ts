@@ -28,6 +28,8 @@ const NOTHING = {
   undone: false,
   remembered: false,
   forgotten: false,
+  reminded: false,
+  unreminded: false,
 }
 const EVERYTHING = {
   deleted: true,
@@ -355,9 +357,56 @@ describe('checkSay: a text cannot say a change happened that this message did no
     expect(say('Sí, lo anoté.', NOTHING, ['✓ Corregido: Café $3.800 (antes $3.500)'])).toBe(false)
   })
 
+  it('a promise to remind, or a reminder said to be cancelled, needs the reminder to have been set or cancelled', () => {
+    expect(say('Dale, te aviso.')).toBe(false)
+    expect(say('Ya lo programé.')).toBe(false)
+    expect(say('Cancelé el recordatorio.')).toBe(false)
+    expect(say('Dale, te aviso.', { ...NOTHING, reminded: true })).toBe(true)
+    expect(say('Ya lo programé.', { ...NOTHING, reminded: true })).toBe(true)
+    expect(say('Cancelé el recordatorio.', { ...NOTHING, unreminded: true })).toBe(true)
+    // one is not the other, and a movement logged proves neither
+    expect(say('Dale, te aviso.', { ...NOTHING, unreminded: true })).toBe(false)
+    expect(say('Cancelé el recordatorio.', { ...NOTHING, reminded: true, logged: true })).toBe(
+      false,
+    )
+    // an earlier reply may prove it for a `reply` that answers about it
+    expect(
+      say('Sí, te aviso.', NOTHING, ['⏰ Te aviso el viernes 10/10 a las 09:00: pagar la Visa.']),
+    ).toBe(true)
+    expect(say('No te aviso nada: no lo puse.')).toBe(true)
+  })
+
+  it('lets the prompt’s own question and a plain reminder of a rule through', () => {
+    // "¿Cuál querés que cancele?" is how the model asks which reminder (accents are folded: it reads like "cancelé").
+    expect(say('¿Cuál querés que cancele?')).toBe(true)
+    expect(say('¿Cuál recordatorio querés que cancele?')).toBe(true)
+    expect(say('Te recuerdo que solo anoto gastos.')).toBe(true)
+    expect(say('Te lo recuerdo: mandame el monto.')).toBe(true)
+    // The claim itself still needs the cancel.
+    expect(say('Cancelé el recordatorio.')).toBe(false)
+  })
+
   it('leaves a denial alone: not doing something is not a claim', () => {
     expect(say('No borré nada: no encontré el súper.')).toBe(true)
     expect(say('No lo anoté porque falta el monto.')).toBe(true)
+  })
+})
+
+describe('composeReply: a reminder set', () => {
+  it('sends the ⏰ line and drops the model’s words beside it, which can only contradict it', () => {
+    const r = composeReply({
+      lines: ['⏰ Te aviso todos los lunes a las 09:00, desde el lunes 13/10: la pastilla.'],
+      says: [{ action: 0, text: 'Dale, te aviso todos los martes.' }],
+      steps: [{ tool: 'set_reminder', outcome: 'applied' }],
+      message: 'los lunes recordame la pastilla',
+      facts: ['los lunes recordame la pastilla'],
+      window: [],
+      fallback: 'x',
+    })
+    expect(r.reply).toBe(
+      '⏰ Te aviso todos los lunes a las 09:00, desde el lunes 13/10: la pastilla.',
+    )
+    expect(r.verdicts.get(0)).toMatchObject({ text: 'dropped' })
   })
 })
 

@@ -14,7 +14,9 @@ import {
   settledBatches,
   softDelete,
 } from './ledger'
+import { lockReminders, type ReminderRow } from './reminders/db'
 import { applyFactUndo, type FactUndone, planFactUndo } from './undo-facts'
+import { applyReminderUndo, planReminderUndo, type ReminderUndone } from './undo-reminders'
 
 /** How long a batch can be undone: past it, the person is told and nothing is touched. */
 export const UNDO_WINDOW_HOURS = 24
@@ -29,6 +31,8 @@ export type Undone =
   | { kind: 'deleted'; movement: MovementRow }
   /** What the batch did to a fact (agent slice F). */
   | FactUndone
+  /** What the batch did to a reminder (slice 6). */
+  | ReminderUndone
 
 export type UndoOutcome =
   | { kind: 'undone'; batch: number; items: Undone[] }
@@ -36,8 +40,10 @@ export type UndoOutcome =
   | { kind: 'nothing' }
   /** Their last batch is older than the window. */
   | { kind: 'expired' }
-  /** A movement or a fact of the batch is no longer as the batch left it: nothing was changed. `moved` and `facts` are those. */
-  | { kind: 'stale'; moved: MovementRow[]; facts: FactRow[] }
+  /** The batch set or cancelled reminders and the asking message is not from WhatsApp: reminders are undone from there. Nothing was changed. */
+  | { kind: 'whatsapp_only' }
+  /** A movement, a fact or a reminder of the batch is no longer as the batch left it: nothing was changed. `moved`, `facts` and `reminders` are those. */
+  | { kind: 'stale'; moved: MovementRow[]; facts: FactRow[]; reminders: ReminderRow[] }
 
 /** The movements a batch left behind, by what it did to them. */
 interface Effects {
@@ -74,7 +80,7 @@ function effectsOf(rows: BatchRow[], batch: number): Effects {
  */
 export async function undoLast(
   tx: Sql,
-  o: { accountId: number; inboundId: number },
+  o: { accountId: number; inboundId: number; now: Date },
 ): Promise<UndoOutcome> {
   // Two undos of one sender cannot interleave: the second sees the first's mark and reaches the batch before.
   await tx`SELECT pg_advisory_xact_lock(7203002, ${o.accountId}::int)`
@@ -89,9 +95,21 @@ export async function undoLast(
   await lockRows(tx, o.accountId, touched)
   // What the batch did to facts (slice F): read and checked now, written below with the movements.
   const facts = await planFactUndo(tx, o.accountId, last.id)
+  // And to reminders (slice 6), as of the asking message's own time: a restored reminder's next date is worked out from it.
+  const { now } = o
+  await lockReminders(tx, o.accountId)
+  const reminders = await planReminderUndo(tx, o.accountId, last.id, now)
+  // An MCP client does not undo reminders (what they say goes to the person, who has "deshacer"): nothing is changed.
+  if (reminders.made.length + reminders.cancelled.length + reminders.moved.length > 0) {
+    const [asking] = await tx<
+      { channel: string }[]
+    >`SELECT channel FROM inbound_message WHERE id = ${o.inboundId}`
+    if (asking?.channel !== 'whatsapp') return { kind: 'whatsapp_only' }
+  }
   if (
     touched.length === 0 &&
-    facts.made.length + facts.forgotten.length + facts.moved.length === 0
+    facts.made.length + facts.forgotten.length + facts.moved.length === 0 &&
+    reminders.made.length + reminders.cancelled.length + reminders.moved.length === 0
   ) {
     return { kind: 'nothing' }
   }
@@ -114,14 +132,14 @@ export async function undoLast(
     if (asLeft && head) heads.set(root.id, head.id)
     else moved.push(root)
   }
-  if (moved.length > 0 || facts.moved.length > 0) {
-    return { kind: 'stale', moved, facts: facts.moved }
+  if (moved.length > 0 || facts.moved.length > 0 || reminders.moved.length > 0) {
+    return { kind: 'stale', moved, facts: facts.moved, reminders: reminders.moved }
   }
   // The heads are locked live: a change that slipped in between is refused here too.
   for (const head of new Set(heads.values())) {
     if (!(await lockLive(tx, o.accountId, head))) {
       const root = roots.find((r) => heads.get(r.id) === head)
-      return { kind: 'stale', moved: root ? [root] : [], facts: [] }
+      return { kind: 'stale', moved: root ? [root] : [], facts: [], reminders: [] }
     }
   }
 
@@ -168,6 +186,7 @@ export async function undoLast(
     items.push({ kind: 'deleted', movement: row })
   }
   items.push(...(await applyFactUndo(tx, o, facts)))
+  items.push(...(await applyReminderUndo(tx, o, reminders)))
   await markUndone(tx, o.inboundId, last.id)
   return { kind: 'undone', batch: last.id, items }
 }
@@ -175,10 +194,10 @@ export async function undoLast(
 /** What an undo did, for an audit entry: which batch and what became of each row; nothing for an undo that did nothing. */
 export function undoDetail(undo: UndoOutcome): string | undefined {
   if (undo.kind === 'undone') {
-    return `undid batch ${undo.batch}: ${undo.items.map((u) => `${u.kind} ${'fact' in u ? u.fact.id : 'movement' in u ? u.movement.id : u.from.id}`).join(', ')}`
+    return `undid batch ${undo.batch}: ${undo.items.map((u) => `${u.kind} ${'reminder' in u ? u.reminder.id : 'fact' in u ? u.fact.id : 'movement' in u ? u.movement.id : u.from.id}`).join(', ')}`
   }
   if (undo.kind === 'stale') {
-    return `stale: ${[...undo.moved, ...undo.facts].map((m) => m.id).join(', ')}`
+    return `stale: ${[...undo.moved, ...undo.facts, ...undo.reminders].map((m) => m.id).join(', ')}`
   }
   return undefined
 }

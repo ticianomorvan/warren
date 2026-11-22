@@ -276,6 +276,8 @@ export async function setup(
     auth?: { fetchClient?: Parameters<typeof createAuth>[0]['fetchClientMetadataResource'] }
     /** The clock the MCP tools read "today" from. */
     now?: () => Date
+    /** The processor's clock (see `ProcessorOptions.clock`): a fixed past one by default, so a message's own time is "now". */
+    clock?: () => Date
   } = {},
 ) {
   const fake = opts.fake ?? fakeGraph()
@@ -292,6 +294,8 @@ export async function setup(
       client,
       helpContact: opts.helpContact,
       transcriber: opts.transcriber,
+      // Made-up message times (2025, 2026): the clock is before all of them, so a message's own time is "now" for a reminder.
+      clock: opts.clock ?? (() => new Date(1760000000 * 1000)),
       interimMs: opts.interimMs ?? 60_000,
       deadlineMs: opts.deadlineMs ?? 120_000,
     })

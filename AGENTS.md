@@ -53,8 +53,8 @@ src/mcp/      Warren over MCP (slice 5.2, `docs/mcp-spec.md`): door.ts (every `/
               `sub` → `auth_user` → account → its WhatsApp id still allowed; else a 401 challenge, 503 when the database is down; authentication only, each tool asks for its own scope), endpoint.ts (`createMcpHandler`, a new stateless `McpServer` per request,
               `toNodeHandler`, every failure caught), tools.ts (the three read tools and their closed-able output schemas), write.ts (one MCP write: a settled `inbound_message` row of channel `mcp` and `applyCall` in one transaction; the request id's replay),
               write-tools.ts (the six write tools)
-src/reminders/ Reminders over WhatsApp (slice 6; `docs/reminders-spec.md`; 6.1 is the send path, no agent yet): schedule.ts (pure: the typed schedule, its zod schema and `nextOccurrence`),
-              send.ts (the sweep: claim, window, cap, text or template, at-most-once), db.ts (`insertReminder`, `tidyWhat`, `recordReminderStatus`), cli.ts (`template:status`, `reminder:try-template`, `reminder:add`)
+src/reminders/ Reminders over WhatsApp (slice 6; `docs/reminders-spec.md`): schedule.ts (pure: the typed schedule, its zod schema and `nextOccurrence`), describe.ts (pure: a schedule in Argentine Spanish), guard.ts (`checkReminder`: the value rules, the cap),
+              send.ts (the sweep: claim, window, cap, text or template, at-most-once), db.ts (all SQL on `reminder`: live, lock, cancel, `insertReminder`, `tidyWhat`, `recordReminderStatus`), cli.ts (`template:status`, `reminder:try-template`, `reminder:add`)
 src/run-summary.ts  Plans, sums and renders a summary: the one path under WhatsApp's `summarize` and MCP's `warren_summarize`
 src/server.ts Entry point: config, migrate, warm-up, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
@@ -67,6 +67,7 @@ src/movement.ts Pure: text normalizing, applying a correction's changes, which f
 src/facts.ts  All SQL on `fact` (agent slice F): live facts, remember (insert or supersede, capped, under a per-account lock), forget, forget all, and what undo reads
 src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a question we asked (done in code, including the "sí" of "¿Seguro?" over forgetting everything), and `undoRequest`, a typed bare "deshacer" (done in code)
 src/undo.ts   Undo of the sender's last write batch (agent slice C): which batch, the stale-state guard, the append-only reversal; runs inside the commit transaction
+src/undo-reminders.ts  The reminders half of an undo (slice 6.2): what the batch set or cancelled, whether each still stands as it was left, the reversal
 src/redact.ts Pure: what a message that holds a secret leaves behind (a placeholder for its text, scrubbed audit and calls; agent slice F)
 src/undo-facts.ts  The facts half of an undo (slice F): what the batch stored or forgot, whether each still stands as it was left, and the reversal
 src/apply.ts  `applyCall(tx, {accountId, inboundId, today}, call)`: the six writes (log, correct, delete, undo, remember, forget) as data (an `Outcome`), the one path under WhatsApp's `execute` and MCP's write tools: the movement locked and checked to be the account's and live, the facts' advisory lock
@@ -211,7 +212,12 @@ wrong changes. Its test split is held out like the other: never print or tune on
   `failed` with Meta's code; a 5xx, a timeout or a killed process ends it `unknown` (a `started` row older than 10 min, which logs an `alert` with the count) and is never sent again. At most 10 sends
   per person in a rolling 24 h (the next is `capped` and logs an `alert`); more than 200 in all only logs an `alert`. A `failed` status for a reminder's wamid ends its row `failed` with the code and takes it out of
   `sent_count` (`store.recordStatus` hands reminder wamids to it and does not touch `reply`). `what` is stored on one line (`tidyWhat`). Schedules are `src/reminders/schedule.ts` (Argentine time, UTC-3, no DST;
-  `nextOccurrence` counts `count` from `start`). The agent tools, BAJA and undo are slice 6.2.
+  `nextOccurrence` counts `count` from `start`).
+  **The agent side (slice 6.2).** Tools `set_reminder {what, schedule}`, `cancel_reminder {id}`, `list_reminders` are terminal and rendered by code (`⏰ Te aviso todos los lunes y jueves a las 08:00, desde el lunes 13/10: …`, from the typed schedule, never from the model's words).
+  `checkReminder` (in `valueGuards`) refuses a schedule that does not parse, a first occurrence that has passed or is over 366 days away, a secret's value or contact data in `what` or in the message (`holdsSecretValue`: a card or CBU number, a DNI, a credential word beside a number; "cambiar la contraseña del wifi" is fine), a text over 100 characters or with a number the person did not write; a
+  passed time, a far date and a secret are code's own `notice` lines, the rest go back to the model. `applyReminderCall` (apply.ts, not MCP's `applyCall`) takes the account's reminders lock (key 7203005) and caps live reminders at 20. `cancel_reminder` takes only an id listed
+  under "Recordatorios" in the per-message context (never in the cached prefix). "BAJA" (typed only, any case, no model, honoured even with a question open) cancels all in one batch (`cancel_all_reminders`); "deshacer" restores them as new rows (`restores`), with the next date worked out
+  from the asking message's time, and refuses (stale) a one-off that was sent or has no occurrence left. Reminders are in `lastBatch`'s rule; `warren_undo_last` over MCP refuses a batch that set or cancelled one (`whatsapp_only`, nothing changed): they are undone from WhatsApp. A schedule is `normalizeSchedule`d against the message's "now" (the later of its own time and the processor's clock) before it is stored: `start` moves to the first occurrence after now, so a time that passed today never spends `count`. `REMINDER_TEMPLATE` unset does not stop a reminder being set.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
 - **Photos (agent B2).** An `image` webhook message keeps its media id and caption in `inbound_message`
   (`payload`, `body`); the bytes are never stored. `graph.fetchImage` looks the id up, checks the declared size

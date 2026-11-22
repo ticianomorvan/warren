@@ -3,7 +3,7 @@ import type { Sql } from './db'
 import { type FactRow, liveFacts } from './facts'
 import { type FindFilter, findMovements, type MovementRow, recentMovements } from './ledger'
 import { REDACTED_BODY } from './redact'
-import { recordReminderStatus } from './reminders/db'
+import { liveReminders, type ReminderRow, recordReminderStatus } from './reminders/db'
 import type { PendingQuestion } from './resolve'
 import type { Timings } from './timings'
 
@@ -197,6 +197,11 @@ export function createStore(sql: Sql, o: StoreOptions) {
     /** The account's newest live movements (not replaced, not deleted), newest first. */
     recentMovements(accountId: number): Promise<MovementRow[]> {
       return recentMovements(sql, accountId)
+    },
+
+    /** The account's live reminders, the next to come first: what the model is shown with a message. */
+    reminders(accountId: number): Promise<ReminderRow[]> {
+      return liveReminders(sql, accountId)
     },
 
     /** The facts the model is shown with a message: the newest, and those the message names; and how many live facts the account has. */

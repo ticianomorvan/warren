@@ -548,6 +548,7 @@ describe('an undo and a correction one after the other', () => {
             inboundId: message?.id ?? 0,
             actions: calls,
             audit: [],
+            now: new Date(),
             today: TODAY,
             message: '',
             facts: [],

@@ -452,6 +452,32 @@ describe('undo spans both channels', () => {
     expect(await live(WA_A)).toHaveLength(0)
   })
 
+  it('warren_undo_last refuses a batch that set or cancelled reminders: they are undone from WhatsApp, and nothing changes', async () => {
+    app.close()
+    const setReminder = {
+      name: 'set_reminder',
+      input: {
+        what: 'pagar la Visa',
+        schedule: { start: '2025-10-10', time: '09:00', interval: 1 },
+        text: null,
+      },
+    }
+    await boot(script(setReminder, setReminder))
+    const [reply] = await whatsapp(app, WA_A, 'recordame mañana pagar la visa')
+    expect(reply).toContain('⏰ Te aviso')
+    expect(refusal(await tool(a.access_token, 'warren_undo_last', {}))).toContain('WhatsApp')
+    const [live] = await sql`SELECT count(*)::int AS n FROM reminder WHERE cancelled_at IS NULL`
+    expect(live?.n).toBe(1)
+    // The batch is still there for the person: "deshacer" on WhatsApp takes it back.
+    const [undone] = await whatsapp(app, WA_A, 'deshacer')
+    expect(undone).toBe('↩︎ Deshice:\n• Quité ⏰ pagar la Visa')
+    // A batch before it (an MCP log) is undone from MCP as ever.
+    const out = ok(await tool(a.access_token, 'warren_log_movements', log(cafe)), 'log')
+    expect(ok(await tool(a.access_token, 'warren_undo_last', {}), 'undone').undone_batch).toBe(
+      out.batch,
+    )
+  })
+
   it("never takes another person's batch", async () => {
     ok(await tool(b.access_token, 'warren_log_movements', log(cafe)), 'log')
     expect(refusal(await tool(a.access_token, 'warren_undo_last', {}))).toContain('nothing to undo')

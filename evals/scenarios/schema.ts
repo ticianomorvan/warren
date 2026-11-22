@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { CATEGORIES, FACT_KINDS } from '../../src/agent/schema'
+import { ScheduleSchema } from '../../src/reminders/schedule'
 
 /**
  * A scenario is a conversation: a seeded ledger, then user turns, each with the Argentine "now" it
@@ -32,6 +33,8 @@ export const TAGS = [
   'voice',
   /** What the person tells Warren about themselves, kept and used later (agent slice F): remembering, using, forgetting, listing. */
   'memory',
+  /** Setting, listing and cancelling reminders (slice 6.2): graded on the reminders the person has after the turn. */
+  'reminder',
 ] as const
 export type Tag = (typeof TAGS)[number]
 
@@ -70,6 +73,26 @@ export const SeedFactSchema = z.strictObject({
   value: z.string().min(1),
 })
 export type SeedFact = z.infer<typeof SeedFactSchema>
+
+/** A reminder already set when the scenario starts: its next date is the first occurrence after the scenario's first turn. */
+export const SeedReminderSchema = z.strictObject({
+  what: z.string().min(1),
+  schedule: ScheduleSchema,
+})
+export type SeedReminder = z.infer<typeof SeedReminderSchema>
+
+/**
+ * A live reminder the person must have after a turn. The turn lists them all (a closed world, like the ledger): every live
+ * reminder matches exactly one, and none is missing. `first` is its next date, Argentine time (`yyyy-mm-ddThh:mm`); `schedule`
+ * holds the stored fields that must be as written (the others are not checked; a list is compared as a set).
+ */
+export const ReminderExpectSchema = z.strictObject({
+  /** Loose match, like a movement's description. */
+  what: z.string().min(1),
+  first: Now.optional(),
+  schedule: z.record(z.string(), z.unknown()).optional(),
+})
+export type ReminderExpect = z.infer<typeof ReminderExpectSchema>
 
 /** What a new movement must look like. Unset fields are not checked, except `date` (the turn's day) and `direction`/`currency`/`payment` (out, ARS, null). */
 const NewMovement = z.strictObject({
@@ -137,6 +160,8 @@ export const TurnSchema = z
     ops: z.array(OpSchema).default([]),
     /** How many live facts the person has after this turn. Unset: not checked. */
     liveFacts: z.number().int().min(0).optional(),
+    /** The live reminders after this turn, all of them (see `ReminderExpectSchema`). Unset: not checked. */
+    liveReminders: z.array(ReminderExpectSchema).optional(),
     /** True: the reply must be a question (starts with ¿). With `ops` on the turn it must not be one. */
     ask: z.boolean().default(false),
     /**
@@ -161,6 +186,8 @@ export const ScenarioSchema = z.strictObject({
   seed: z.array(SeedSchema).default([]),
   /** Facts the person told Warren before the scenario starts. */
   facts: z.array(SeedFactSchema).default([]),
+  /** Reminders the person set before the scenario starts. */
+  reminders: z.array(SeedReminderSchema).default([]),
   turns: z.array(TurnSchema).min(1),
 })
 export type Scenario = z.infer<typeof ScenarioSchema>

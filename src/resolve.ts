@@ -153,3 +153,19 @@ export function disconnectRequest(text: string): Action | null {
     .trim()
   return DISCONNECT.test(words) ? { tool: 'mcp_disconnect', input: {} } : null
 }
+
+const BAJA =
+  /^(?:(?:por favor|porfa)\s+)?(?:quiero\s+)?(?:(?:la\s+)?baja|(?:dar(?:me)?|dame)\s+de\s+baja)(?:\s+(?:por favor|porfa))?$/
+
+/**
+ * "BAJA" (also "baja", "dame de baja", "quiero la baja"): a typed message that is only that stops every reminder, done by code
+ * with no model call (Meta's policy asks for an opt-out that is honoured as written, and the template tells the person to
+ * send it). Anything with more in it ("baja el precio", "dar de baja la visa") is not, and goes to the model.
+ */
+export function bajaRequest(text: string): Action | null {
+  const words = normalizeText(text)
+    .replace(/[¡!¿?.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return BAJA.test(words) ? { tool: 'cancel_all_reminders', input: {} } : null
+}

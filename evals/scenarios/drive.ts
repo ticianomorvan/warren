@@ -4,10 +4,11 @@ import { fileURLToPath } from 'node:url'
 import type Anthropic from '@anthropic-ai/sdk'
 import { estimateCostUsd, type ModelKey, type Usage } from '../../src/agent'
 import type { Sql } from '../../src/db'
+import { nextOccurrence } from '../../src/reminders/schedule'
 import { fakeGraph, messageBody, photoBody, post, setup, voiceBody } from '../../src/test-harness'
 import type { Timings } from '../../src/timings'
 import type { Transcriber } from '../../src/transcribe'
-import { gradeTurn, type Row, type TurnGrade, withoutHeard } from './grade'
+import { gradeTurn, type LiveReminder, type Row, type TurnGrade, withoutHeard } from './grade'
 import type { Scenario } from './schema'
 
 /** Thrown inside the pipeline when the next model call could take the run over its budget. */
@@ -148,6 +149,16 @@ async function liveFactsOf(sql: Sql, waId: string): Promise<number> {
   return row?.n ?? 0
 }
 
+/** The sender's live reminders, as the grader reads them. */
+async function liveRemindersOf(sql: Sql, waId: string): Promise<LiveReminder[]> {
+  return sql<LiveReminder[]>`
+    SELECT r.what, r.schedule,
+      to_char(r.next_due_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'YYYY-MM-DD"T"HH24:MI') AS first
+    FROM reminder r JOIN account a ON a.id = r.account_id
+    WHERE a.wa_id = ${waId} AND r.cancelled_at IS NULL AND r.next_due_at IS NOT NULL
+    ORDER BY r.id`
+}
+
 async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
   return sql<Row[]>`
     SELECT m.id::int AS id, m.amount::text AS amount, to_char(m.occurred_on, 'YYYY-MM-DD') AS date,
@@ -160,7 +171,7 @@ async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
 /** Puts the starting ledger in as if earlier messages had logged it, at the times the scenario gives. */
 async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<string, number>> {
   const refs = new Map<string, number>()
-  if (s.seed.length === 0 && s.facts.length === 0) return refs
+  if (s.seed.length === 0 && s.facts.length === 0 && s.reminders.length === 0) return refs
   const [account] = await sql<{ id: number }[]>`
     INSERT INTO account (wa_id) VALUES (${waId})
     ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id RETURNING id::int AS id`
@@ -170,6 +181,17 @@ async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<stri
   for (const f of s.facts) {
     await sql`INSERT INTO fact (account_id, kind, key, value, inbound_message_id)
       VALUES (${account?.id ?? 0}, ${f.kind}, ${f.key}, ${f.value}, ${inbound?.id ?? 0})`
+  }
+  for (const r of s.reminders) {
+    // Its next date is the first occurrence after the scenario's first turn, as if it had been set a day before.
+    const due = nextOccurrence(r.schedule, new Date(epoch(s.turns[0]?.now ?? '')))
+    // A seed that is not live at the first turn would silently test nothing.
+    if (!due)
+      throw new Error(
+        `${s.id}: the seeded reminder "${r.what}" has no occurrence after the first turn`,
+      )
+    await sql`INSERT INTO reminder (account_id, what, schedule, next_due_at, inbound_message_id)
+      VALUES (${account?.id ?? 0}, ${r.what}, ${sql.json(r.schedule)}, ${due}, ${inbound?.id ?? 0})`
   }
   for (const [position, m] of s.seed.entries()) {
     const loggedAt = new Date(epoch(`${m.loggedOn ?? m.on}T${m.at}`)).toISOString()
@@ -282,6 +304,7 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         failed,
         commandType: stored.command?.some((c) => c.tool === 'summarize') ? 'query' : stored.action,
         liveFacts: await liveFactsOf(env.sql, waId),
+        liveReminders: await liveRemindersOf(env.sql, waId),
       })
       refs.clear()
       for (const [ref, id] of grade.refs) refs.set(ref, id)

@@ -1,7 +1,10 @@
 import type { Movement, RecentMovement } from './agent'
+import type { ReminderOutcome } from './apply'
 import type { FactRow } from './facts'
 import type { MovementRow } from './ledger'
 import { type ChangedField, changedFields } from './movement'
+import type { ReminderRow } from './reminders/db'
+import { describeReminder, describeSchedule } from './reminders/describe'
 import { addDays } from './time'
 import type { Undone } from './undo'
 import type { MediaProblem } from './whatsapp/graph'
@@ -114,7 +117,7 @@ export const REPLY_GONE =
 const REPLY_HELP_DISCONNECT =
   'Si conectaste a Claude u otro agente y querés cortarle el acceso, escribime "desconectar".'
 const REPLY_HELP =
-  'Mandame un gasto o un ingreso y lo anoto. Por ejemplo: "café 3500 con la visa" o "cobré el sueldo 850.000".'
+  'Mandame un gasto o un ingreso y lo anoto. Por ejemplo: "café 3500 con la visa" o "cobré el sueldo 850.000".\nTambién te aviso de lo que me pidas: "recordame pagar la Visa el 10" o "todos los lunes recordame la pastilla". "¿Qué recordatorios tengo?" los lista y "BAJA" los cancela todos.'
 
 /**
  * An amount in Argentine form: `.` between thousands, `,` before decimals only when they are not
@@ -250,10 +253,19 @@ export type UndoLine =
   | { kind: 'fact_removed'; fact: FactRow }
   | { kind: 'fact_restored'; fact: FactRow }
   | { kind: 'fact_reverted'; fact: FactRow; was: string }
+  /** A reminder the batch set is cancelled now; one the batch cancelled is back (`reminder` as it stands after the undo). */
+  | { kind: 'reminder_removed'; reminder: ReminderRow }
+  | { kind: 'reminder_restored'; reminder: ReminderRow }
 
 /** An undone movement as the record shows it: what it is after the undo, and what a restored correction was before. */
 export function undoLine(u: Undone): UndoLine {
-  if (u.kind === 'fact_removed' || u.kind === 'fact_restored' || u.kind === 'fact_reverted')
+  if (
+    u.kind === 'fact_removed' ||
+    u.kind === 'fact_restored' ||
+    u.kind === 'fact_reverted' ||
+    u.kind === 'reminder_removed' ||
+    u.kind === 'reminder_restored'
+  )
     return u
   if (u.kind === 'corrected') {
     return { kind: u.kind, movement: u.to, from: u.from, changed: changedFields(u.from, u.to) }
@@ -279,6 +291,8 @@ export function renderUndo(lines: UndoLine[], today: string): string {
     if (l.kind === 'fact_reverted') {
       return `🧠 ${renderFact(l.fact)} (estaba ${factValue({ kind: l.fact.kind, value: l.was })})`
     }
+    if (l.kind === 'reminder_removed') return `Quité ⏰ ${l.reminder.what}`
+    if (l.kind === 'reminder_restored') return `Volvió ⏰ ${renderReminderBrief(l.reminder, today)}`
     if (l.kind === 'logged') return `Quité ${dated(l.movement)}`
     if (l.kind === 'deleted') return `Volvió ${dated(l.movement)}`
     const was = l.from && l.changed ? ` (estaba ${wasText(l.from, l.changed, today)})` : ''
@@ -292,12 +306,81 @@ export const renderStale = (
   moved: RecentMovement[],
   today: string,
   facts: FactRow[] = [],
+  reminders: ReminderRow[] = [],
 ): string => {
   const what = [
     ...moved.map((m) => `${movementText(m)}${when(m.date, today)}`),
     ...facts.map((f) => `🧠 ${renderFact(f)}`),
+    ...reminders.map((r) => `⏰ ${r.what}`),
   ]
   return `No deshice nada: ${what.join(' · ')} ${what.length === 1 ? 'cambió' : 'cambiaron'} después. Decime qué querés cambiar.`
+}
+
+// ---- Reminders (slice 6). Every line about a reminder is code's, from the stored row and its schedule.
+
+/** A reminder set for a time that has passed: the person says when, the model is not asked to guess. */
+export const REPLY_REMINDER_PAST =
+  'Esa fecha y hora ya pasaron: decime para cuándo querés que te avise.'
+/** A first occurrence more than a year away. */
+export const REPLY_REMINDER_FAR =
+  'Solo puedo avisarte de cosas que pasan en el próximo año: decime una fecha más cercana.'
+export const REPLY_REMINDER_GONE = '⏰ Ese recordatorio ya no existe.'
+export const REPLY_REMINDERS_NONE = 'No tenés recordatorios.'
+/** The account holds the most reminders already: nothing was set. */
+export const renderRemindersFull = (max: number) =>
+  `Ya tenés ${max} recordatorios y no me entran más. Cancelá uno y pedime este de nuevo.`
+/** The line a text is ended with: no second full stop after the person's own punctuation. */
+const stop = (text: string) => (/[.!?…]$/.test(text) ? text : `${text}.`)
+
+/** A reminder as it was understood: what code will send, and when, rendered from the schedule. */
+export const renderReminderSet = (r: ReminderRow, today: string) =>
+  `⏰ Te aviso ${r.nextDueAt ? describeSchedule(r.schedule, r.nextDueAt, today) : ''}: ${stop(r.what)}`
+
+/** "tomar la pastilla (todos los lunes y jueves a las 09:00)": a reminder in a list, a cancel or an undo. */
+export const renderReminderBrief = (r: ReminderRow, today: string) =>
+  `${r.what} (${r.nextDueAt ? describeSchedule(r.schedule, r.nextDueAt, today, { since: false }) : 'ya pasó'})`
+
+export const renderReminderCancelled = (r: ReminderRow, today: string) =>
+  `⏰ Cancelé el recordatorio: ${renderReminderBrief(r, today)}`
+
+/** "BAJA": how many were cancelled, and how to bring them back. */
+export const renderBaja = (n: number) =>
+  `⏰ Cancelé ${n === 1 ? 'tu recordatorio' : `tus ${n} recordatorios`}. Si fue sin querer, escribí «deshacer» y vuelve${n === 1 ? '' : 'n'}.`
+export const REPLY_BAJA_NONE = 'No tenés recordatorios para cancelar.'
+
+/** Every live reminder, the next to come first: a bulleted list, which `fitReply` collapses when it is long. */
+export const renderReminders = (rows: ReminderRow[], today: string) =>
+  rows.length === 0
+    ? REPLY_REMINDERS_NONE
+    : [
+        '⏰ Tus recordatorios:',
+        ...rows.map((r) => `${BULLET}${r.what} — ${describeReminder(r, today)}`),
+      ].join('\n')
+
+/** The line a reminder write comes to, and its outcome for the step list (`applied`, `gone`, `full`...): one place for all three. */
+export function reminderReply(
+  done: ReminderOutcome,
+  today: string,
+  max: number,
+): { line: string; outcome: string } {
+  switch (done.tool) {
+    case 'set_reminder':
+      if (done.kind === 'applied') {
+        return { line: renderReminderSet(done.reminder, today), outcome: 'applied' }
+      }
+      return {
+        line: done.kind === 'full' ? renderRemindersFull(max) : REPLY_REMINDER_PAST,
+        outcome: done.kind,
+      }
+    case 'cancel_reminder':
+      return done.kind === 'gone'
+        ? { line: REPLY_REMINDER_GONE, outcome: 'gone' }
+        : { line: renderReminderCancelled(done.reminder, today), outcome: 'applied' }
+    case 'cancel_all_reminders':
+      return done.cancelled.length === 0
+        ? { line: REPLY_BAJA_NONE, outcome: 'nothing' }
+        : { line: renderBaja(done.cancelled.length), outcome: 'applied' }
+  }
 }
 
 // ---- Memory (agent slice F). Every line about a fact is code's, from the stored row.
