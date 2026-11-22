@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { REPLY_FACT_SECRET, REPLY_REMINDER_FAR, REPLY_REMINDER_PAST } from '../render'
 import { checkCall, checkInput, type Guard } from './calls'
 import { MAX_FOUND } from './schema'
 
@@ -129,5 +130,121 @@ describe('checkCall: the conversation on top of the values', () => {
     expect(checkCall('log_movements', input, guard())).toEqual(
       checkInput('log_movements', input, TODAY),
     )
+  })
+})
+
+// ---- Reminders (slice 6).
+
+const NOW = new Date('2026-11-18T15:00:00Z') // 12:00 in Argentina, Wednesday
+const reminder = (o: Record<string, unknown> = {}, schedule: Record<string, unknown> = {}) => ({
+  what: 'pagar la Visa',
+  schedule: { start: '2026-11-20', time: '09:00', interval: 1, ...schedule },
+  text: null,
+  ...o,
+})
+const set = (input: unknown, g: Partial<Guard> = {}) =>
+  checkCall('set_reminder', input, guard({ now: NOW, message: 'recordame pagar la visa', ...g }))
+const notice = (c: ReturnType<typeof set>) =>
+  c.kind === 'action' && c.action.tool === 'notice' ? c.action.input.text : null
+
+describe('set_reminder', () => {
+  it('accepts a schedule with a first occurrence in the next year and keeps what code understood', () => {
+    const c = set(reminder())
+    expect(c).toMatchObject({
+      kind: 'action',
+      action: { tool: 'set_reminder', input: { what: 'pagar la Visa' } },
+    })
+  })
+
+  it('puts the text on one line', () => {
+    const c = set(reminder({ what: '  pagar \n la   Visa ' }))
+    expect(c).toMatchObject({ kind: 'action', action: { input: { what: 'pagar la Visa' } } })
+  })
+
+  it('answers a time that has passed with code’s own line, not a retry', () => {
+    const c = set(reminder({}, { start: '2026-11-18', time: '09:00' }))
+    expect(notice(c)).toBe(REPLY_REMINDER_PAST)
+    expect(notice(set(reminder({}, { start: '2026-11-17' })))).toBe(REPLY_REMINDER_PAST)
+  })
+
+  it('accepts a time later today', () => {
+    expect(set(reminder({}, { start: '2026-11-18', time: '18:00' })).kind).toBe('action')
+    expect(notice(set(reminder({}, { start: '2026-11-18', time: '18:00' })))).toBeNull()
+  })
+
+  it('refuses a first occurrence more than 366 days away, and allows exactly that far', () => {
+    expect(notice(set(reminder({}, { start: '2027-11-20' })))).toBe(REPLY_REMINDER_FAR)
+    expect(notice(set(reminder({}, { start: '2027-11-19', time: '12:00' })))).toBeNull()
+    expect(notice(set(reminder({}, { start: '2027-11-19', time: '12:01' })))).toBe(
+      REPLY_REMINDER_FAR,
+    )
+  })
+
+  it('refuses a secret or contact data in the text, and the person is told (not the model)', () => {
+    for (const what of [
+      'pagar con la clave 7788',
+      'llamar al 11 5555 1234',
+      'mandar a juan@mail.com',
+    ]) {
+      const c = set(reminder({ what }), { message: what })
+      expect(notice(c), what).not.toBeNull()
+    }
+    expect(notice(set(reminder({ what: 'la clave del banco' })))).toBe(REPLY_FACT_SECRET)
+    // The model drops the secret from the text, but the message held one: nothing is set.
+    const clean = set(reminder({ what: 'pagar' }), {
+      message: 'recordame mañana pagar con la clave 7788',
+    })
+    expect(notice(clean)).toBe(REPLY_FACT_SECRET)
+  })
+
+  it('refuses text that is empty or too long, and a number the person did not write, to the model', () => {
+    expect(set(reminder({ what: '  ' })).kind).toBe('rejected')
+    expect(set(reminder({ what: 'x'.repeat(101) })).kind).toBe('rejected')
+    expect(set(reminder({ what: 'pagar 4509 de la visa' })).kind).toBe('rejected')
+    expect(
+      set(reminder({ what: 'pagar 4509 de la visa' }), { message: 'recordame pagar 4509' }).kind,
+    ).toBe('action')
+  })
+
+  it('refuses a schedule that does not parse, with the reason', () => {
+    expect(set(reminder({}, { every: 'week', month_days: [1] }))).toMatchObject({
+      kind: 'rejected',
+      message: expect.stringContaining('schedule.month_days'),
+    })
+    expect(set(reminder({}, { start: '2026-02-30' })).kind).toBe('rejected')
+    expect(set(reminder({}, { time: '25:00' })).kind).toBe('rejected')
+    expect(set(reminder({}, { cron: '* * * * *' })).kind).toBe('rejected')
+  })
+
+  it('is checked the same without a conversation (the value guards)', () => {
+    expect(checkInput('set_reminder', reminder(), TODAY, NOW).kind).toBe('action')
+    expect(
+      notice(checkInput('set_reminder', reminder({}, { start: '2026-11-17' }), TODAY, NOW)),
+    ).toBe(REPLY_REMINDER_PAST)
+  })
+})
+
+describe('cancel_reminder', () => {
+  it('needs an id the model was shown', () => {
+    const input = { id: 7, text: null }
+    expect(checkCall('cancel_reminder', input, guard({ seenReminders: new Set([7]) })).kind).toBe(
+      'action',
+    )
+    expect(checkCall('cancel_reminder', input, guard({ seenReminders: new Set([8]) })).kind).toBe(
+      'rejected',
+    )
+    expect(checkCall('cancel_reminder', input, guard()).kind).toBe('rejected')
+    // A movement's or a fact's id is in another space.
+    expect(
+      checkCall('cancel_reminder', input, guard({ seen: new Set([7]), seenFacts: new Set([7]) }))
+        .kind,
+    ).toBe('rejected')
+  })
+
+  it('refuses an id that is not positive', () => {
+    expect(
+      checkCall('cancel_reminder', { id: 0, text: null }, guard({ seenReminders: new Set([0]) }))
+        .kind,
+    ).toBe('rejected')
   })
 })

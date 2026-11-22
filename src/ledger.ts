@@ -175,7 +175,7 @@ export async function settleBatchRow(
 
 /**
  * The newest batch of the account before the message `inboundId` (the one asking to undo): a committed
- * message from the sender that inserted or deleted a movement of the account, or stored or forgot a fact, that is not itself an undo
+ * message from the sender that inserted or deleted a movement of the account, stored or forgot a fact, or set or cancelled a reminder, that is not itself an undo
  * and that no undo reverted. An undone batch is skipped, so a second "deshacer" reaches the one before.
  */
 export async function lastBatch(
@@ -196,7 +196,12 @@ export async function lastBatch(
             -- a fact the message stored, unless it also forgot it and replaced nothing (a net of nothing)
             (f.inbound_message_id = i.id
               AND (f.forgotten_by IS DISTINCT FROM i.id OR EXISTS (SELECT 1 FROM fact p WHERE p.superseded_by = f.id)))
-            OR (f.forgotten_by = i.id AND f.inbound_message_id <> i.id))))
+            OR (f.forgotten_by = i.id AND f.inbound_message_id <> i.id)))
+        OR EXISTS (
+          SELECT 1 FROM reminder r WHERE r.account_id = a.id AND (
+            -- a reminder the message set (an undo's restore is no batch's), unless it also cancelled it
+            (r.inbound_message_id = i.id AND r.restores IS NULL AND r.cancelled_by IS DISTINCT FROM i.id)
+            OR (r.cancelled_by = i.id AND r.inbound_message_id IS DISTINCT FROM i.id))))
       AND NOT EXISTS (SELECT 1 FROM inbound_message u WHERE u.undoes = i.id)
     ORDER BY i.id DESC LIMIT 1`
   return row ?? null

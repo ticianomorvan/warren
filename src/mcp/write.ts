@@ -260,6 +260,7 @@ async function presentOutcome(
         const ids = [
           ...u.moved.map((m) => `movement ${m.id}`),
           ...u.facts.map((f) => `fact ${f.id}`),
+          ...u.reminders.map((r) => `reminder ${r.id}`),
         ]
         return refuse(
           `Nothing was undone: ${ids.join(', ')} changed after that batch (corrected or deleted since). Look at the current state and change it directly.`,
@@ -270,6 +271,10 @@ async function presentOutcome(
           return { kind: item.kind, movement: show(item.to), from: show(item.from) }
         }
         if ('movement' in item) return { kind: item.kind, movement: show(item.movement) }
+        // A reminder a WhatsApp message set or cancelled (slice 6): the client sees which, as a bare id and its text.
+        if ('reminder' in item) {
+          return { kind: item.kind, reminder: { id: item.reminder.id, what: item.reminder.what } }
+        }
         return {
           kind: item.kind,
           fact: fact(item.fact),

@@ -94,7 +94,7 @@ async function add(waId: string | undefined, what: string | undefined, local: st
       schedule,
       now: new Date(),
     })
-    console.log(`reminder ${id} due ${nextDueAt.toISOString()}`)
+    console.log(`reminder ${id} due ${nextDueAt?.toISOString()}`)
   } finally {
     await sql.end({ timeout: 5 })
   }

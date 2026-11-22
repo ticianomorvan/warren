@@ -28,6 +28,8 @@ const NOTHING = {
   undone: false,
   remembered: false,
   forgotten: false,
+  reminded: false,
+  unreminded: false,
 }
 const EVERYTHING = {
   deleted: true,
@@ -353,6 +355,25 @@ describe('checkSay: a text cannot say a change happened that this message did no
     expect(say('Sí, lo corregí.', NOTHING, earlier)).toBe(false)
     expect(say('Listo, ya está.', NOTHING, ['✓ Anoté 2:'])).toBe(true) // the generic claim: any ✓ line
     expect(say('Sí, lo anoté.', NOTHING, ['✓ Corregido: Café $3.800 (antes $3.500)'])).toBe(false)
+  })
+
+  it('a promise to remind, or a reminder said to be cancelled, needs the reminder to have been set or cancelled', () => {
+    expect(say('Dale, te aviso.')).toBe(false)
+    expect(say('Ya lo programé.')).toBe(false)
+    expect(say('Cancelé el recordatorio.')).toBe(false)
+    expect(say('Dale, te aviso.', { ...NOTHING, reminded: true })).toBe(true)
+    expect(say('Ya lo programé.', { ...NOTHING, reminded: true })).toBe(true)
+    expect(say('Cancelé el recordatorio.', { ...NOTHING, unreminded: true })).toBe(true)
+    // one is not the other, and a movement logged proves neither
+    expect(say('Dale, te aviso.', { ...NOTHING, unreminded: true })).toBe(false)
+    expect(say('Cancelé el recordatorio.', { ...NOTHING, reminded: true, logged: true })).toBe(
+      false,
+    )
+    // an earlier reply may prove it for a `reply` that answers about it
+    expect(
+      say('Sí, te aviso.', NOTHING, ['⏰ Te aviso el viernes 10/10 a las 09:00: pagar la Visa.']),
+    ).toBe(true)
+    expect(say('No te aviso nada: no lo puse.')).toBe(true)
   })
 
   it('leaves a denial alone: not doing something is not a claim', () => {

@@ -1,6 +1,6 @@
 import { canonical } from '../../src/agent/say'
 import { formatMoney } from '../../src/render'
-import type { NewMovementExpect, Turn } from './schema'
+import type { NewMovementExpect, ReminderExpect, Turn } from './schema'
 
 /** One movement row of the account in any state, as read from the database after a turn. */
 export interface Row {
@@ -35,6 +35,15 @@ export interface TurnInput {
   commandType: string | null
   /** How many live facts the person has after the turn (agent slice F); the turn's `liveFacts` is checked against it. */
   liveFacts?: number
+  /** The person's live reminders after the turn: what, next date (Argentine local `yyyy-mm-ddThh:mm`) and the stored schedule. */
+  liveReminders?: LiveReminder[]
+}
+
+/** A live reminder as read from the database. */
+export interface LiveReminder {
+  what: string
+  first: string | null
+  schedule: Record<string, unknown>
 }
 
 export interface TurnGrade {
@@ -260,7 +269,8 @@ export function gradeTurn(input: TurnInput): TurnGrade {
 
   // The reply.
   const text = withoutHeard(reply).trim()
-  const claimsSuccess = text.startsWith('✓') || text.startsWith('↩︎') || text.startsWith('🧠')
+  const claimsSuccess =
+    text.startsWith('✓') || text.startsWith('↩︎') || text.startsWith('🧠') || text.startsWith('⏰')
   const asked = text.startsWith('¿')
   const flat = norm(reply)
   if (input.failed) problems.push('the message failed (failure notice)')
@@ -275,6 +285,13 @@ export function gradeTurn(input: TurnInput): TurnGrade {
   if (turn.ask && !asked) problems.push('the reply should be a question')
   if (turn.liveFacts !== undefined && input.liveFacts !== turn.liveFacts) {
     problems.push(`${input.liveFacts ?? 'unknown'} live facts, expected ${turn.liveFacts}`)
+  }
+  // Reminders: the live ones must be exactly those the turn lists. A wrong one under a reply that says it worked is a silent wrong change.
+  let reminderWrong = false
+  if (turn.liveReminders !== undefined) {
+    const found = reminderProblems(turn.liveReminders, input.liveReminders ?? [])
+    problems.push(...found)
+    reminderWrong = found.length > 0
   }
   const unnecessaryQuestion = turn.ops.length > 0 && asked && !ledgerChanged
   if (unnecessaryQuestion) problems.push('asked a question instead of acting')
@@ -301,13 +318,42 @@ export function gradeTurn(input: TurnInput): TurnGrade {
     problems,
     wrongWrite,
     claimsSuccess,
-    silentWrong: wrongWrite && claimsSuccess,
+    silentWrong: (wrongWrite || reminderWrong) && claimsSuccess,
     asked,
     unnecessaryQuestion,
     ledgerChanged,
     invented,
     refs: newRefs,
   }
+}
+
+const sameField = (actual: unknown, expected: unknown) =>
+  Array.isArray(expected) && Array.isArray(actual)
+    ? JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort())
+    : JSON.stringify(actual) === JSON.stringify(expected)
+
+/** What differs between the reminders a turn expects and the live ones: each expected one must match a distinct live one. */
+export function reminderProblems(expected: ReminderExpect[], live: LiveReminder[]): string[] {
+  const free = new Set(live.keys())
+  const problems: string[] = []
+  for (const e of expected) {
+    const k = [...free].find((i) => {
+      const r = live[i] as LiveReminder
+      return (
+        looseText(r.what, e.what) &&
+        (e.first === undefined || r.first === e.first) &&
+        Object.entries(e.schedule ?? {}).every(([key, value]) => sameField(r.schedule[key], value))
+      )
+    })
+    if (k === undefined)
+      problems.push(`missing reminder "${e.what}"${e.first ? ` at ${e.first}` : ''}`)
+    else free.delete(k)
+  }
+  for (const i of free) {
+    const r = live[i] as LiveReminder
+    problems.push(`unexpected reminder "${r.what}" at ${r.first} ${JSON.stringify(r.schedule)}`)
+  }
+  return problems
 }
 
 /** The movement a row replaced, if any. */

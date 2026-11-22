@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ScheduleSchema } from '../reminders/schedule'
 
 export const CATEGORIES = [
   'supermercado',
@@ -203,6 +204,12 @@ export const TOOL_INPUTS = {
   forget_all_facts: () => z.object({ text: Say() }),
   /** Code lists every fact the person has told Warren. */
   list_facts: () => z.object({ text: Say() }),
+  /** Reminders (slice 6). Code checks every value (`checkReminder`) and renders what it understood from `schedule`, never from the model's words. */
+  set_reminder: () => z.object({ what: z.string(), schedule: ScheduleSchema, text: Say() }),
+  /** One live reminder, by an id the model was shown ("Recordatorios"). */
+  cancel_reminder: () => z.object({ id: z.number().int(), text: Say() }),
+  /** Code lists every live reminder. */
+  list_reminders: () => z.object({ text: Say() }),
 } as const
 
 export type ToolName = keyof typeof TOOL_INPUTS
@@ -231,7 +238,10 @@ export type LinkDecline = { tool: 'link_decline'; input: { link_id: number } }
 /** "desconectar": cuts every MCP connection of the sender (refresh tokens, consents, live access tokens). Code's own, typed text only. */
 export type McpDisconnect = { tool: 'mcp_disconnect'; input: Record<string, never> }
 
-/** What code runs by itself: a notice, a confirmed forget, a step of a sign-in, or a disconnect. A model call never comes to these except a refused secret, which is a notice. */
+/** "BAJA": cancels every live reminder of the sender, in one batch ("deshacer" restores them). Code's own, typed text only. */
+export type CancelAllReminders = { tool: 'cancel_all_reminders'; input: Record<string, never> }
+
+/** What code runs by itself: a notice, a confirmed forget, a step of a sign-in, a disconnect, or BAJA. A model call never comes to these except a refused secret, which is a notice. */
 export type CodeAction =
   | Notice
   | ConfirmedForget
@@ -239,6 +249,7 @@ export type CodeAction =
   | LinkConfirm
   | LinkDecline
   | McpDisconnect
+  | CancelAllReminders
 
 /** What runs at the commit point: the model's terminal calls, or an action of code's own. */
 export type Action = ModelAction | CodeAction

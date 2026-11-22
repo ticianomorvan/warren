@@ -452,6 +452,32 @@ describe('undo spans both channels', () => {
     expect(await live(WA_A)).toHaveLength(0)
   })
 
+  it('warren_undo_last takes back a reminder a WhatsApp message set, and refuses when it has been sent', async () => {
+    app.close()
+    const setReminder = {
+      name: 'set_reminder',
+      input: {
+        what: 'pagar la Visa',
+        schedule: { start: '2025-10-10', time: '09:00', interval: 1 },
+        text: null,
+      },
+    }
+    await boot(script(setReminder, setReminder))
+    const [reply] = await whatsapp(app, WA_A, 'recordame mañana pagar la visa')
+    expect(reply).toContain('⏰ Te aviso')
+    // A one-off that was sent has nothing to take back.
+    await sql`UPDATE reminder SET next_due_at = NULL`
+    expect(refusal(await tool(a.access_token, 'warren_undo_last', {}))).toContain('reminder')
+    await sql`UPDATE reminder SET next_due_at = '2025-10-10T12:00:00Z'`
+    const out = ok(await tool(a.access_token, 'warren_undo_last', {}), 'undone')
+    expect(out.items).toMatchObject([
+      { kind: 'reminder_removed', reminder: { what: 'pagar la Visa' } },
+    ])
+    expect(out.record).toBe('↩︎ Deshice:\n• Quité ⏰ pagar la Visa')
+    const [live] = await sql`SELECT count(*)::int AS n FROM reminder WHERE cancelled_at IS NULL`
+    expect(live?.n).toBe(0)
+  })
+
   it("never takes another person's batch", async () => {
     ok(await tool(b.access_token, 'warren_log_movements', log(cafe)), 'log')
     expect(refusal(await tool(a.access_token, 'warren_undo_last', {}))).toContain('nothing to undo')

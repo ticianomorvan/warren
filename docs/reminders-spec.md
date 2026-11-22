@@ -125,8 +125,9 @@ spending; there is no global block, only an alert above 200 sends a day. Meta's 
    respondé BAJA." A template must not start or end with a variable; `{{1}}` is `what`, one line.
    `pnpm template:status` prints its `category` and `status`. If Meta re-files it as MARKETING,
    stop and ask: the price more than doubles and marketing limits (131049) apply.
-   Config: `REMINDER_TEMPLATE` (name). When it is unset, `set_reminder` refuses with
-   "todavía no puedo mandar recordatorios".
+   Config: `REMINDER_TEMPLATE` (name). When it is unset, `set_reminder` still works (decided 2026-11-22, so the
+   feature does not wait for Meta's approval): the sender sends text inside the window, and a send that needs the
+   template ends `failed` and is logged.
 
 Rejected:
 
@@ -203,3 +204,37 @@ What shipped, and where it differs from the text above.
   decrements `sent_count`. `what` has runs of whitespace collapsed into one space (`tidyWhat`, applied by `insertReminder`; slice 6.2's tool goes through it). `parseSchedule` is gone
   (`ScheduleSchema.parse`). `REMINDER_TEMPLATE` is read the same way by the server and the scripts (no default in the scripts; `template:status` also takes the name as an argument).
   `recordReminderStatus` logs (`reminder_status_failed`); `recordStatus` returns nothing again.
+
+## As built: slice 2 (2026-11-22)
+
+What shipped (`set_reminder`, `cancel_reminder`, `list_reminders`, BAJA, undo, context, prompt, help, scenarios), and where it differs from Design 3 to 5.
+
+- **Tools** (`src/agent/schema.ts`, `calls.ts`, `apply.ts` `applyReminderCall`, `execute.ts`, `render.ts`, `say.ts`). `set_reminder {what, schedule, text}` takes the
+  typed schedule as is (`ScheduleSchema`; a field that does not apply is left out, not null). The guards are `checkReminder` (`src/reminders/guard.ts`) inside `valueGuards`
+  (so MCP can reuse them later; `checkInput` takes an optional `now`): the schedule parses; the first occurrence after the message's own time exists and is at most 366 days
+  away; `what` goes through `tidyWhat` and holds no secret or contact data (nor does the message: a message with a secret sets no reminder, whatever the model leaves of it
+  in `what`), is at most 100 characters, and holds no number the person did not write. "At least one day between sends" needs no check of its own: a schedule holds one time a
+  day, and `interval` starts at 1. The cap of 20 live reminders is decided at the commit point under the account's reminders advisory lock (key 7203005).
+- **Refusals the person reads, not the model.** A time that has passed, a first date more than a year away, and a secret in the text are code's own `notice` lines
+  (`REPLY_REMINDER_PAST`, `REPLY_REMINDER_FAR`, the fact secret/contact lines), with no retry turn: guessing another time would be setting a reminder the person did not ask for.
+  A shape error, an empty or long text or an unwritten number is sent back to the model as usual.
+- **"Next" dates are code's.** The prompt teaches the model to send "el 10" as `{every: month, month_days: [10], count: 1, start: today}` (and a weekday or "15 de diciembre" the same
+  way), so code finds the date; "mañana" uses a "Próximos días" block (7 days ahead) that the per-message context now carries; "en 2 minutos" is the only clock arithmetic the model does,
+  and a time that has passed is refused by code.
+- **Rendering** (`src/reminders/describe.ts`, pure): from the typed fields, never from the model's words: "⏰ Te aviso hoy a las 18:00: pagar la Visa.", "⏰ Te aviso todos los lunes y
+  jueves a las 08:00, desde el lunes 13/10: tomar la pastilla." (`desde` is the first occurrence, not `start`). A schedule that fires once (no `every`, or `count` 1) reads as a one-off.
+  The model's own text beside it must pass `checkSay`, which now refuses "te aviso", "programé" unless a reminder was set and "cancelé" unless one was cancelled.
+- **BAJA** (`bajaRequest`, `resolve.ts`): typed text only (not by voice), no model call, case-insensitive: "BAJA", "baja", "dame de baja", "quiero la baja", "por favor baja". Unlike "deshacer" and
+  "desconectar" it is honoured **whatever question is open**: an opt-out should not depend on conversation state, and it is undoable. It cancels every live reminder in one batch (the action
+  `cancel_all_reminders` is code's own, like `forget_all_confirmed`; no model tool). Replies: "⏰ Cancelé tus 2 recordatorios. Si fue sin querer, escribí «deshacer» y vuelven.", or "No tenés recordatorios para cancelar."
+- **Undo** (`src/undo-reminders.ts`, in `undoLast`): what the batch set is cancelled (`reminder_removed`); what it cancelled (one, or all with BAJA) comes back as new rows (`restores`, the message of
+  the undo as `inbound_message_id`, `next_due_at` worked out from the asking message's own time). `stale`, with nothing changed, when: a one-off the batch set has been sent (`next_due_at` null);
+  a reminder it set was cancelled by a later batch that was not undone; a one-off it cancelled has no occurrence left; or bringing back would take the account over 20. The batch rule in `lastBatch` gains
+  "set or cancelled a reminder". `warren_undo_last` over MCP reaches these batches too, so its presenter and output schema gained `reminder_removed` / `reminder_restored` items and a `reminder` view (the one
+  change outside WhatsApp; no MCP reminder tools).
+- **Context.** The live reminders (id, text, schedule in words, next date) are in the per-message context under "Recordatorios", never in the cached prefix; `cancel_reminder` takes only an id listed there. They are
+  also a source for the numbers check. The system prompt and the tool list changed, so `pnpm eval` and `pnpm eval:scenarios` were rerun.
+- **Help** gains a line for reminders and BAJA. Action label `remind` (set, cancel, BAJA); `list_reminders` is a `reply`.
+- **Scenarios** `s183`–`s199` (tag `reminder`; seeds `reminders`, expectation `liveReminders`: the closed list of live reminders after a turn, graded by text, next date and stored fields; a wrong one under a reply that says it worked is a
+  silent wrong change, and `⏰` counts as a success mark).
+- **Not done:** the MCP tools for reminders; a "snooze"; per-reminder undo of a single cancel by name (the undo is the last batch, like everything else).

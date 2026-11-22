@@ -26,7 +26,7 @@ import {
   REPLY_NON_TEXT,
   REPLY_VOICE,
 } from './render'
-import { answerAction, disconnectRequest, linkCode, undoRequest } from './resolve'
+import { answerAction, bajaRequest, disconnectRequest, linkCode, undoRequest } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
 import type { Timings, TurnTiming } from './timings'
@@ -253,10 +253,11 @@ export function createProcessor(o: ProcessorOptions) {
     const working = (async (): Promise<Worked> => {
       const readsAt = performance.now()
       const accountId = await store.upsertAccount(c.wa_id)
-      let [movements, conversation, memory] = await Promise.all([
+      let [movements, conversation, memory, reminders] = await Promise.all([
         store.recentMovements(accountId),
         store.conversation(c),
         store.facts(accountId, c.body ?? ''),
+        store.reminders(accountId),
       ])
       stages.reads_ms = Math.round(performance.now() - readsAt)
       const mediaAt = performance.now()
@@ -324,7 +325,9 @@ export function createProcessor(o: ProcessorOptions) {
           ? null
           : code
             ? ({ tool: 'link_ask', input: { code } } as const)
-            : (answerAction(text, conversation.question) ??
+            : // "BAJA" stops every reminder whatever is open: an opt-out does not wait for an answer ("deshacer" brings them back).
+              (bajaRequest(text) ??
+              answerAction(text, conversation.question) ??
               (conversation.question
                 ? null
                 : (undoRequest(text) ?? (o.signIn ? disconnectRequest(text) : null))))
@@ -342,6 +345,7 @@ export function createProcessor(o: ProcessorOptions) {
         movements,
         memory: memory.facts,
         memoryTotal: memory.total,
+        reminders,
         // Fewer than the list holds: it is everything they have, and a search could find nothing more.
         complete: movements.length > 0 && movements.length < RECENT_LIMIT,
         conversation: conversation.turns,
@@ -370,6 +374,8 @@ export function createProcessor(o: ProcessorOptions) {
         env: { find: (filter) => store.find(accountId, filter) },
         seen,
         seenFacts: new Set(memory.facts.map((f) => f.id)),
+        seenReminders: new Set(reminders.map((r) => r.id)),
+        now: c.messageAt,
         sole:
           conversation.question?.asked.length === 1
             ? conversation.question.asked[0]?.id
@@ -433,6 +439,7 @@ export function createProcessor(o: ProcessorOptions) {
               actions,
               audit,
               today,
+              now: c.messageAt,
               message: text,
               facts,
               window,

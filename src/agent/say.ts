@@ -86,6 +86,10 @@ export interface Applied {
   remembered: boolean
   /** A fact, or all of them, was forgotten. */
   forgotten: boolean
+  /** A reminder was set (`set_reminder`). */
+  reminded?: boolean
+  /** A reminder, or all of them (BAJA), was cancelled. */
+  unreminded?: boolean
 }
 
 const KIND_OF_TOOL = {
@@ -96,6 +100,9 @@ const KIND_OF_TOOL = {
   remember_fact: 'remembered',
   forget_fact: 'forgotten',
   forget_all_confirmed: 'forgotten',
+  set_reminder: 'reminded',
+  cancel_reminder: 'unreminded',
+  cancel_all_reminders: 'unreminded',
 } as const
 
 /**
@@ -149,6 +156,21 @@ const CLAIMS: {
     kind: 'forgotten',
     window: /🧠 me olvide/,
     what: 'a fact forgotten',
+  },
+  {
+    // "Te aviso", "programé": only a reminder that code set makes that true ("¿me vas a avisar?" is a question, not this).
+    said: new RegExp(
+      `${NOT}\\b(?:programe|agende|te aviso|te voy a avisar|te recuerdo|te lo recuerdo)\\b`,
+    ),
+    kind: 'reminded',
+    window: /⏰ te aviso/,
+    what: 'a reminder set',
+  },
+  {
+    said: new RegExp(`${NOT}\\b(?:cancele)\\b`),
+    kind: 'unreminded',
+    window: /⏰ cancele/,
+    what: 'a reminder cancelled',
   },
   {
     said: new RegExp(`${NOT}\\b(?:deshice|anule|reverti|volvi atras)\\b`),
@@ -461,6 +483,8 @@ export function composeReply(i: {
     undone: false,
     remembered: false,
     forgotten: false,
+    reminded: false,
+    unreminded: false,
   }
   for (const step of i.steps) {
     const kind = KIND_OF_TOOL[step.tool as keyof typeof KIND_OF_TOOL]

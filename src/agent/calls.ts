@@ -1,7 +1,13 @@
 import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
 import { planSummary } from '../range'
-import { REPLY_FACT_CONTACT, REPLY_FACT_SECRET } from '../render'
+import { checkReminder } from '../reminders/guard'
+import {
+  REPLY_FACT_CONTACT,
+  REPLY_FACT_SECRET,
+  REPLY_REMINDER_FAR,
+  REPLY_REMINDER_PAST,
+} from '../render'
 import { checkFact, checkFactValues, normalizeKey } from './memory'
 import { hasLongNumber, hasNumberWord } from './say'
 import {
@@ -38,6 +44,10 @@ export interface Guard {
   seen: ReadonlySet<number>
   /** Ids of the facts the model has been shown ("Hechos"). A fact id is in another space than a movement id. */
   seenFacts?: ReadonlySet<number>
+  /** Ids of the reminders the model has been shown ("Recordatorios"): another id space again. */
+  seenReminders?: ReadonlySet<number>
+  /** The instant of the message (its own time, never the clock): a reminder's first occurrence must be after it. */
+  now?: Date
   /** Movements already asked to be logged by earlier calls of this turn. */
   logged: number
   /** The kind and key of every fact earlier calls of this turn asked to remember: a key is said once per message. */
@@ -116,7 +126,7 @@ const logIssues = (movements: Movement[], today: string) => checkLog(movements, 
  * secret and fits. Nothing here knows of a conversation: no id was "shown", no earlier call of the message counts, and a fact
  * need not be words the person wrote. The refusal says why, in words for whoever sent it.
  */
-function valueGuards(p: Parsed, today: string): Checked {
+function valueGuards(p: Parsed, today: string, now?: Date, message?: string): Checked {
   const { tool } = p
   switch (tool) {
     case 'find_movements': {
@@ -190,11 +200,49 @@ function valueGuards(p: Parsed, today: string): Checked {
         action: { tool, input: { id: Math.max(id, 0), key: id > 0 ? '' : words, text } },
       }
     }
+    case 'set_reminder': {
+      const r = p.data as ToolInput<'set_reminder'>
+      // With no clock given the day's start: a reminder for a time earlier today then passes, the commit point checks it again.
+      const at = now ?? new Date(`${today}T00:00:00-03:00`)
+      const checked = checkReminder(r, at, message)
+      if (checked.ok) {
+        return {
+          kind: 'action',
+          action: { tool, input: { what: checked.what, schedule: checked.schedule, text: r.text } },
+        }
+      }
+      if ('message' in checked) return rejected(checked.message)
+      return refusedReminder(checked.refused)
+    }
+    case 'cancel_reminder': {
+      const { id, text } = p.data as ToolInput<'cancel_reminder'>
+      return Number.isSafeInteger(id) && id > 0
+        ? { kind: 'action', action: { tool, input: { id, text } } }
+        : rejected('send the id of a reminder you were shown ("Recordatorios")')
+    }
     // ask_user and reply are a conversation's alone; delete_movement is only an id; the rest take any input of the right shape.
     default:
       return { kind: 'action', action: { tool, input: p.data } as ModelAction }
   }
 }
+
+/** What a refused reminder is answered with: code's own line, the person is told and the model is not asked to fix it. */
+const refusedReminder = (why: 'secret' | 'contact' | 'past' | 'far'): Checked => ({
+  kind: 'action',
+  action: {
+    tool: 'notice',
+    input: {
+      text:
+        why === 'secret'
+          ? REPLY_FACT_SECRET
+          : why === 'contact'
+            ? REPLY_FACT_CONTACT
+            : why === 'past'
+              ? REPLY_REMINDER_PAST
+              : REPLY_REMINDER_FAR,
+    },
+  },
+})
 
 const refusedFact = (why: 'secret' | 'contact'): Checked => ({
   kind: 'action',
@@ -208,9 +256,9 @@ const refusedFact = (why: 'secret' | 'contact'): Checked => ({
  * The value guards alone, for a caller that is not a conversation (an MCP client): the input has the tool's shape and
  * every value is one the tables can hold. See `valueGuards`.
  */
-export function checkInput(name: string, input: unknown, today: string): Checked {
+export function checkInput(name: string, input: unknown, today: string, now?: Date): Checked {
   const parsed = parseInput(name, input)
-  return typeof parsed === 'string' ? rejected(parsed) : valueGuards(parsed, today)
+  return typeof parsed === 'string' ? rejected(parsed) : valueGuards(parsed, today, now)
 }
 
 /**
@@ -267,6 +315,18 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       guard.remembered?.add(at)
       return { kind: 'action', action: { tool, input: { ...checked.fact, text: f.text } } }
     }
+    case 'set_reminder':
+      return valueGuards(parsed, guard.today, guard.now, guard.message ?? '')
+    case 'cancel_reminder': {
+      const checked = valueGuards(parsed, guard.today)
+      const id = (data as ToolInput<'cancel_reminder'>).id
+      if (checked.kind === 'action' && !guard.seenReminders?.has(id)) {
+        return rejected(
+          `reminder id ${id} was not shown to you. Use only ids from "Recordatorios"; if it is not listed, reply that you do not see it`,
+        )
+      }
+      return checked
+    }
     case 'forget_fact': {
       const checked = valueGuards(parsed, guard.today)
       const id = (data as ToolInput<'forget_fact'>).id
@@ -278,7 +338,7 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       }
       return checked
     }
-    default: // summarize, reply, help, undo_last, forget_all_facts, list_facts
+    default: // summarize, reply, help, undo_last, forget_all_facts, list_facts, list_reminders
       return valueGuards(parsed, guard.today)
   }
 }
