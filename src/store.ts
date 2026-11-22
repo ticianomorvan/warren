@@ -152,19 +152,19 @@ export function createStore(sql: Sql, o: StoreOptions) {
         UPDATE inbound_message
         SET status = 'unknown', updated_at = now(),
             error = 'send outcome unknown: the worker died or timed out after the send started'
-        WHERE ${abandoned} AND send_started_at IS NOT NULL ${only}`
+        WHERE channel = 'whatsapp' AND ${abandoned} AND send_started_at IS NOT NULL ${only}`
       // Out of attempts: end it rather than leave it open forever.
       await sql`
         UPDATE inbound_message
         SET status = 'failed', updated_at = now(),
             error = COALESCE(error, 'attempts exhausted')
-        WHERE attempts >= ${o.maxAttempts} AND (status = 'pending' OR (${stale})) ${only}`
+        WHERE channel = 'whatsapp' AND attempts >= ${o.maxAttempts} AND (status = 'pending' OR (${stale})) ${only}`
       const rows = await sql<(Omit<Claim, 'ageMs' | 'claimedAt'> & { ageMs: string })[]>`
         UPDATE inbound_message
         SET status = 'processing', attempts = attempts + 1, claimed_at = now(), updated_at = now()
         WHERE id IN (
           SELECT id FROM inbound_message
-          WHERE attempts < ${o.maxAttempts} AND (status = 'pending' OR (${stale})) ${only}
+          WHERE channel = 'whatsapp' AND attempts < ${o.maxAttempts} AND (status = 'pending' OR (${stale})) ${only}
           ORDER BY id LIMIT ${opts.limit}
           FOR UPDATE SKIP LOCKED)
         RETURNING id, wamid, wa_id, kind, attempts, body, reply_text AS "replyText",
@@ -219,7 +219,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
             floor(extract(epoch FROM cur.received_at - p.received_at) / 60)::int AS "minutesAgo"
           FROM inbound_message cur
           JOIN inbound_message p ON p.wa_id = cur.wa_id AND p.id < cur.id
-          WHERE cur.id = ${c.id} AND p.kind IN ('text', 'image', 'audio') AND p.reply_text IS NOT NULL
+          WHERE cur.id = ${c.id} AND p.channel = 'whatsapp' AND p.kind IN ('text', 'image', 'audio') AND p.reply_text IS NOT NULL
             AND p.received_at > cur.received_at - make_interval(secs => ${CONVERSATION_WINDOW_MS / 1000})
           ORDER BY p.id DESC LIMIT ${CONVERSATION_TURNS}`,
         sql<
@@ -230,7 +230,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
           JOIN LATERAL (
             SELECT asked_numbers, asked_ids, pending, received_at, kind, reply_text
             FROM inbound_message
-            WHERE wa_id = cur.wa_id AND id < cur.id
+            WHERE wa_id = cur.wa_id AND id < cur.id AND channel = 'whatsapp'
             ORDER BY id DESC LIMIT 1) p ON true
           WHERE cur.id = ${c.id} AND p.kind IN ('text', 'image', 'audio') AND p.reply_text IS NOT NULL
             AND p.received_at > cur.received_at - make_interval(secs => ${ANSWER_WINDOW_MS / 1000})`,

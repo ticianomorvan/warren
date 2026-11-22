@@ -26,7 +26,7 @@ export function fetchLatencyRows(sql: Sql, last: number): Promise<LatencyRow[]> 
       COALESCE(m.action, m.command->>'type') AS type,
       m.model_turns AS turns,
       m.timings, m.kind
-    FROM (SELECT * FROM inbound_message WHERE kind IN ('text', 'image', 'audio') ORDER BY id DESC LIMIT ${last}) m
+    FROM (SELECT * FROM inbound_message WHERE channel = 'whatsapp' AND kind IN ('text', 'image', 'audio') ORDER BY id DESC LIMIT ${last}) m
     LEFT JOIN reply r ON r.inbound_id = m.id`
 }
 
