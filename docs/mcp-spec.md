@@ -9,6 +9,7 @@ message to Warren, and from then on their agent can read and write the same ledg
 WhatsApp uses, through the same code guards. WhatsApp becomes one channel of the core, MCP a second.
 
 Done means:
+
 - `https://heywarren.app/mcp` answers 401 with RFC 9728 metadata; claude.ai and Claude Code finish
   OAuth against it (CIMD, PKCE S256, audience-bound token) with no client registration step.
 - Sign-in: the page shows a code and a `wa.me` link; the person sends it, Warren asks "¿Conectar
