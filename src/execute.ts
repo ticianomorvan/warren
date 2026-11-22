@@ -15,6 +15,8 @@ import { applyChanges, changedFields } from './movement'
 import {
   REPLY_GONE,
   REPLY_SAY_FALLBACK,
+  REPLY_UNDO_EXPIRED,
+  REPLY_UNDO_NOTHING,
   type RenderOptions,
   renderAsk,
   renderCorrection,
@@ -22,10 +24,14 @@ import {
   renderHelp,
   renderLog,
   renderQuery,
+  renderStale,
   renderUnchanged,
+  renderUndo,
+  type UndoLine,
 } from './render'
 import type { Executed } from './store'
 import { periodRange } from './time'
+import { type Undone, undoLast } from './undo'
 
 export interface ExecuteInput {
   accountId: number
@@ -52,7 +58,7 @@ export interface ExecuteInput {
 }
 
 /** The tools whose line is the record of a change. */
-const CHANGES = new Set(['log_movements', 'correct_movement', 'delete_movement'])
+const CHANGES = new Set(['log_movements', 'correct_movement', 'delete_movement', 'undo_last'])
 
 /** The label `inbound_message.action` and the latency report use: one tool, or `multi`. */
 export function actionLabel(actions: Action[]): string {
@@ -62,6 +68,7 @@ export function actionLabel(actions: Action[]): string {
     log_movements: 'log',
     correct_movement: 'correct',
     delete_movement: 'delete',
+    undo_last: 'undo',
     summarize: 'summarize',
     ask_user: 'ask',
     reply: 'reply',
@@ -89,6 +96,8 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
   const out: Pick<Executed, 'asked' | 'pending'> = {}
   /** The model's words, to send after the lines if every number in them is one code gave. */
   const says: Say[] = []
+  /** What the commit point did for an action, to keep in its audit entry. */
+  const details = new Map<number, string>()
 
   for (const [index, action] of i.actions.entries()) {
     // A `reply` is all text: an empty one is still refused (and answered), never skipped.
@@ -151,6 +160,30 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         steps.push({ tool: action.tool, outcome: 'applied' })
         break
       }
+      case 'undo_last': {
+        const undone = await undoLast(tx, { accountId: i.accountId, inboundId: i.inboundId })
+        if (undone.kind === 'undone') {
+          lines.push(renderUndo(undone.items.map(undoLine), today))
+          steps.push({ tool: action.tool, outcome: 'applied' })
+          details.set(
+            index,
+            `undid batch ${undone.batch}: ${undone.items.map((u) => `${u.kind} ${'movement' in u ? u.movement.id : u.from.id}`).join(', ')}`,
+          )
+          break
+        }
+        lines.push(
+          undone.kind === 'nothing'
+            ? REPLY_UNDO_NOTHING
+            : undone.kind === 'expired'
+              ? REPLY_UNDO_EXPIRED
+              : renderStale(undone.moved, today),
+        )
+        steps.push({ tool: action.tool, outcome: undone.kind })
+        if (undone.kind === 'stale') {
+          details.set(index, `stale: ${undone.moved.map((m) => m.id).join(', ')}`)
+        }
+        break
+      }
       case 'summarize': {
         const { period, direction, category, payment, description } = action.input
         const totals = await queryTotals(tx, i.accountId, {
@@ -210,7 +243,20 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
   const audit = i.audit.map((e) =>
     e.action === undefined
       ? e
-      : { ...e, status: steps[e.action]?.outcome ?? e.status, ...verdicts.get(e.action) },
+      : {
+          ...e,
+          status: steps[e.action]?.outcome ?? e.status,
+          ...(details.has(e.action) ? { detail: details.get(e.action) } : {}),
+          ...verdicts.get(e.action),
+        },
   )
   return { reply, ...out, audit }
+}
+
+/** An undone movement as the record shows it: what it is after the undo, and what a restored correction was before. */
+function undoLine(u: Undone): UndoLine {
+  if (u.kind === 'corrected') {
+    return { kind: u.kind, movement: u.to, from: u.from, changed: changedFields(u.from, u.to) }
+  }
+  return { kind: u.kind, movement: u.movement }
 }

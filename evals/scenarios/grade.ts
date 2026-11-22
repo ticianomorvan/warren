@@ -258,7 +258,7 @@ export function gradeTurn(input: TurnInput): TurnGrade {
 
   // The reply.
   const text = withoutHeard(reply).trim()
-  const claimsSuccess = text.startsWith('✓')
+  const claimsSuccess = text.startsWith('✓') || text.startsWith('↩︎')
   const asked = text.startsWith('¿')
   const flat = norm(reply)
   if (input.failed) problems.push('the message failed (failure notice)')

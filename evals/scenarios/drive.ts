@@ -81,7 +81,7 @@ export function meteredClient(
   return { messages: { create } } as unknown as Anthropic
 }
 
-export type Action = 'log' | 'correct' | 'delete' | 'query' | 'ask' | 'multi' | 'other'
+export type Action = 'log' | 'correct' | 'delete' | 'undo' | 'query' | 'ask' | 'multi' | 'other'
 
 export interface TurnResult {
   text: string
@@ -168,6 +168,7 @@ const actionOf = (action: string | null, reply: string): Action => {
     case 'log':
     case 'correct':
     case 'delete':
+    case 'undo':
     case 'multi':
       return action
     case 'summarize':

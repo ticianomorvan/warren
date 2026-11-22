@@ -186,6 +186,13 @@ export function renderCorrection(
   today: string,
   newest = true,
 ): string {
+  const date = changed.includes('date') && after.date === today ? ' · hoy' : when(after.date, today)
+  const category = changed.includes('category') ? ` · ${CATEGORY_LABEL[after.category]}` : ''
+  return `✓ Corregido: ${movementText(after)}${date}${category} (antes ${wasText(before, changed, today)})${logged(before.time, newest)}`
+}
+
+/** The fields of `before` named in `changed`, as they were: "$2.900, hoy". */
+function wasText(before: RecentMovement, changed: ChangedField[], today: string): string {
   const was = {
     money: `${before.direction === 'in' ? '+' : ''}${formatMoney(before.amount, before.currency)}`,
     date: dayName(before.date, today),
@@ -193,9 +200,7 @@ export function renderCorrection(
     category: CATEGORY_LABEL[before.category],
     payment: before.payment?.trim() || 'sin medio de pago',
   }
-  const date = changed.includes('date') && after.date === today ? ' · hoy' : when(after.date, today)
-  const category = changed.includes('category') ? ` · ${CATEGORY_LABEL[after.category]}` : ''
-  return `✓ Corregido: ${movementText(after)}${date}${category} (antes ${changed.map((field) => was[field]).join(', ')})${logged(before.time, newest)}`
+  return changed.map((field) => was[field]).join(', ')
 }
 
 export const renderUnchanged = (m: RecentMovement, today: string) =>
@@ -203,6 +208,43 @@ export const renderUnchanged = (m: RecentMovement, today: string) =>
 
 export const renderDeletion = (m: RecentMovement, today: string, newest = true) =>
   `✓ Borré: ${movementText(m)}${when(m.date, today)}${logged(m.time, newest)}`
+
+export const REPLY_UNDO_NOTHING = 'No tengo nada para deshacer.'
+export const REPLY_UNDO_EXPIRED =
+  'Lo último que hice fue hace más de 24 horas y ya no lo deshago solo. Decime qué querés corregir o borrar.'
+
+/** What undoing the last batch did to one movement. Code writes the record from it, never the model. */
+export interface UndoLine {
+  kind: 'logged' | 'corrected' | 'deleted'
+  /** The movement as it is after the undo (a logged one: as it was when removed). */
+  movement: RecentMovement
+  /** `corrected` only: the movement as the correction had left it. */
+  from?: RecentMovement
+  /** `corrected` only: the fields the undo changed back. */
+  changed?: ChangedField[]
+}
+
+/**
+ * The record of an undo. Only logs undone: `↩︎ Deshice: Súper $5.000 · Panadería $3.000`. Anything else (a correction
+ * or a delete undone, alone or mixed) is a bulleted list that says what happened to each.
+ */
+export function renderUndo(lines: UndoLine[], today: string): string {
+  const dated = (m: RecentMovement) => `${movementText(m)}${when(m.date, today)}`
+  if (lines.every((l) => l.kind === 'logged')) {
+    return `↩︎ Deshice: ${lines.map((l) => dated(l.movement)).join(' · ')}`
+  }
+  const bullets = lines.map((l) => {
+    if (l.kind === 'logged') return `Quité ${dated(l.movement)}`
+    if (l.kind === 'deleted') return `Volvió ${dated(l.movement)}`
+    const was = l.from && l.changed ? ` (estaba ${wasText(l.from, l.changed, today)})` : ''
+    return `${dated(l.movement)}${was}`
+  })
+  return ['↩︎ Deshice:', ...bullets.map((b) => `${BULLET}${b}`)].join('\n')
+}
+
+/** The refusal of an undo whose movements changed since the batch: which ones, and that nothing was touched. */
+export const renderStale = (moved: RecentMovement[], today: string): string =>
+  `No deshice nada: ${moved.map((m) => `${movementText(m)}${when(m.date, today)}`).join(' · ')} ${moved.length === 1 ? 'cambió' : 'cambiaron'} después. Decime qué querés cambiar.`
 
 /** A movement of a question's options, with its number. */
 export interface Numbered {

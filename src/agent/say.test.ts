@@ -21,8 +21,8 @@ const sources = [
   'opción 1',
 ]
 
-const NOTHING = { deleted: false, corrected: false, logged: false }
-const EVERYTHING = { deleted: true, corrected: true, logged: true }
+const NOTHING = { deleted: false, corrected: false, logged: false, undone: false }
+const EVERYTHING = { deleted: true, corrected: true, logged: true, undone: true }
 /** Evidence where this message did every kind of change, so that only numbers and words are judged. */
 const evidence = (extra: string[] = [], o: Partial<Evidence> = {}): Evidence => ({
   numbers: [...sources, ...extra],
@@ -592,5 +592,32 @@ describe('echoes and checkSay: a text that only repeats the person adds nothing'
       text: 'dropped',
       textReason: "echoes the person's message",
     })
+  })
+})
+
+describe("undo in the model's own words", () => {
+  const facts = ['no, eso no']
+  const say = (text: string, applied = NOTHING, window?: string[]) =>
+    checkSay(text, { numbers: facts, words: facts, applied, ...(window ? { window } : {}) }).ok
+
+  it('cannot imitate the record of an undo', () => {
+    expect(say('↩︎ Deshice: Café $3.500', { ...NOTHING, undone: true })).toBe(false)
+    expect(say('↩ Deshice el café', { ...NOTHING, undone: true })).toBe(false)
+  })
+
+  it('may say it undid something only when this message undid it', () => {
+    expect(say('Deshice lo último.')).toBe(false)
+    expect(say('Anulé lo que hice.')).toBe(false)
+    expect(say('Deshice lo último.', { ...NOTHING, undone: true })).toBe(true)
+    expect(say('No deshice nada.')).toBe(true)
+    // a change of another kind does not prove it
+    expect(
+      say('Deshice lo último.', { ...NOTHING, logged: true, corrected: true, deleted: true }),
+    ).toBe(false)
+  })
+
+  it('a reply may lean on an earlier undo record in the conversation', () => {
+    expect(say('Sí, lo deshice.', NOTHING, ['↩︎ Deshice: Café $3.500'])).toBe(true)
+    expect(say('Sí, lo deshice.', NOTHING, ['✓ Café $3.500'])).toBe(false)
   })
 })

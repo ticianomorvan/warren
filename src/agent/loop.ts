@@ -47,7 +47,7 @@ export interface AuditEntry {
    * run because another call of its turn was refused; `held` valid but not run because the same turn
    * also searched (the model sends it again with the results); `repair` valid but not run because a text
    * of the turn failed the numbers check (the model sends it again with the reason); `applied`, `gone`, `unchanged`,
-   * `answered` what the commit point did with an action.
+   * `answered` what the commit point did with an action (an undo that did nothing: `nothing`, `expired`, `stale`).
    */
   status: string
   detail?: string
@@ -134,7 +134,7 @@ export async function warmUp(client: Anthropic, model: ModelKey): Promise<void> 
 }
 
 const NO_TOOL =
-  'You did not call a tool. Answer only by calling one: reply (your words), help, ask_user, log_movements, correct_movement, delete_movement or summarize.'
+  'You did not call a tool. Answer only by calling one: reply (your words), help, ask_user, log_movements, correct_movement, delete_movement, undo_last or summarize.'
 
 /** The answer to a change that came in the same turn as a search: it was not run, and why. */
 const HELD =
@@ -145,6 +145,8 @@ const repairText = (tool: string, reason: string) =>
   `Not run: your text for ${tool} would not be sent (${reason}). A text may use only numbers the person wrote, numbers in the lists or search results you were shown, or the amounts and dates you send in these actions. Counts, totals and numbers in words ("cuatro", "dos veces") are code's: for a count or a total call summarize (it can filter by description) and let its line answer; or word the text without the number. Send every action again, with the text fixed or null.`
 const REPAIR_OTHER =
   'Not run: a text of another call of this turn would not be sent. Send every action again, with that text fixed or null.'
+const ALONE =
+  'undo_last undoes the previous batch of changes and cannot be sent with other actions. Send it alone, with a text for any other part of the message ("Mandame lo otro aparte."); or, if the person named one movement ("deshacé el café"), it is delete_movement or correct_movement instead.'
 const REFUSED =
   'Not run: another call of this turn was refused. Send all the actions again, corrected.'
 
@@ -180,6 +182,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       deleted: acts.some((a) => a.tool === 'delete_movement'),
       corrected: acts.some((a) => a.tool === 'correct_movement'),
       logged: acts.some((a) => a.tool === 'log_movements'),
+      undone: acts.some((a) => a.tool === 'undo_last'),
     }
     return acts.flatMap((action) => {
       if (!('text' in action.input)) return []
@@ -278,6 +281,21 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       }
       if (result.kind === 'rejected') entry.detail = result.message
       checked.push({ call, result, entry, text })
+    }
+
+    // Undoing the last batch stands alone: it is about earlier messages, and a change beside it would be
+    // part of "the last thing", whichever order code ran them in.
+    const undo = checked.find(
+      (c) => c.result.kind === 'action' && c.result.action.tool === 'undo_last',
+    )
+    if (undo && checked.some((c) => c !== undo && c.result.kind === 'action')) {
+      undo.result = {
+        kind: 'rejected',
+        message: ALONE,
+      }
+      undo.text = ALONE
+      undo.entry.status = 'rejected'
+      undo.entry.detail = ALONE
     }
 
     for (const id of foundThisTurn) i.seen.add(id)

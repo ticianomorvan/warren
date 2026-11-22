@@ -8,6 +8,8 @@ import {
   renderHeard,
   renderHelp,
   renderLog,
+  renderStale,
+  renderUndo,
 } from './render'
 
 const TODAY = '2026-11-21'
@@ -155,5 +157,68 @@ describe('fitReply', () => {
     const reply = fitReply({ heard: '😀'.repeat(3000), lines: ['✓ Café $3.500'], notes: [] }, 500)
     expect(reply.length).toBeLessThanOrEqual(500)
     expect(reply).not.toMatch(/[\ud800-\udbff]"|[\ud800-\udbff]…/)
+  })
+})
+
+describe('renderUndo', () => {
+  const line = (o: Partial<Movement>) => mv(o)
+  it('writes an undone log on one line, with the day when it is not today', () => {
+    expect(
+      renderUndo(
+        [
+          { kind: 'logged', movement: line({ description: 'súper', amount: '5000' }) },
+          {
+            kind: 'logged',
+            movement: line({ description: 'panadería', amount: '3000', date: '2026-11-20' }),
+          },
+        ],
+        TODAY,
+      ),
+    ).toBe('↩︎ Deshice: Súper $5.000 · Panadería $3.000 · ayer')
+  })
+
+  it('lists a correction, a delete and a log undone, each as what happened to it', () => {
+    expect(
+      renderUndo(
+        [
+          {
+            kind: 'corrected',
+            movement: line({ amount: '3500' }),
+            from: line({ amount: '3800' }),
+            changed: ['money'],
+          },
+          { kind: 'logged', movement: line({ description: 'subte', amount: '1200' }) },
+          {
+            kind: 'deleted',
+            movement: line({ description: 'súper', amount: '12000', payment: 'crédito visa' }),
+          },
+        ],
+        TODAY,
+      ),
+    ).toBe(
+      '↩︎ Deshice:\n• Café $3.500 (estaba $3.800)\n• Quité Subte $1.200\n• Volvió Súper $12.000 (crédito visa)',
+    )
+  })
+
+  it('is held by fitReply like any other record: a long list collapses and says how many are left out', () => {
+    const bullets = Array.from({ length: 400 }, (_, k) => ({
+      kind: 'deleted' as const,
+      movement: line({ description: `cosa ${k}`, amount: String(1000 + k) }),
+    }))
+    const reply = fitReply({ lines: [renderUndo(bullets, TODAY)], notes: [] })
+    expect(reply.length).toBeLessThanOrEqual(MAX_REPLY_CHARS)
+    expect(reply.startsWith('↩︎ Deshice:\n• Volvió Cosa 0 $1.000')).toBe(true)
+    expect(reply).toMatch(/• … y \d+ más$/)
+  })
+})
+
+describe('renderStale', () => {
+  it('names the movements that changed, one or several', () => {
+    expect(renderStale([mv()], TODAY)).toBe(
+      'No deshice nada: Café $3.500 cambió después. Decime qué querés cambiar.',
+    )
+    expect(renderStale([mv(), mv({ description: 'súper', amount: '5000' })], TODAY)).toBe(
+      'No deshice nada: Café $3.500 · Súper $5.000 cambiaron después. Decime qué querés cambiar.',
+    )
   })
 })

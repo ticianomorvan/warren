@@ -81,12 +81,14 @@ export interface Applied {
   deleted: boolean
   corrected: boolean
   logged: boolean
+  undone: boolean
 }
 
 const KIND_OF_TOOL = {
   delete_movement: 'deleted',
   correct_movement: 'corrected',
   log_movements: 'logged',
+  undo_last: 'undone',
 } as const
 
 /**
@@ -115,6 +117,12 @@ const CLAIMS: { said: RegExp; kind: keyof Applied | 'any'; window: RegExp; what:
     kind: 'logged',
     window: /✓ (?!borre\b|corregido\b)/,
     what: 'a new movement',
+  },
+  {
+    said: new RegExp(`${NOT}\\b(?:deshice|anule|reverti|volvi atras)\\b`),
+    kind: 'undone',
+    window: /↩/,
+    what: 'an undo',
   },
   {
     said: /\b(?:listo|hecho|ya esta|quedo en|ahora (?:es|esta|figura|queda))\b/,
@@ -233,7 +241,7 @@ const FILLER = new Set(
     'el la los las un una de del en con por para a al y o que se me lo le es fue era su sus tu tus mi este esta ese esa ' +
     'ya ahora queda quedo quedaron listo hecho dale ok perfecto ' +
     'corregi corregido corregida corregidos anote anotado anotados anotada borre borrado borrada borrados ' +
-    'registre registrado cambie cambiado actualice actualizado'
+    'registre registrado cambie cambiado actualice actualizado deshice deshecho'
   ).split(' '),
 )
 
@@ -300,7 +308,8 @@ export function checkSay(text: string, e: Evidence): SayCheck {
   if (one === '') return { ok: false, reason: 'empty' }
   if (one.length > MAX_SAY_LENGTH)
     return { ok: false, reason: `longer than ${MAX_SAY_LENGTH} characters` }
-  if (one.includes('✓')) return { ok: false, reason: 'imitates a code-rendered line (✓)' }
+  if (one.includes('✓') || one.includes('↩'))
+    return { ok: false, reason: 'imitates a code-rendered line (✓, ↩︎)' }
   if (e.message !== undefined && echoes(one, e.message)) {
     return { ok: false, reason: "echoes the person's message", echo: true }
   }
@@ -395,7 +404,7 @@ export function composeReply(i: {
   /** What was heard in a voice note: the reply starts with it. */
   heard?: string
 }): { reply: string; verdicts: Map<number, Verdict> } {
-  const applied: Applied = { deleted: false, corrected: false, logged: false }
+  const applied: Applied = { deleted: false, corrected: false, logged: false, undone: false }
   for (const step of i.steps) {
     const kind = KIND_OF_TOOL[step.tool as keyof typeof KIND_OF_TOOL]
     if (kind && step.outcome === 'applied') applied[kind] = true

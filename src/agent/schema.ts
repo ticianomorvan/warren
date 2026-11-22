@@ -132,6 +132,8 @@ export const TOOL_INPUTS = {
     }),
   reply: () => z.object({ text: z.string() }),
   help: () => z.object({}),
+  /** Reverts the sender's last write batch (everything one earlier message changed). Code finds the batch: the model sends no id. */
+  undo_last: () => z.object({ text: Say() }),
 } as const
 
 export type ToolName = keyof typeof TOOL_INPUTS
