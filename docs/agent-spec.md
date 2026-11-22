@@ -1158,3 +1158,54 @@ messages, shows it on request, forgets it on request. `AGENTS.md` (rule 5, layou
 - **Slice G** will read `note` facts ("cobro el 5"): they are stored as text and checked only for numbers the person wrote; turning "el 5" into a date is G's.
 - **A voice "sí" does not confirm forgetting everything.** Typed only. Same rule as every destructive answer by voice.
 - **Known, not fixed:** `lockFacts` and the movement row locks are taken in the order of a message's actions, so two overlapping processes for one sender could deadlock (never one process: a sender's messages are queued in order), as slice C notes for movements.
+
+### Review round (Opus 5.5, fresh context), fixed on the same PR
+
+Four bugs confirmed by probes through the whole pipeline, two weaker spots, and the locks. Every fix has a test that fails without it (mutation table below).
+
+1. **Undo jammed after a store or update and a forget in the same message.** Two causes. (a) A row the batch replaced and then forgot was neither inserted nor
+   forgotten by the batch, so `batchFacts` never saw it: "la visa es la del santander, olvidate de la visa" after "galicia" lost galicia for good. A row the
+   batch stored and forgot **that replaced a row** is now read as the batch having ended that row (`beforeId`): the undo brings it back as a new row (`restores`); one that
+   replaced nothing is still a net of nothing. (b) `lastBatch` kept picking a batch whose net effect was nothing, which then could never be marked undone, so the
+   batch before it (a café) could never be undone again. The SQL now applies the same net rule, so such a batch is not a batch. Tests: both probes, and a second "deshacer" reaching the batch before.
+2. **A "sí" could answer the wrong question.** `forget_all_facts` now stands alone in its turn like `undo_last` (the loop refuses it beside any other action, with a reason the model reads,
+   and both orders are tested). And its confirmation is its own kind of question: `pending {action: 'forget_all'}` with **no** `asked_numbers`/`asked_ids`
+   (no fake `[{number: 1, id: 0}]`), read back by `store.conversation` as a question with no options, so `ContextInput.pending` is a union and the cast in `renderContext` is gone.
+3. **A refused secret was still stored**, in the message's body, the raw webhook, the audit and what ran, and replayed to the model for 30 minutes by the conversation window.
+   `src/redact.ts` + the commit point: when a message holds a secret (`sensitive(message)`) or the model tried to store one (the notice is in its actions) the commit
+   replaces `body` by `[dato sensible, no guardado]`, the text in the raw `payload` (`text.body` or a photo's `image.caption`) by the same, wipes the inputs and reasons of the audit,
+   `parsed` and `command`, drops the model's own words, answers a `reply` with code's line, and leaves out the 🎙️ transcript (a voice note's body too). A failed message does the same
+   (`recordFailure`, with its trace scrubbed). Tests assert the secret string is nowhere in any text or jsonb column of any table, for a text, a model that tried to store it, a model that echoes it, a failed message,
+   a photo caption and a voice note; and that a message with a CBU used to pay (`por cbu 15000`) is kept as it was. **Limits:** until the commit the webhook's own row holds the text (it is how the agent reads it),
+   so a message that dies before the commit and is never retried keeps it; and the model's provider saw the message, as it sees every message.
+4. **The detector missed** card numbers with `/`, ` - ` or `_`, 13 to 15 digits, a DNI with spaces or of 7 digits, "el código del cajero es 1234", a password with no keyword, emails and phones.
+   Now (`src/agent/memory.ts`, all table-driven in both directions in `agent/memory.test.ts`):
+   - **Cards, CBU/CVU:** 13 or more digits, joined by at most a space, `.`, `-`, `/` or `_`, with spaces around a separator. No Luhn: a mistyped card is still a card, and 13 digits in a row are never a useful fact.
+   - **DNI** (in what would be stored): 7 or 8 digits, plain or grouped by dots or spaces, **unless money marks it** (`$1.850.000`, `usd 1.850.000`, `1.850.000 pesos`, "mil", "lucas", "palos"): a salary of a million and a DNI are written alike, and a money app has to keep the salary.
+     A bare `1.850.000` with no sign is refused (the limit: say it with `$` or "pesos"). In the person's message only the word "dni" with 7 or more digits counts, never a bare number: `anotá 12.345.678 de alquiler` still logs.
+   - **Words** (folded, whole words): contraseña, clave, password, PIN, CVV, CVC, token, home banking, código de seguridad, anywhere; in a fact also código, cajero, número de tarjeta, and dni/cbu/cvu **with** 4 or more digits (so `por cbu` as a payment is not a secret). In a message, "código" with 4 digits.
+   - **A password with no keyword:** a word that mixes upper case, lower case and digits and is 6 or more characters ("Perro123"), in a sentence with a cue of use ("uso", "entro con", "ingreso", "login", "pongo"...). Caught: "en el galicia uso Perro123". **Limit, written down:** a password said with no cue ("Perro123 es lo que pongo" is caught by "pongo", "mi contraseña..." by its word, but a bare "Perro123" is not), and "uso la PlayStation5" is refused (one fact lost).
+   - **Contact data:** an email address, or a phone number (area code and number, with a country code or not, with the usual separators): refused with its own notice, "No guardo datos de contacto: teléfonos ni mails." A phone with `+54` is as long as a card number: contact wins when there is a `+`.
+   - The same detector's message-level half decides what is wiped from the record (fix 3). Amounts in a movement are never read by it.
+5. **Locks.** `forget_fact` takes `lockFacts`; `forgetFact` and `supersedeFact` write only to a live row and check the row count (a replaced or forgotten row is an error or "gone", never a second change); `rememberFact`, `forgetAll`, the undo plan and `forget_fact` all take the account's advisory lock. Real-Postgres tests
+   (`concurrency.test.ts`, run with `PG_TEST_URL`; CI skips them): two messages remembering the same key at once (neither fails, one is replaced), a forget and a forget-all that wait for a remember still committing and
+   then find its fact, an undo racing a forget in both orders (the undo first: the forget finds nothing; the forget first: the undo refuses and writes nothing). The four near-identical lookups in `facts.ts` are one `findLive`.
+6. **Aliases outside the newest 30.** The context also shows every other live fact whose key appears in the message (at most 20 more, never twice, only the sender's, a voice note's transcript included),
+   so an old alias still works. A deterministic payment override in code (a fact's payment applied after the model) waits for the overhaul, with the typed `summarize` range: it needs its own record line so the change is visible.
+- **One more thing the scenarios showed while testing this** (dev only): after the fixes "el sueldo me cae el 28" was answered by the model with a `reply` ("Anotado como dato: ...") about half the runs, which is a lie (nothing was stored). The prompt now says a
+  plain statement about money habits is a fact to remember, with an example, and `checkSay` refuses a reply that opens with "Anotado"/"Tomo nota" when nothing was logged or stored (only at the start of a sentence, so "la nafta, anotada hoy" is fine). It fell to about 1 run in 10, and the
+  model then sends `remember_fact`, or the reply says nothing it did not do. "lo de don Pepe 3100" after "8200 en el almacén, que es lo de don Pepe" was read as a correction of that movement 2 runs of 8, because the description carried the nickname: the prompt now keeps the nickname out of
+  the description and says a nickname with an amount and no "fue" is a new expense (0 of 18 runs after).
+
+**Proof**
+- Tests: 885 (874 passed and 11 skipped without a real Postgres; **885 passed, none skipped, with `PG_TEST_URL`**), against 777 before the round. Biome and `tsc` clean.
+- Mutations of this round, one at a time with the whole suite and the real Postgres: **57 of 58 killed**, listed by fix: (1) the replaced fact not restored, `beforeId` not read, `lastBatch` keeping a net-nothing batch; (2) forget-all beside other actions, the
+  pending not read back, fake options stored; (3) nothing redacted, a refused secret not redacting, a secret-looking message not redacting, `command`/`parsed`/audit not scrubbed, the model's words kept, a reply the model's, the transcript echoed, the body kept, the raw webhook kept, a photo caption kept, a failed message keeping its text;
+  (4) 13 to 14 digits, no `/`, no `_`, DNI of 7 digits, DNI with spaces, an amount with a money sign read as a DNI, no stored word "código", "cajero", the password heuristic off and with no cue, emails kept, phones kept, the `+` rule,
+  the message-level "dni" and "código" rules, a lone "cbu" made a secret, contact answered as a secret; (5) no lock in `forget_fact`, `rememberFact`, `forgetAll` or the undo plan, `findLive` not requiring a live row or the account, forgetting or replacing without a live row or a row count;
+  (6) no named facts, more than 20, another person's, shown twice, a voice note naming none, no message passed; and the two on the new claim. **The survivor: `findLive` without `FOR UPDATE`.** It is the second layer behind the advisory lock every writer takes first, as the row locks were in slice C.
+  The reviewer's survivors are killed: `lockFacts` removed from `rememberFact` and from `planFactUndo` (the real-Postgres tests), `LIVE` removed from the lookup (a direct test), 13 to 14 digits (a 13-digit and a 12-digit case).
+- Scenarios, `pnpm eval:scenarios --split dev` (140): **139/140 (99.3%)**, 0 silent wrong changes, 0 invented numbers, 0 unnecessary questions, per turn p50 1,158 ms / p95 2,229 ms, memory tag p50 1,094 / p95 1,692 ms, second model turn 10 of 177 (5.6%; the causes
+  are the older-item searches, two refused `summarize` and two refused `ask_user` ranges, one repaired text: not memory turns). The miss is s169, the "Anotado como dato" reply above, before the claim check and the example that came after this run (1 in 10 after). The first dev run of the round stopped at its budget with 10 scenarios
+  not run (US$0.08 does not cover the dev split's US$0.068 plus the reserve for calls in flight), so those 10 were run apart.
+- Spend of the round: **US$0.193** (dev runs US$0.14, the probes of s169 and s174 US$0.05). With the first round's US$0.31 the slice is at US$0.50, the brief's budget; no full `--split all` was repeated after the prompt lines of this round, which only add three sentences and an example to the Memory section.

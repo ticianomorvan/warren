@@ -28,7 +28,8 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
    movement: a new value supersedes the old row, a forget stamps `forgotten_by`, an undo inserts a new row. Code refuses anything that looks like
    a secret, any number the person did not write, and a key that is not their words; a fact never logs, corrects or deletes a movement; the model
    only ever sees its own sender's facts, in the per-message context and never in the cached prefix; forgetting everything runs only on the person's
-   own "sí" to code's "¿Seguro?".
+   own "sí" to code's "¿Seguro?". A secret is not kept anywhere: when a message holds one (or the model tried to store one), the message's
+   stored text and raw webhook become `[dato sensible, no guardado]` and the audit and what ran lose their inputs.
 
 ## Layout
 
@@ -53,6 +54,7 @@ src/movement.ts Pure: text normalizing, applying a correction's changes, which f
 src/facts.ts  All SQL on `fact` (agent slice F): live facts, remember (insert or supersede, capped, under a per-account lock), forget, forget all, and what undo reads
 src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a question we asked (done in code, including the "sí" of "¿Seguro?" over forgetting everything), and `undoRequest`, a typed bare "deshacer" (done in code)
 src/undo.ts   Undo of the sender's last write batch (agent slice C): which batch, the stale-state guard, the append-only reversal; runs inside the commit transaction
+src/redact.ts Pure: what a message that holds a secret leaves behind (a placeholder for its text, scrubbed audit and calls; agent slice F)
 src/undo-facts.ts  The facts half of an undo (slice F): what the batch stored or forgot, whether each still stands as it was left, and the reversal
 src/execute.ts  Runs a message's actions inside the commit transaction and returns the reply to store
 src/process.ts  Per message: ignored vs reply; for text, typing + agent together, the 10 s interim note, the 30 s
@@ -296,10 +298,11 @@ wrong changes. Its test split is held out like the other: never print or tune on
   (account, `kind` alias | category | note, a normalized `key`, `value`, the source message, `superseded_by`, `forgotten_by`, `restores`), one live
   fact per account, kind and key (a partial unique index). Tools, all terminal and rendered by code (`🧠 Me acuerdo: la visa = Galicia`, `🧠 Me olvidé: ...`):
   - `remember_fact({kind, key, value, text})`: only what the person states. `checkFact` (`src/agent/memory.ts`) refuses a secret (card or CBU/CVU number,
-    password or PIN, DNI: the person is told "No guardo ...", by a code `notice`, with no second model turn), a key that is not words of the person's own message,
+    password or PIN, DNI; an email or a phone is "datos de contacto": the person is told "No guardo ...", by a code `notice`, with no second model turn), a key that is not words of the person's own message,
     a number they did not write, a key over 40 characters or 4 words, a value over 100, a category value outside the list. The account holds at most 100 live facts (`full`).
-  - `forget_fact({id, key, text})`: an id must be one the model was shown (the 30 newest live facts, in the context as "Hechos"), or a key, looked up among the sender's own.
-    `forget_all_facts` only asks "¿Seguro...? Respondé sí." and stores `pending: {action: 'forget_all'}`; a bare "sí" next (`answerAction`, no model call) runs
+  - `forget_fact({id, key, text})`: an id must be one the model was shown (the 30 newest live facts and those whose key the message says, in the context as "Hechos"), or a key,
+    looked up among the sender's own (one `findLive` query behind every lookup). It takes the account's facts lock. `forget_all_facts` goes alone in its turn (like `undo_last`),
+    only asks "¿Seguro...? Respondé sí." and stores `pending: {action: 'forget_all'}` with no options; a bare "sí" next (`answerAction`, no model call) runs
     `forget_all_confirmed`, which no model call can produce. `list_facts` is code listing every live fact.
   - The facts are in the volatile context, never in the cached prefix; the model reads them to resolve aliases and categories; the ledger stays the truth, and a fact never logs, corrects or deletes by itself.
   - Undo (slice C) reaches facts: a batch is any message that stored or forgot a fact too, and `undo-facts.ts` reverses it append-only, refusing the whole undo when a fact is no longer as the batch left it.

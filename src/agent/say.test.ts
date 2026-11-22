@@ -680,4 +680,16 @@ describe("what Warren remembers, in the model's own words", () => {
     })
     expect(r.verdicts.get(0)).toEqual({ text: 'sent' })
   })
+
+  it('a reply cannot say it took note of something nothing was stored for', () => {
+    expect(say('Anotado como dato: tu sueldo cae el 28.')).toBe(false)
+    expect(say('Tomo nota.')).toBe(false)
+    expect(say('Listo. Anotado.')).toBe(false)
+    expect(say('Anotado como dato.', { ...NOTHING, remembered: true })).toBe(true)
+    expect(say('Anotado.', { ...NOTHING, logged: true })).toBe(true)
+    // what it says about the ledger is not a claim of its own
+    expect(say('No lo tengo anotado.')).toBe(true)
+    expect(say('No tenés nada anotado.')).toBe(true)
+    expect(say('La nafta quedó anotada hoy, en efectivo.')).toBe(true)
+  })
 })

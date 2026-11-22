@@ -131,6 +131,14 @@ const CLAIMS: {
     what: 'a new movement or fact',
   },
   {
+    // "Anotado como dato: ...", "Tomo nota": a reply that opens by saying it took note. Only a log or a stored fact makes that
+    // true. Only at the start of a sentence: "la nafta fue $20.000, anotada hoy" describes what is stored.
+    said: /(?:^|[.!?:] ?)(?:anotado|anotada|guardado|guardada|tomo nota|tome nota)\b/,
+    kind: ['logged', 'remembered'],
+    window: /✓ (?!borre\b|corregido\b)|🧠 me acuerdo/,
+    what: 'a note taken',
+  },
+  {
     said: new RegExp(`${NOT}\\b(?:me acuerdo|me acorde|ya lo recuerdo|lo recordare)\\b`),
     kind: 'remembered',
     window: /🧠 me acuerdo/,

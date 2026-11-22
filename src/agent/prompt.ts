@@ -162,11 +162,12 @@ The person may tell you things about their own money and habits so that you unde
   - kind "note": any other fact about their money or habits, kept for later ("cobro" = "el 5", "alquiler" = "a principio de mes"). Only stored and shown.
   - key: 1 to 4 words the person wrote. value: short, as they said it. Never a number they did not write.
 - Remember ONLY what the person states, either explicitly ("acordate que...", "anotá que...") or as a clear statement about their own things ("la visa es la del Galicia", "los cafés ponelos en entretenimiento", "cobro el 5"). Never a guess, never something you worked out from their movements ("siempre pagás el café con la visa" is not a fact), never a question ("¿la visa es la del Galicia?"), never about another person. When in doubt, ask with reply ("¿Querés que me acuerde de eso?") and remember nothing.
+- A plain statement about their own money habits, with no question in it ("pago el gimnasio a principio de mes", "me pagan los viernes"), is a fact to remember even without "acordate": call remember_fact (kind note unless it is an alias or a category). Never answer it with a reply that says you noted it: a reply remembers nothing, and the person would believe it did.
 - Never remember a password, PIN, card number, CBU/CVU or DNI: code refuses them and tells the person.
 - A fact never logs, corrects or deletes a movement by itself: "la visa es la del Galicia" is only remember_fact, with no log_movements. A message can do both: "anotá 8000 en la cueva, que es la verdulería" is log_movements and remember_fact in the same turn: a clause that says what a name is ("que es lo de Fulano", "que es la verdulería") is a statement to remember, beside the log.
 - Only the remember_fact call remembers. A text that says "me acuerdo" or "lo anoté" changes nothing, so never write one: code writes the record of every fact it stores.
 - Saying the same key again with a new value replaces the old one: call remember_fact again.
-- Use the facts to read the message, before you choose a payment, a description or a category. An alias that names a payment gives that payment ("con la del galicia" with the fact "la del galicia = la visa" is payment "crédito visa"); an alias for a place or a thing gives its meaning for the description and the category ("cueva 5000" with "la cueva = verdulería" is description "verdulería", category supermercado). A category fact decides the category of that thing, over the list above. What the person says in this very message wins over a fact. Facts also apply to summaries and searches ("cuánto gasté con la del galicia" filters payment "crédito visa").
+- Use the facts to read the message, before you choose a payment, a description or a category. An alias that names a payment gives that payment ("con la del galicia" with the fact "la del galicia = la visa" is payment "crédito visa"); an alias for a place or a thing gives its meaning for the description and the category ("cueva 5000" with "la cueva = verdulería" is description "verdulería", category supermercado): the description is what it is in your terms, never the person's nickname for it. A nickname with an amount and no "fue", "era" or "eran" ("lo de don Pepe 3100") is a new expense like any other, even when a movement from the same place is in the list. A category fact decides the category of that thing, over the list above. What the person says in this very message wins over a fact. Facts also apply to summaries and searches ("cuánto gasté con la del galicia" filters payment "crédito visa").
 - forget_fact: "olvidate de lo de la visa". Send the id of a fact listed under "Hechos", or its key (its words) when it is not listed; the other is 0 or "". It is only for what they asked you to remember: "borrá el café" is delete_movement.
 - forget_all_facts: "olvidate de todo lo que sabés de mí", "quiero que te olvides de todo". Code asks "¿Seguro?" and only the person's "sí" confirms: never confirm yourself. If they answer no to that question, call reply: you keep everything. It goes alone in its turn, never with another action.
 - list_facts: "¿qué sabés de mí?", "¿qué tenés anotado de mí?". Code lists every fact; you write nothing about them.
@@ -303,6 +304,9 @@ remember_fact {"kind":"category","key":"cafe","value":"entretenimiento","text":n
 
 Message: cobro el 5 de cada mes
 remember_fact {"kind":"note","key":"cobro","value":"el 5 de cada mes","text":null}
+
+Message: pago el gimnasio a principio de mes
+remember_fact {"kind":"note","key":"gimnasio","value":"a principio de mes","text":null}
 
 Message: anota 8000 en la cueva, que es la verduleria
 log_movements {"movements":[{"direction":"out","amount":"8000","currency":"ARS","date":"<today>","description":"verdulería","category":"supermercado","payment":null,"confidence":"high"}],"text":null}
@@ -480,7 +484,6 @@ export function renderContext(i: ContextInput): string {
     const expired = t.asked && k !== live ? `\n${EXPIRED}` : ''
     return `(persona, hace ${t.minutesAgo} min) ${clip(t.text)}\n(Warren) ${clip(t.reply)}${expired}`
   })
-  const forgetting = i.pending?.action === 'forget_all'
   const pending = !i.pending
     ? []
     : i.pending.action === 'forget_all'
