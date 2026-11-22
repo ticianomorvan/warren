@@ -88,10 +88,12 @@ export async function cancelReminder(sql: Sql, id: number, inboundId: number): P
   return stamped.length > 0
 }
 
+/**
+ * How many live reminders count toward the cap: the ones that parse, like the ones anybody can see, list or cancel. A row whose
+ * schedule is corrupt is invisible, so it must not take a place nobody can free.
+ */
 export async function countLiveReminders(sql: Sql, accountId: number): Promise<number> {
-  const [row] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM reminder WHERE account_id = ${accountId} AND ${sql.unsafe(LIVE)}`
-  return row?.n ?? 0
+  return (await liveReminders(sql, accountId)).length
 }
 
 /**

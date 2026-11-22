@@ -593,6 +593,22 @@ describe('a stored reminder whose schedule no longer parses', () => {
     app.close()
   })
 
+  it('does not count toward the cap: nobody can see or cancel it', async () => {
+    const bad = await seedReminder('roto', { start: '2025-10-20' })
+    for (let i = 0; i < MAX_REMINDERS - 1; i++) await seedReminder(`r${i}`, { start: '2025-10-20' })
+    await corrupt(bad)
+    const app = await setup({
+      model: script(
+        setRem('uno más', { start: '2025-10-21' }),
+        setRem('y otro', { start: '2025-10-22' }),
+      ),
+    })
+    // 19 that parse and 1 that does not: one more fits (20), and then the account is full.
+    expect(await say(app, { text: 'recordame uno más' })).toContain('⏰ Te aviso')
+    expect(await say(app, { text: 'recordame y otro' })).toContain('no me entran más')
+    app.close()
+  })
+
   it('cancelling all of the others leaves it alone, and the message is answered', async () => {
     const bad = await seedReminder('roto', { start: '2025-10-10' })
     const good = await seedReminder('la pastilla', { start: '2025-10-10', every: 'week' })
