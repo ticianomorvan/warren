@@ -167,3 +167,57 @@ describe('migration 011 (facts)', () => {
     }
   })
 })
+
+describe('migration 013 (channel)', () => {
+  it('applies on top of 001 to 012, makes every existing message a WhatsApp one, and refuses another channel', async () => {
+    const pg = await PGlite.create()
+    const socket = new PGLiteSocketServer({ db: pg, port: 0, host: '127.0.0.1', maxConnections: 4 })
+    await socket.start()
+    const port = (socket as unknown as { server: { address(): AddressInfo } }).server.address().port
+    const sql = connect(`postgres://postgres:postgres@127.0.0.1:${port}/postgres`, { max: 1 })
+    try {
+      const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort()
+      const old = files.filter((f) => f < '013')
+      expect(old).toHaveLength(12)
+      await sql`CREATE TABLE schema_migration (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`
+      for (const name of old) {
+        await sql.unsafe(await readFile(new URL(name, dir), 'utf8'))
+        await sql`INSERT INTO schema_migration (name) VALUES (${name})`
+      }
+      await sql`INSERT INTO account (wa_id) VALUES ('5491100000000')`
+      await sql`INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status, action, reply_text)
+        VALUES ('m1', '5491100000000', 'text', 'x', '{}'::jsonb, 'done', 'log', '✓'),
+               ('m2', '5491100000000', 'text', 'y', '{}'::jsonb, 'pending', NULL, NULL)`
+      const before =
+        await sql`SELECT id, wamid, status, action, reply_text FROM inbound_message ORDER BY id`
+
+      await migrate(sql)
+      const applied = await sql`SELECT name FROM schema_migration ORDER BY name`
+      expect(applied.map((r) => r.name)).toEqual(files)
+      expect(
+        await sql`SELECT id, wamid, status, action, reply_text FROM inbound_message ORDER BY id`,
+      ).toEqual(before)
+      expect(
+        (await sql`SELECT DISTINCT channel FROM inbound_message`).map((r) => r.channel),
+      ).toEqual(['whatsapp'])
+      expect((await sql`SELECT mcp_revoked_at FROM account`)[0]?.mcp_revoked_at).toBeNull()
+
+      // An MCP row, and nothing else is a channel.
+      await sql`INSERT INTO inbound_message (wamid, wa_id, kind, payload, status, channel)
+        VALUES ('mcp:1', '5491100000000', 'tool', '{}'::jsonb, 'done', 'mcp')`
+      await expect(
+        sql`INSERT INTO inbound_message (wamid, wa_id, kind, payload, channel)
+          VALUES ('x', '5491100000000', 'text', '{}'::jsonb, 'telegram')`,
+      ).rejects.toThrow()
+      await expect(
+        sql`INSERT INTO inbound_message (wamid, wa_id, kind, payload, channel)
+          VALUES ('y', '5491100000000', 'text', '{}'::jsonb, NULL)`,
+      ).rejects.toThrow()
+      await migrate(sql) // idempotent
+    } finally {
+      await sql.end({ timeout: 1 })
+      await socket.stop()
+      await pg.close()
+    }
+  })
+})

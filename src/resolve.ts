@@ -138,3 +138,18 @@ export function linkCode(text: string): string | null {
   const code = LINK_REQUEST.exec(normalizeText(text).replace(/\s+/g, ' '))?.[1]
   return code ? code.toUpperCase() : null
 }
+
+const DISCONNECT =
+  /^(?:(?:por favor|porfa)\s+)?desconect(?:ar|a|ame|alo|alos)(?:\s+(?:a\s+)?(?:claude|todo|todos|la conexion|las conexiones))?(?:\s+(?:por favor|porfa|nomas))?$/
+
+/**
+ * "desconectar", "desconectá a Claude", "desconectar todo": a typed message that is only that cuts every connection of an agent
+ * (docs/mcp-spec.md, Slice 3), done by code with no model call, like `undoRequest`. Anything with more in it goes to the model.
+ */
+export function disconnectRequest(text: string): Action | null {
+  const words = normalizeText(text)
+    .replace(/[¡!¿?.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return DISCONNECT.test(words) ? { tool: 'mcp_disconnect', input: {} } : null
+}

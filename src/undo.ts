@@ -171,3 +171,14 @@ export async function undoLast(
   await markUndone(tx, o.inboundId, last.id)
   return { kind: 'undone', batch: last.id, items }
 }
+
+/** What an undo did, for an audit entry: which batch and what became of each row; nothing for an undo that did nothing. */
+export function undoDetail(undo: UndoOutcome): string | undefined {
+  if (undo.kind === 'undone') {
+    return `undid batch ${undo.batch}: ${undo.items.map((u) => `${u.kind} ${'fact' in u ? u.fact.id : 'movement' in u ? u.movement.id : u.from.id}`).join(', ')}`
+  }
+  if (undo.kind === 'stale') {
+    return `stale: ${[...undo.moved, ...undo.facts].map((m) => m.id).join(', ')}`
+  }
+  return undefined
+}

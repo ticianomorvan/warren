@@ -24,9 +24,9 @@ import { argentinaToday } from '../time'
 export const READ_SCOPE = 'ledger:read'
 
 /** The longest a free-text input may be (a word or two is what they hold), a day, an amount: a client cannot send a book. */
-const MAX_TEXT = 200
-const MAX_DAY = 20
-const MAX_AMOUNT = 20
+export const MAX_TEXT = 200
+export const MAX_DAY = 20
+export const MAX_AMOUNT = 20
 
 /** A page of `warren_find_movements`: 25 rows are about 3k tokens, far under what a client takes in one result. */
 export const DEFAULT_PAGE = 25
@@ -109,6 +109,7 @@ export function outputSchemas(strict: boolean) {
         .describe('Empty unless the summary was compared.'),
       summary: z.string().describe('The same summary as Warren writes it on WhatsApp, in Spanish.'),
     }),
+    ...writeOutputs(obj, movement),
     facts: obj({
       facts: z.array(
         obj({
@@ -123,14 +124,82 @@ export function outputSchemas(strict: boolean) {
   }
 }
 
+/** What every change returns: its batch (null when nothing was written), the record Warren renders and how to take it back. */
+const writeBase = {
+  batch: z
+    .number()
+    .int()
+    .nullable()
+    .describe('The batch this change belongs to; null when nothing was written.'),
+  record: z.string().describe('What changed, as Warren writes it on WhatsApp (Spanish).'),
+  undo: z
+    .string()
+    .nullable()
+    .describe('How to take the change back; null when nothing was written.'),
+  replayed: z
+    .boolean()
+    .describe(
+      'True when this is the answer to an earlier call with the same request_id: nothing was written now.',
+    ),
+}
+
+function writeOutputs(obj: typeof z.looseObject, movement: ReturnType<typeof z.looseObject>) {
+  const base = writeBase
+  const factView = obj({
+    id: z.number().int(),
+    kind: z.enum(FACT_KINDS),
+    key: z.string(),
+    value: z.string(),
+  })
+  return {
+    log: obj({ ...base, movements: z.array(movement) }),
+    correct: obj({
+      ...base,
+      changed: z
+        .array(z.string())
+        .describe('The fields the correction changed; empty when it was already so.'),
+      before: movement,
+      after: movement,
+    }),
+    deleted: obj({ ...base, deleted: movement }),
+    undone: obj({
+      ...base,
+      undone_batch: z.number().int(),
+      items: z.array(
+        obj({
+          kind: z.enum([
+            'logged',
+            'corrected',
+            'deleted',
+            'fact_removed',
+            'fact_restored',
+            'fact_reverted',
+          ]),
+          movement: movement.optional(),
+          from: movement.optional(),
+          fact: factView.optional(),
+          was: z.string().optional(),
+        }),
+      ),
+    }),
+    remembered: obj({
+      ...base,
+      status: z.enum(['new', 'updated', 'unchanged']),
+      fact: factView,
+      previous_value: z.string().nullable(),
+    }),
+    forgotten: obj({ ...base, forgotten: z.array(factView) }),
+  }
+}
+
 const OUTPUTS = outputSchemas(false)
 
-const fail = (text: string) => ({
+export const fail = (text: string) => ({
   isError: true as const,
   content: [{ type: 'text' as const, text }],
 })
 
-const done = <T extends Record<string, unknown>>(output: T) => ({
+export const done = <T extends Record<string, unknown>>(output: T) => ({
   structuredContent: output,
   content: [{ type: 'text' as const, text: JSON.stringify(output) }],
 })
@@ -142,7 +211,7 @@ const READ_ONLY = {
   openWorldHint: false,
 } as const
 
-const QUOTE =
+export const QUOTE =
   'Every amount is computed by Warren from the ledger: quote the amounts and totals as given (use `display` ' +
   'when showing money) and never add, subtract, convert or round them yourself.'
 
@@ -161,7 +230,7 @@ export function decodeCursor(cursor: string): number | null {
 
 // ---- What each tool shows.
 
-const presentMovement = (m: MovementRow) => ({
+export const presentMovement = (m: MovementRow) => ({
   id: m.id,
   date: m.date,
   time: m.time ?? '',
@@ -334,11 +403,13 @@ export interface ToolContext {
   sql: Sql
   /** The person: from the verified token, never from an argument. */
   accountId: number
+  /** Their WhatsApp id: a write's batch carries it, so an undo from WhatsApp finds it. */
+  waId: string
   now: () => Date
 }
 
 /** One failed read, told to the client without detail and to the log without data. */
-function unavailable(tool: string, error: unknown) {
+export function unavailable(tool: string, error: unknown) {
   log('mcp_tool_failed', { tool, error: error instanceof Error ? error.name : 'unknown' }, 'error')
   return fail('Warren could not read your data right now. Try again in a moment.')
 }

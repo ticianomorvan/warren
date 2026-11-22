@@ -192,6 +192,20 @@ Decided while building, changing the text above:
 - `runSummary` (`src/run-summary.ts`) is the one place a summary is planned, summed and rendered; `execute` calls it.
 - `@modelcontextprotocol/server` 2.4.0 and `@modelcontextprotocol/node` 2.1.2. Tests speak JSON-RPC over HTTP with `fetch` (no client package).
 
+## Slice 3 as built (2026-11-22)
+
+- `applyCall(tx, {accountId, batchId, position?}, call) → Outcome` (`src/apply.ts`) is the write path of both channels. It does not validate: WhatsApp's loop runs `checkCall`, MCP's tools run `checkInput`, both before the transaction. It locks a movement
+  `FOR UPDATE` and checks it is the account's and live, so two requests changing the same movement are serialized and the second finds it gone; facts take the account's advisory lock; the undo its own. `execute()` composes WhatsApp's reply from the outcomes
+  and keeps its conversation guards; the suite and `eval:scenarios` are unchanged. `batchId` is the `inbound_message` row of the batch (the client's own `request_id` is the idempotency key, in the `wamid`). An `Outcome` carries what each channel renders (the id and key of a refusal, the kind and key of a fact).
+- `013_channel.sql`: `inbound_message.channel` (`whatsapp` | `mcp`, default `whatsapp`) and `account.mcp_revoked_at`. An MCP batch is `kind = 'tool'`, `status = 'done'`, `wa_id` the account's, `action` and `reply_text` set (so `lastBatch` finds it), `payload` the result the client received.
+  Every query on `inbound_message` that assumes a WhatsApp message reads `channel = 'whatsapp'`: the three statements and the select of `claimDue`, both queries of `conversation`, the latency report. The undo (`lastBatch`, `settledBatches`, `markUndone`) does not: a batch of either channel
+  is undone from either. Queries by id or wamid (`recordTyping`, `commit`, ...) touch only rows a WhatsApp worker claimed.
+- Results: the record Warren renders (the same text WhatsApp shows), the batch id, how to take it back, and the before and after (decimal strings plus `display`). A call that changes nothing (no-op correction, a fact already stored) returns `batch: null`; a refusal is an
+  `isError` result with a compact reason. `request_id` (a uuid) makes a retry of the same call return the first answer, with `replayed: true`: the same person, tool and checked input (a sha256 of a stable JSON, in `payload.input_hash`); the same id with other values is refused. A secret is refused in a fact (`checkFactValues`); a call whose text holds one keeps no raw inputs (stored command, audit and body scrubbed; the rendered record and the result stay, as on WhatsApp).
+- A row is a batch an undo can reach only when its `action` and `reply_text` are set together and it is no undo: `batchRow` (the predicate `lastBatch` reads) and `settleBatchRow` (the one place an MCP row gets them, in the transaction that made the changes) in `ledger.ts`; the MCP row is inserted without them.
+- "desconectar" (`disconnectRequest`, a typed code command like `undoRequest`; not by voice, not when a question is open): `disconnectAccount` in the commit transaction (refresh tokens, consents, sessions and pending authorization codes). The help reply says so where connecting is on, and the prompt tells the model it has no tool for it: the person sends exactly "desconectar". The door refuses a token whose `iat` is at or before the stamp (whole seconds), so a person reconnecting later gets tokens that work.
+- Over MCP the id guard is owned and live, not "shown to the model" (a client agent has no such list); the stale-state guards (a movement changed since, an undo of a batch touched since) still hold.
+
 ## Not doing / later
 
 - A per-account rate limit on `/mcp` (a token is one person, behind a door that already needs a real sign-in; add one if usage shows a need).

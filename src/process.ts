@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { actionLabel } from './action-label'
 import {
   type Action,
   AgentError,
@@ -13,7 +14,7 @@ import {
   windowReplies,
 } from './agent'
 import { sensitive } from './agent/memory'
-import { actionLabel, execute } from './execute'
+import { execute } from './execute'
 import { RECENT_LIMIT } from './ledger'
 import { log } from './log'
 import { isSecretNotice, scrubAudit, scrubCalls } from './redact'
@@ -25,7 +26,7 @@ import {
   REPLY_NON_TEXT,
   REPLY_VOICE,
 } from './render'
-import { answerAction, linkCode, undoRequest } from './resolve'
+import { answerAction, disconnectRequest, linkCode, undoRequest } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
 import type { Timings, TurnTiming } from './timings'
@@ -324,7 +325,9 @@ export function createProcessor(o: ProcessorOptions) {
           : code
             ? ({ tool: 'link_ask', input: { code } } as const)
             : (answerAction(text, conversation.question) ??
-              (conversation.question ? null : undoRequest(text)))
+              (conversation.question
+                ? null
+                : (undoRequest(text) ?? (o.signIn ? disconnectRequest(text) : null))))
       if (answer) {
         return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }
@@ -435,7 +438,7 @@ export function createProcessor(o: ProcessorOptions) {
               window,
               heard,
               redact,
-              render: { helpContact: o.helpContact },
+              render: { helpContact: o.helpContact, disconnect: o.signIn === true },
             }),
         })
       } catch (err) {

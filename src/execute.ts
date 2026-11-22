@@ -2,21 +2,15 @@ import type { Action } from './agent'
 import type { AuditEntry } from './agent/loop'
 import { MAX_FACTS } from './agent/memory'
 import { composeReply, type Say, type Step } from './agent/say'
+import { applyCall } from './apply'
+import { disconnectAccount } from './auth/disconnect'
 import { askLink, confirmLink, declineLink } from './auth/link'
 import type { Sql } from './db'
-import {
-  allLiveFacts,
-  type FactRow,
-  findLive,
-  forgetAll,
-  forgetFact,
-  lockFacts,
-  rememberFact,
-} from './facts'
-import { insertMovements, liveByIds, lockLive, newestLiveId, softDelete, supersede } from './ledger'
-import { applyChanges, changedFields } from './movement'
+import { allLiveFacts, forgetAll } from './facts'
+import { liveByIds, newestLiveId } from './ledger'
 import { scrubAudit } from './redact'
 import {
+  REPLY_DISCONNECT,
   REPLY_FACT_GONE,
   REPLY_FACT_SECRET,
   REPLY_GONE,
@@ -41,11 +35,11 @@ import {
   renderStale,
   renderUnchanged,
   renderUndo,
-  type UndoLine,
+  undoLine,
 } from './render'
 import { runSummary } from './run-summary'
 import type { Executed } from './store'
-import { type Undone, undoLast } from './undo'
+import { undoDetail } from './undo'
 
 export interface ExecuteInput {
   accountId: number
@@ -84,32 +78,6 @@ const CHANGES = new Set([
   'forget_all_confirmed',
 ])
 
-/** The label `inbound_message.action` and the latency report use: one tool, or `multi`. */
-export function actionLabel(actions: Action[]): string {
-  const [only] = actions
-  if (!only || actions.length > 1) return 'multi'
-  const label = {
-    log_movements: 'log',
-    correct_movement: 'correct',
-    delete_movement: 'delete',
-    undo_last: 'undo',
-    remember_fact: 'remember',
-    forget_fact: 'forget',
-    forget_all_facts: 'forget',
-    forget_all_confirmed: 'forget',
-    link_ask: 'link',
-    link_confirm: 'link',
-    link_decline: 'link',
-    list_facts: 'reply',
-    summarize: 'summarize',
-    ask_user: 'ask',
-    reply: 'reply',
-    help: 'reply',
-    notice: 'reply',
-  } as const
-  return label[only.tool]
-}
-
 /**
  * Runs a message's actions against the ledger, in order, and returns the one reply to store. It runs
  * inside the commit transaction, after the commit guard has passed, so a replay or a crash cannot
@@ -143,119 +111,98 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
       says.push({ action: index, text: action.input.text ?? '' })
     }
     switch (action.tool) {
-      case 'log_movements': {
-        const { movements } = action.input
-        await insertMovements(tx, {
-          accountId: i.accountId,
-          inboundId: i.inboundId,
-          movements,
-          firstPosition: position,
-        })
-        position += movements.length
-        lines.push(renderLog(movements, today))
-        steps.push({ tool: action.tool, outcome: 'applied' })
-        break
-      }
-      case 'correct_movement': {
-        const old = await lockLive(tx, i.accountId, action.input.id)
-        if (!old) {
-          lines.push(REPLY_GONE)
-          steps.push({ tool: action.tool, outcome: 'gone' })
-          break
-        }
-        const next = applyChanges(old, action.input.changes)
-        const changed = changedFields(old, next)
-        if (changed.length === 0) {
-          lines.push(renderUnchanged(old, today))
-          steps.push({ tool: action.tool, outcome: 'unchanged' })
-          break
-        }
-        await supersede(tx, {
-          accountId: i.accountId,
-          inboundId: i.inboundId,
-          old,
-          next,
-          position: position++,
-        })
-        lines.push(renderCorrection(old, next, changed, today, old.id === newest))
-        steps.push({ tool: action.tool, outcome: 'applied' })
-        break
-      }
-      case 'delete_movement': {
-        const old = await lockLive(tx, i.accountId, action.input.id)
-        if (!old) {
-          lines.push(REPLY_GONE)
-          steps.push({ tool: action.tool, outcome: 'gone' })
-          break
-        }
-        await softDelete(tx, old.id, i.inboundId)
-        lines.push(renderDeletion(old, today, old.id === newest))
-        steps.push({ tool: action.tool, outcome: 'applied' })
-        break
-      }
-      case 'undo_last': {
-        const undone = await undoLast(tx, { accountId: i.accountId, inboundId: i.inboundId })
-        if (undone.kind === 'undone') {
-          lines.push(renderUndo(undone.items.map(undoLine), today))
-          steps.push({ tool: action.tool, outcome: 'applied' })
-          details.set(
-            index,
-            `undid batch ${undone.batch}: ${undone.items.map((u) => `${u.kind} ${'fact' in u ? u.fact.id : 'movement' in u ? u.movement.id : u.from.id}`).join(', ')}`,
-          )
-          break
-        }
-        lines.push(
-          undone.kind === 'nothing'
-            ? REPLY_UNDO_NOTHING
-            : undone.kind === 'expired'
-              ? REPLY_UNDO_EXPIRED
-              : renderStale(undone.moved, today, undone.facts),
-        )
-        steps.push({ tool: action.tool, outcome: undone.kind })
-        if (undone.kind === 'stale') {
-          details.set(
-            index,
-            `stale: ${[...undone.moved, ...undone.facts].map((m) => m.id).join(', ')}`,
-          )
-        }
-        break
-      }
-      case 'remember_fact': {
-        const { kind, key, value } = action.input
-        const stored = await rememberFact(tx, {
-          accountId: i.accountId,
-          inboundId: i.inboundId,
-          kind,
-          key,
-          value,
-        })
-        if (stored.kind === 'full') lines.push(renderFactsFull(MAX_FACTS))
-        else if (stored.kind === 'unchanged') lines.push(renderKnown(stored.fact))
-        else {
-          lines.push(
-            renderRemembered(stored.fact, stored.kind === 'updated' ? stored.before : undefined),
-          )
-        }
-        steps.push({
-          tool: action.tool,
-          outcome:
-            stored.kind === 'full' ? 'full' : stored.kind === 'unchanged' ? 'unchanged' : 'applied',
-        })
-        details.set(index, `${stored.kind}: ${kind} ${key}`)
-        break
-      }
+      case 'log_movements':
+      case 'correct_movement':
+      case 'delete_movement':
+      case 'undo_last':
+      case 'remember_fact':
       case 'forget_fact': {
-        const { id, key } = action.input
-        await lockFacts(tx, i.accountId)
-        // By the id the model was shown, or by key: either way only the sender's own live facts are looked up.
-        const found = await findLive(tx, i.accountId, id > 0 ? { id } : { key }, { lock: true })
-        const gone: FactRow[] = []
-        for (const fact of found) {
-          if (await forgetFact(tx, fact.id, i.inboundId)) gone.push(fact)
+        // The writes are `applyCall`'s, the one path under both channels; this composes the reply from what it did.
+        const done = await applyCall(
+          tx,
+          { accountId: i.accountId, batchId: i.inboundId, position },
+          action,
+        )
+        position += done.rows
+        switch (done.tool) {
+          case 'log_movements':
+            lines.push(renderLog(done.movements, today))
+            steps.push({ tool: done.tool, outcome: 'applied' })
+            break
+          case 'correct_movement':
+            if (done.kind === 'gone') {
+              lines.push(REPLY_GONE)
+            } else if (done.kind === 'unchanged') {
+              lines.push(renderUnchanged(done.old, today))
+            } else {
+              lines.push(
+                renderCorrection(done.old, done.next, done.changed, today, done.old.id === newest),
+              )
+            }
+            steps.push({ tool: done.tool, outcome: done.kind })
+            break
+          case 'delete_movement':
+            lines.push(
+              done.kind === 'gone'
+                ? REPLY_GONE
+                : renderDeletion(done.old, today, done.old.id === newest),
+            )
+            steps.push({ tool: done.tool, outcome: done.kind })
+            break
+          case 'undo_last': {
+            const undone = done.undo
+            if (undone.kind === 'undone') {
+              lines.push(renderUndo(undone.items.map(undoLine), today))
+            } else {
+              lines.push(
+                undone.kind === 'nothing'
+                  ? REPLY_UNDO_NOTHING
+                  : undone.kind === 'expired'
+                    ? REPLY_UNDO_EXPIRED
+                    : renderStale(undone.moved, today, undone.facts),
+              )
+            }
+            steps.push({
+              tool: done.tool,
+              outcome: undone.kind === 'undone' ? 'applied' : undone.kind,
+            })
+            const detail = undoDetail(undone)
+            if (detail) details.set(index, detail)
+            break
+          }
+          case 'remember_fact': {
+            const stored = done.stored
+            if (stored.kind === 'full') lines.push(renderFactsFull(MAX_FACTS))
+            else if (stored.kind === 'unchanged') lines.push(renderKnown(stored.fact))
+            else {
+              lines.push(
+                renderRemembered(
+                  stored.fact,
+                  stored.kind === 'updated' ? stored.before : undefined,
+                ),
+              )
+            }
+            steps.push({
+              tool: done.tool,
+              outcome:
+                stored.kind === 'full'
+                  ? 'full'
+                  : stored.kind === 'unchanged'
+                    ? 'unchanged'
+                    : 'applied',
+            })
+            details.set(index, `${stored.kind}: ${done.kind} ${done.key}`)
+            break
+          }
+          case 'forget_fact': {
+            for (const fact of done.gone) lines.push(renderForgot(fact))
+            if (done.gone.length === 0) {
+              lines.push(done.id > 0 ? REPLY_FACT_GONE : renderForgotNone(done.key))
+            }
+            steps.push({ tool: done.tool, outcome: done.gone.length > 0 ? 'applied' : 'gone' })
+            break
+          }
         }
-        for (const fact of gone) lines.push(renderForgot(fact))
-        if (gone.length === 0) lines.push(id > 0 ? REPLY_FACT_GONE : renderForgotNone(key))
-        steps.push({ tool: action.tool, outcome: gone.length > 0 ? 'applied' : 'gone' })
         break
       }
       case 'forget_all_facts': {
@@ -302,6 +249,12 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         const closed = await declineLink(tx, action.input.link_id, i.accountId)
         lines.push(REPLY_LINK.declined)
         steps.push({ tool: action.tool, outcome: closed ? 'applied' : 'gone' })
+        break
+      }
+      case 'mcp_disconnect': {
+        const cut = await disconnectAccount(tx, i.accountId)
+        lines.push(cut === 0 ? REPLY_DISCONNECT.none : REPLY_DISCONNECT.done(cut))
+        steps.push({ tool: action.tool, outcome: cut === 0 ? 'nothing' : 'applied' })
         break
       }
       case 'list_facts':
@@ -382,14 +335,4 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         },
   )
   return { reply, ...out, audit }
-}
-
-/** An undone movement as the record shows it: what it is after the undo, and what a restored correction was before. */
-function undoLine(u: Undone): UndoLine {
-  if (u.kind === 'fact_removed' || u.kind === 'fact_restored' || u.kind === 'fact_reverted')
-    return u
-  if (u.kind === 'corrected') {
-    return { kind: u.kind, movement: u.to, from: u.from, changed: changedFields(u.from, u.to) }
-  }
-  return { kind: u.kind, movement: u.movement }
 }

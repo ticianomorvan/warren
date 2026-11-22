@@ -144,16 +144,23 @@ export const withClaude = (o: Parameters<typeof setup>[0] = {}) => {
   return setup({ ...o, auth: { fetchClient: claude.fetchClient } }).then((app) => ({ app, claude }))
 }
 
-/** What WhatsApp sends when `from` writes `text`; waits until the message is settled. Returns Warren's replies. */
-export async function whatsapp(app: App, from: string, text: string) {
+/**
+ * What WhatsApp sends when `from` writes `text`; waits until the message is settled (`done` or `ignored`: a message that
+ * fails is a test that should say so, unless it opts in with `allowFailed`). Returns Warren's replies.
+ */
+export async function whatsapp(
+  app: App,
+  from: string,
+  text: string,
+  o: { allowFailed?: boolean } = {},
+) {
   const wamid = `wamid.AUTH${Math.random().toString(36).slice(2)}`
   const before = app.calls.sent.length
   await post(app.base, messageBody(wamid, from, { text: { body: text } }))
-  await until(async () => ['done', 'ignored'].includes(String((await row(wamid))?.status))).catch(
-    async (e) => {
-      throw new Error(`${e.message}: ${JSON.stringify(await row(wamid))}`)
-    },
-  )
+  const settled = o.allowFailed ? ['done', 'ignored', 'failed'] : ['done', 'ignored']
+  await until(async () => settled.includes(String((await row(wamid))?.status))).catch(async (e) => {
+    throw new Error(`${e.message}: ${JSON.stringify(await row(wamid))}`)
+  })
   return bodies(app.calls).slice(before)
 }
 
