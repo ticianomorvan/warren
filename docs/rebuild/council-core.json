@@ -1,0 +1,1056 @@
+[
+ {
+  "group": "turn-record",
+  "model": "opus",
+  "verdict": "redesign (the turn record), adjust (the front door machinery). Split inbound_message. It does two different jobs: an async WhatsApp chat message (dedupe, queue, typing/interim/failure/reply markers) and a committed, channel-neutral turn (the batch an undo reaches, its record, its question, its undo mark). MCP needs only the second job, yet today it has to fake the first: wamid 'mcp:<id>', kind 'tool', status 'done', payload as result store, the account's wa_id (src/mcp/write.ts:117-127). Batch identity is also keyed on the WhatsApp wa_id rather than account_id (src/ledger.ts:188-190, `i.wa_id = a.wa_id`), so a third channel without a wa_id cannot make a batch at all. That is the strongest from-scratch argument, and the live DB is small enough that a migration can keep the ids and rewrite no effect rows. The claim, lane, sweep and send markers are close to minimal for at-most-once plus ordering on one replica, and I would keep them, but they have two ordering holes. Claims run in RETURNING order, not id order. A kick claims only the webhook's wamids, so an older pending row from the same sender can be overtaken. On the second half of the council question, I would not add a separate effect log now. The per-table pointer columns are what the live reads need, and an effect log beside them would be a second source of truth. Repointing those FKs to `turn` and taking one account-row lock gets most of the simplification.",
+  "keep": [
+   {
+    "item": "At-most-once send protocol on the WhatsApp row: send_started_at committed before the Graph call, stale started rows go to 'unknown', and only a 4xx that proves nothing was sent goes back to pending (src/store.ts:154-162, 354-360; src/process.ts:152-199)",
+    "why": "No library or Postgres feature provides this. It is a protocol, and it is already the minimal form: one marker column per outbound kind, checked by single-row predicates. A queue library would be at-least-once and would not remove it."
+   },
+   {
+    "item": "Fencing every post-claim write with `id AND status='processing' AND attempts=<claimed>` (src/store.ts:116-117)",
+    "why": "It is a fencing token. It still matters on 'one replica' because a Railway deploy briefly runs the old and new process side by side (my guess; the code comment at src/process.ts:609-612 assumes the same). It costs one predicate."
+   },
+   {
+    "item": "Interim, failure and reply markers as columns on the same row (interim_sent_at, failure_sent_at, send_started_at)",
+    "why": "Their mutual exclusion is enforced inside one row's UPDATE predicate (src/store.ts:306-307, 330-331). Moving them to a delivery table would need a parent-row lock to keep that exclusion, which is more machinery for the same guarantee."
+   },
+   {
+    "item": "FOR UPDATE SKIP LOCKED claim with stale takeover after 120 s (src/store.ts:169-181, src/server.ts:22)",
+    "why": "This is the documented queue pattern. It guards against overlapping ticks and the deploy overlap."
+   },
+   {
+    "item": "In-memory per-sender lane that passes its turn at the commit, not at the send (src/process.ts:534-556)",
+    "why": "The context read and the LLM call happen outside any transaction, so no database lock can order them without holding a connection through a call of several seconds. A promise chain is the simplest correct tool on one process. Passing the turn at the commit is the right cut (docs/spec.md:212)."
+   },
+   {
+    "item": "The commit point as one short transaction that takes the model output as input (src/store.ts:274-297)",
+    "why": "No LLM call runs inside sql.begin, the guard row is locked FOR UPDATE, and nothing awaits between the abort check and the commit (src/process.ts:406-458). Correct, and keep it."
+   },
+   {
+    "item": "resolve.ts as pure code that owns short answers, bare undo, link codes and disconnect",
+    "why": "It keeps the model out of deciding what '2' or 'sí' means, which is a safety rule. It has no IO and is easy to test. Only the composition that calls it moves (see redesign)."
+   },
+   {
+    "item": "MCP idempotency semantics: same account, tool and input hash replays the first result, and a different call under the same id is refused (src/mcp/write.ts:162-181)",
+    "why": "It matches the Stripe/Brandur design. Only where the key is stored is wrong (see redesign)."
+   },
+   {
+    "item": "The `reply` table for outbound wamids and their delivery statuses, upserted in any arrival order (src/store.ts:134-146)",
+    "why": "It is small, correct and channel-specific. The FK to inbound_message stays valid after the split, because MCP never sends."
+   },
+   {
+    "item": "Pointer columns (superseded_by, deleted_by, forgotten_by, cancelled_by, restores) as the source of truth, with no separate effect log yet (cross-group view)",
+    "why": "The live predicate reads these columns on every query, and reversal differs by entity: reminders recompute next_due_at (src/undo.ts:96-97). An effect log beside them would be a second truth that can disagree. Repointing them to `turn` removes the wa_id coupling at no cost. The undo group should decide whether an effect log replaces them."
+   },
+   {
+    "item": "30 s tick with no LISTEN/NOTIFY (src/server.ts:79-85)",
+    "why": "Webhooks kick work in-process, so NOTIFY would only help the deploy hand-off case below. A shorter tick fixes that case more cheaply."
+   }
+  ],
+  "redesign": [
+   {
+    "item": "Split inbound_message into a channel-neutral `turn` (the committed batch and its record) plus the existing WhatsApp row (chat message, queue and delivery)",
+    "problem": "One row holds five jobs. Batch-ness is derived from 'action and reply_text set and undoes null' (src/ledger.ts:144-147). MCP fakes a chat message to get a batch id (src/mcp/write.ts:121-127), then settles it in a second step (settleBatchRow, src/ledger.ts:153-175). Batches are found by WhatsApp id, not account (src/ledger.ts:188-190), so MCP has to carry `waId` (src/mcp/write.ts:31-32), and a future channel without a wa_id cannot make one. Every chat-only query has to remember `channel = 'whatsapp'`, in seven places: store.ts:162, 168, 174, 234, 245, latency-report.ts:29 and reminders/send.ts:185. Forgetting the filter in reminders/send.ts:185 would let an MCP write open the 24 h window, and a free-form reminder would then be sent outside Meta's window.",
+    "proposal": "New table, inserted only inside a commit transaction, so every row is committed:\n```sql\nCREATE TABLE turn (\n  id          bigserial PRIMARY KEY,\n  account_id  bigint NOT NULL REFERENCES account(id),\n  channel     text   NOT NULL CHECK (channel IN ('whatsapp','mcp')),\n  action      text   NOT NULL,          -- label (actionLabel)\n  calls       jsonb  NOT NULL,          -- what ran (today inbound_message.command)\n  record      text   NOT NULL,          -- code-rendered reply/record (today reply_text)\n  question    jsonb,                    -- see the question item\n  undoes      bigint REFERENCES turn(id),\n  created_at  timestamptz NOT NULL DEFAULT now(),\n  CONSTRAINT turn_undoes_other CHECK (undoes IS NULL OR undoes <> id),\n  CONSTRAINT turn_question_chat CHECK (question IS NULL OR channel = 'whatsapp'));\nCREATE UNIQUE INDEX turn_undoes_idx ON turn(undoes) WHERE undoes IS NOT NULL;\nCREATE INDEX turn_account_idx ON turn(account_id, id DESC);\nALTER TABLE inbound_message ADD COLUMN turn_id bigint UNIQUE REFERENCES turn(id);\n```\ninbound_message stays the WhatsApp row and keeps wamid, wa_id, kind, body, payload, meta_ts, received_at, status, attempts, claimed_at, error, the four *_sent_at/send_started_at markers, timings, and the agent-run diagnostics (parsed, tool_calls, model_turns, model_ms). Those diagnostics stay there because a failed run has them and no turn (src/store.ts:327-328). It drops channel, action, reply_text, command, undoes, asked_numbers, asked_ids and pending.\nInterfaces:\n- `store.commit(c, m)`: lock account (next item), check `turn_id IS NULL AND failure_sent_at IS NULL` (replacing `reply_text IS NULL`, store.ts:278), `INSERT INTO turn … RETURNING id`, then `execute(tx, {turnId})`, then `UPDATE turn SET record, question`, then `UPDATE inbound_message SET turn_id, body/redaction, parsed, tool_calls, model_*`.\n- `claimDue` returns `replyText` as `(SELECT record FROM turn WHERE id = turn_id)`.\n- recordFailure and recordInterim test `turn_id IS NULL`.\n- `conversation()` joins `inbound_message p JOIN turn t ON t.id = p.turn_id`. Same behaviour as today: the preceding chat row, of any status, still closes a question.\n- `ApplyContext.batchId` (already a neutral name, src/apply.ts:51) becomes the turn id.\n- ledger: `lastBatch` becomes `FROM turn i WHERE i.account_id = $1 AND i.id < $asking AND i.undoes IS NULL AND (EXISTS … same four probes on turn_id) AND NOT EXISTS (SELECT 1 FROM turn u WHERE u.undoes = i.id)`. Delete batchRow and settleBatchRow. settledBatches and markUndone move onto turn.\n- undo.ts:104-107 reads `turn.channel`, or better takes `channel` as a parameter.\nMigration 016_turn.sql, one transaction, ids preserved, so no effect row is rewritten:\n1. `INSERT INTO turn (id, account_id, channel, action, calls, record, question, undoes, created_at) SELECT i.id, a.id, i.channel, i.action, COALESCE(i.command,'[]'), i.reply_text, <question built from the three columns>, i.undoes, i.received_at FROM inbound_message i JOIN account a ON a.wa_id = i.wa_id WHERE i.reply_text IS NOT NULL AND i.action IS NOT NULL ORDER BY i.id`. The self-FK is checked at statement end, and `undoes` always points to an earlier id.\n2. `SELECT setval(pg_get_serial_sequence('turn','id'), GREATEST((SELECT max(id) FROM turn),1))`.\n3. Run a DO block that RAISEs if any movement, fact or reminder inbound_message_id, deleted_by, forgotten_by or cancelled_by is not a turn id. This is the proof that nothing was orphaned.\n4. `UPDATE inbound_message SET turn_id = id WHERE channel='whatsapp' AND id IN (SELECT id FROM turn)`.\n5. Copy MCP rows into mcp_request (MCP item).\n6. For movement(inbound_message_id, deleted_by), fact(inbound_message_id, forgotten_by) and reminder(inbound_message_id, cancelled_by): DROP the `…_fkey` constraint, ADD a FK to turn(id), and RENAME inbound_message_id to turn_id.\n7. `DELETE FROM inbound_message WHERE channel='mcp'`. No `reply` rows point at these.\n8. Drop the moved columns, `inbound_message_undoes_idx` and `channel`.\nTake a Railway backup or pg_dump first, because the column drops are one-way. Build the migration and prove it on a copy of the live DB (about 100 rows).",
+    "evidence": "src/migrations/013_channel.sql:4-8 (lists every query that must filter by channel). src/mcp/write.ts:117-153 (fake row, then settleBatchRow). src/ledger.ts:137-175 (batchRow and settleBatchRow exist only because a chat row exists before its commit). src/ledger.ts:186-191 (wa_id join). src/reminders/send.ts:183-187 (window check depends on the filter). docs/mcp-spec.md:120-121 already says 'From scratch we would put a channel-neutral batch table under both channels… the overhaul can replace it'.",
+    "size": "+90 SQL. TS roughly -60: store.ts ±0, write.ts -35, ledger.ts -35, undo.ts -3, latency-report/send.ts -2, tests adjusted.",
+    "confidence": "high on the cut and the table shape; medium on exact column placement for diagnostics"
+   },
+   {
+    "item": "Pending question: one `turn.question jsonb` instead of asked_numbers int[], asked_ids bigint[] and pending jsonb",
+    "problem": "The question is stored as two parallel arrays plus a union. Zipping them falls back to id 0 when the lengths differ (src/store.ts:257-260). The forget_all and link kinds are special-cased three times: once in store (src/store.ts:252-254), again in process when building the model context (src/process.ts:363-371), and again in resolve (src/resolve.ts:70-79).",
+    "proposal": "Store `question = {\"options\":[{\"number\":2,\"id\":417},…],\"then\":<Pending>|null}` on the turn that asked it, written in the same commit. Add `CHECK (question IS NULL OR jsonb_typeof(question->'options') = 'array')`. 'Answered' stays derived: the next chat row of the sender closes it, which is race-free under the lane. No new table and no close write. `conversation()` returns it as is (`PendingQuestion = {options, then}`), so store.ts:250-264 collapses to one line and process.ts:363-371 becomes a two-line projection. Keep it per chat conversation (`channel='whatsapp'` turns via the joined chat row), so an MCP write in between neither answers nor closes it, as today. It should not live on `account` (one mutable slot needs a clear-on-every-message write) or in memory (lost on restart, and a deploy is common).",
+    "evidence": "src/migrations/006_asked_numbers.sql, 007_asked_ids.sql, 008_agent.sql:14. src/store.ts:237-264. src/process.ts:362-371. src/resolve.ts:66-101.",
+    "size": "about -30 TS, +5 SQL (inside 016)",
+    "confidence": "high"
+   },
+   {
+    "item": "One account-row lock at the start of every write transaction, in commit() and writeAsMcp",
+    "problem": "Writes of one account from two channels are not serialized. The lane covers WhatsApp only (src/process.ts:535-556), and MCP writes bypass it. Mutual exclusion is spread across advisory namespaces (undo 7203002, src/undo.ts:86; facts 7203003; reminders 7203005) plus row locks taken in action order. The docs already record a known deadlock (docs/agent-spec.md:685-686, 1160). db.ts:19-20 lists only four of the five keys.",
+    "proposal": "Make the first statement of `store.commit` and `writeAsMcp` `SELECT id FROM account WHERE id = ${accountId} FOR UPDATE`. One lock, a real row, held only for the short commit (no LLM inside). Every same-account write then runs strictly in order, whatever the channel. The lock-order hazard goes away (the guard row first, then the account, then movements; MCP takes the account, then movements). The undo, facts and reminders advisory locks become redundant and can be deleted by their groups. The commit also needs the account id before the transaction, which process.ts already has (src/process.ts:265). Add `lock_timeout` (for example 5 s) to the server pool's connection options, so a stuck lock fails the commit (and sends a notice) instead of hanging past Meta's patience.",
+    "evidence": "src/undo.ts:86. src/db.ts:19-20. docs/agent-spec.md:685-686, 1160. src/mcp/write.ts:121 (no lane, no account lock). The README's postgres.js connection options have no default timeouts.",
+    "size": "+4 in my group; -15 across facts, undo and reminders (cross-group)",
+    "confidence": "medium-high"
+   },
+   {
+    "item": "MCP write recorded as a `turn` plus an `mcp_request` idempotency row, not as a fake inbound message",
+    "problem": "The idempotency key is the global `wamid` UNIQUE ('mcp:'+request_id, src/mcp/write.ts:117). It is not scoped per account, so ownership has to be re-checked by hand at replay (`prior.wa_id !== r.waId`, src/mcp/write.ts:168). `payload` is reused as the result store (src/mcp/write.ts:150), and the synthetic one-entry audit and `model_turns = 0` (src/mcp/write.ts:134-144, ledger.ts:172) are noise.",
+    "proposal": "```sql\nCREATE TABLE mcp_request (\n  account_id  bigint NOT NULL REFERENCES account(id),\n  request_id  text   NOT NULL,\n  input_hash  text   NOT NULL,\n  turn_id     bigint NOT NULL REFERENCES turn(id),\n  result      jsonb  NOT NULL,\n  created_at  timestamptz NOT NULL DEFAULT now(),\n  PRIMARY KEY (account_id, request_id));\n```\n`writeAsMcp(r)`:\n1. lock the account row;\n2. `SELECT input_hash, result FROM mcp_request WHERE account_id AND request_id`, and replay or refuse if found;\n3. `INSERT turn (channel='mcp', calls=[call], action, record='')`;\n4. `applyCall(tx, {accountId, batchId: turn.id})`;\n5. `UPDATE turn SET record`;\n6. `INSERT mcp_request`.\nA refusal or no-op still throws to roll back, as today. The account lock makes the read-then-insert race-free, and the PK is the backstop. With no request_id, skip mcp_request. Delete the fake-row insert, settleBatchRow, `WriteRequest.waId`, and the wa_id compare in replay. Pruning after about 24 h can come later; it is not needed at this scale. Migration: `INSERT INTO mcp_request SELECT a.id, substr(i.wamid,5), i.payload->>'input_hash', i.id, i.payload->'result', i.received_at FROM inbound_message i JOIN account a ON a.wa_id=i.wa_id WHERE i.channel='mcp' AND i.payload ? 'result'`.",
+    "evidence": "src/mcp/write.ts:116-181. src/ledger.ts:150-175. 013_channel.sql:7 ('payload of an MCP row holds the result').",
+    "size": "+15 SQL, about -30 TS in write.ts and ledger.ts",
+    "confidence": "high"
+   },
+   {
+    "item": "Claim order: run claims in id order, and kick claims by sender, not by wamid",
+    "problem": "(a) `UPDATE … WHERE id IN (SELECT … ORDER BY id … FOR UPDATE SKIP LOCKED) RETURNING` gives no guaranteed row order. The outer scan order (physical or hash order) decides it, and rows that were updated before, such as ones released on shutdown, sit elsewhere physically. kick queues lanes in array order (`claims.map(run)`, src/process.ts:573), and so does sweep (src/process.ts:585). A multi-message webhook or a post-restart sweep can therefore run one sender's messages out of order, so 'uy, era 3800' corrects the wrong row. The burst test posts one webhook per message (src/concurrency.test.ts:339-347), so it never exercises this. (b) kick claims only the webhook's own wamids (src/process.ts:572, store.ts:153). An older pending row from the same sender (released on shutdown at process.ts:412 or 524, or left by a failed insert batch at app.ts:94-97) is not in the lane, so the new message runs first. The old one waits up to 30 s for the tick and then usually fails its 30 s deadline with a notice.",
+    "proposal": "(a) In claimDue, `WITH c AS (UPDATE … RETURNING …) SELECT * FROM c ORDER BY id`, or `rows.sort((x,y)=>x.id-y.id)`. One line. (b) `kick(senders: string[])` claims every due row of those wa_ids (`AND wa_id = ANY(${senders})`, limit 50), so older rows join the lane first, in id order. app.ts passes `messages.map(m => m.from)`. Add a test that inserts two pending rows and kicks the later one: the earlier one must reply first.",
+    "evidence": "src/store.ts:169-183. src/process.ts:568-576, 584-585. src/app.ts:66-101. PG docs leave UPDATE…RETURNING order unspecified (my reading; I did not run EXPLAIN).",
+    "size": "+6 / -3",
+    "confidence": "(a) medium-high (the order is not guaranteed; how often it goes wrong live is a guess); (b) high that the gap exists, low on frequency"
+   },
+   {
+    "item": "Deploy hand-off: a row released by the old process waits up to 30 s",
+    "problem": "On SIGTERM the old process puts its still-parsing rows back to pending (src/process.ts:410-414). The new process has already run its startup sweep (src/server.ts:84), so it finds them only at the next 30 s tick (src/server.ts:85). Measured from received_at, they then pass the 30 s deadline and get the failure notice (src/process.ts:510-515). That breaks 'never go silent / first signal under 1 s' on every deploy that lands mid-message. That Railway starts the new process before stopping the old one is my assumption.",
+    "proposal": "Make the tick 5 s instead of 30 s. That is three indexed statements on an almost empty partial index every 5 s, the simplest fix. Alternatively, the releasing process runs `NOTIFY warren_due` and the server `sql.listen('warren_due', () => processor.sweep())`, with the tick kept as the safety net. I prefer the shorter tick.",
+    "evidence": "src/process.ts:409-415, 520-527. src/server.ts:79-96. src/store.ts:22 (staleMs 120 s, unrelated: those rows are pending, not processing).",
+    "size": "1 line (tick) or +8 (NOTIFY)",
+    "confidence": "medium (depends on Railway's deploy overlap, which I have not verified)"
+   },
+   {
+    "item": "Move the 'answered by code' decision chain from process.ts into resolve.ts",
+    "problem": "Policy about which short texts code answers sits in a nested ternary inside a 280-line closure (src/process.ts:332-341). That logic (link code first, a question's answer next, undo and disconnect only when no question is open, never for photos or voice) is pure and belongs beside the matchers it composes.",
+    "proposal": "`export function codeAnswer(text, {kind, question, signIn}): Action | null` in resolve.ts, with unit tests for the precedence. process.ts calls it once. Also factor the duplicated normalize-and-strip in undoRequest and disconnectRequest (src/resolve.ts:122-125, 150-153) into one `words(text)` helper.",
+    "evidence": "src/process.ts:327-344. src/resolve.ts:121-155.",
+    "size": "±0 net, +15 tests",
+    "confidence": "medium"
+   },
+   {
+    "item": "Sweep runs its claims one after another across all senders",
+    "problem": "`for (const c of claims) await run(c)` (src/process.ts:585) waits for each whole message, send included, before starting the next sender's. With a backlog after an outage, later senders' messages age past the 30 s deadline and get failure notices, although the lanes already order each sender.",
+    "proposal": "Use `await Promise.all(claims.map(run))`, as kick does. The lanes keep per-sender order, and the pool (max 10) is not held during model calls.",
+    "evidence": "src/process.ts:572-573 vs 584-586. Ageing at src/process.ts:509-515.",
+    "size": "1 line",
+    "confidence": "medium (irrelevant with one user, correct for more)"
+   }
+  ],
+  "delete": [
+   {
+    "item": "inbound_message.channel and its seven `channel = 'whatsapp'` filters",
+    "why": "Once MCP rows leave, every row is a chat message. Re-add a chat-channel column when a second chat channel arrives, together with an `(channel, external_id)` unique key.",
+    "evidence": "src/store.ts:162, 168, 174, 234, 245. src/latency-report.ts:29. src/reminders/send.ts:185. src/migrations/013_channel.sql:11."
+   },
+   {
+    "item": "batchRow and settleBatchRow (src/ledger.ts:137-175)",
+    "why": "With turns inserted only at commit, every turn is a committed batch candidate. The derived predicate and the two-step settle exist only because a chat row exists before its commit."
+   },
+   {
+    "item": "WriteRequest.waId and the wa_id compare in replay (src/mcp/write.ts:31-32, 168)",
+    "why": "Batches are found by account_id, and the idempotency key is scoped per account by its primary key, so ownership is structural."
+   },
+   {
+    "item": "The synthetic MCP audit and model_turns=0 (src/mcp/write.ts:134-144, ledger.ts:172)",
+    "why": "No agent ran. `turn.calls` already records what ran. Agent-run diagnostics belong to the chat row."
+   },
+   {
+    "item": "asked_numbers, asked_ids and pending columns, plus the zip and special-case decode (src/store.ts:250-264)",
+    "why": "Replaced by one `turn.question` jsonb."
+   },
+   {
+    "item": "defaultClient singleton and the optional `client` (src/process.ts:44-45, 374, 710-716)",
+    "why": "Both callers inject a client (src/server.ts:55, src/test-harness.ts:287). Make it required."
+   },
+   {
+    "item": "Advisory lock keys 7203002, 7203003 and 7203005 (cross-group; delete only after the account lock lands)",
+    "why": "They become redundant under the account-row lock taken at the start of every write transaction.",
+    "evidence": "src/undo.ts:86; src/facts.ts:70; src/reminders/db.ts:58"
+   }
+  ],
+  "naming": [
+   "`turn` for the committed, channel-neutral record (what the user said and what Warren did and answered). 'batch' stays the word for 'a turn that changed something' in undo code.",
+   "Effect columns `inbound_message_id` become `turn_id` (movement, fact, reminder). Today the name says 'WhatsApp message' for rows an MCP call made.",
+   "`reply_text` becomes `turn.record`. For MCP it is no reply, it is the code-rendered record (src/mcp/write.ts:92).",
+   "`command` becomes `turn.calls` (what ran). `parsed` stays on the chat row as the model's raw request.",
+   "Keep the name `inbound_message` for the WhatsApp row for now. Rename it `chat_message` only when a second chat channel arrives, to avoid churn.",
+   "`Claim.replyText` becomes `Claim.record`, and `Commit.execute(tx)` becomes `execute(tx, turnId)`, so the batch id is explicit rather than taken from the claim."
+  ],
+  "challenged_decisions": [
+   {
+    "decision": "per-sender ordering",
+    "challenge": "Not contradicted, but under-specified. Today it means per WhatsApp sender for context reads (the in-memory lane). Writes of one account from MCP and WhatsApp are not serialized against each other at all. Make it per account at the commit (account-row lock), and keep per chat sender for the parse. The lane also leaks in two places (RETURNING order, kick by wamid), so the guarantee holds only in the common path today.",
+    "evidence": "src/process.ts:535-556, 568-576; src/mcp/write.ts:121; src/store.ts:169-181"
+   },
+   {
+    "decision": "first signal under 1 s",
+    "challenge": "Not contradicted as a goal, but the code misses it on a deploy hand-off. Rows released by the old process wait for the new process's next 30 s tick and usually end in the failure notice. A 5 s tick (or NOTIFY) closes this. The Railway overlap behaviour is my assumption.",
+    "evidence": "src/process.ts:410-414; src/server.ts:84-85; src/process.ts:510-515"
+   },
+   {
+    "decision": "single replica on Railway + Postgres",
+    "challenge": "Kept. Note only that the fencing (attempts guard, stale takeover) is still needed under it because of the deploy overlap. Do not simplify it away on the grounds of 'single replica'.",
+    "evidence": "src/store.ts:116-117, 154-156"
+   }
+  ],
+  "questions_for_owner": [
+   "When a WhatsApp message fails (failure notice, no commit) between a '¿Cuál?' question and the answer '2', should the question still be answerable? Today the failed row closes it (src/store.ts:242-248 takes the latest chat row of any status). The redesign keeps that unless you say otherwise.",
+   "Should an MCP write in between close an open WhatsApp question? Today it does not, and the redesign keeps that. Its options are re-checked (owned and live) when used.",
+   "Is it acceptable for 016_turn.sql to be one-way (column drops), with a Railway backup taken just before? The alternative is a two-step migration that drops the columns one release later.",
+   "Railway deploy overlap: does the new container start and receive traffic before the old one gets SIGTERM? That decides whether the hand-off gap is real.",
+   "Should a no-op or refused MCP call with a request_id be recorded, so a retry replays the refusal? Today nothing is stored and a retry re-runs, which is safe. The redesign keeps that."
+  ]
+ },
+ {
+  "group": "turn-record",
+  "model": "fable",
+  "verdict": "redesign, but only of the record, not of the queue. inbound_message does two kinds of job. Three of them share one lifecycle and one row lock and should stay together: the raw WhatsApp log, the claim state and the send markers. The other four are a different thing, the channel-neutral unit of committed work: batch identity for effects and undo, the stored reply and question, account ownership, and the MCP request record. Those should move to a new `turn` table, which docs/mcp-spec.md:30 and :120 already name as the planned overhaul. I would not add a channel delivery table now, because the mutual exclusion between a message's interim note, failure notice and reply is a single-row UPDATE today and a child table would make each of them a lock-then-insert. The claim, lane and marker machinery is close to minimal for at-most-once; what is wrong in it is that per-sender order lives in process memory and in the order rows are handed in, which I showed is not id order. Separately, one account-row lock at the two commit entry points would replace three advisory-lock namespaces and close a deadlock the docs still describe as impossible in one process.",
+  "keep": [
+   {
+    "item": "Raw log, claim state and send markers on one row (inbound_message: status, attempts, claimed_at, typing_sent_at, interim_sent_at, failure_sent_at, send_started_at, reply_sent_at)",
+    "why": "Every transition is one guarded single-row UPDATE: recordInterim checks interim, send and failure in one WHERE (src/store.ts:304-308), recordFailure likewise (:323-332), the commit guard is one SELECT FOR UPDATE (:276-279). Postgres re-checks the WHERE after a row-lock wait, so these are race-free without extra locks. A delivery table would need lock-parent-then-insert-child for each."
+   },
+   {
+    "item": "The at-most-once protocol: send_started_at committed before the Graph call, 'unknown' on timeout or 5xx, back to 'pending' only on a 4xx",
+    "why": "It is the smallest protocol that gives the owner's guarantee (src/process.ts:152-199, src/store.ts:355-359, :391-399). No queue library removes it: they are at-least-once."
+   },
+   {
+    "item": "attempts as a fencing token (`owned(c)`: id, status 'processing', attempts)",
+    "why": "One fragment guards every post-claim write (src/store.ts:116-117). It is what makes a takeover safe during a Railway deploy, when two processes are alive at once."
+   },
+   {
+    "item": "The commit point shape: guard row locked, then execute(tx), then the stored reply, in one transaction",
+    "why": "src/store.ts:274-297. A crash or replay cannot apply effects twice, and the failure notice and the commit exclude each other through the same row."
+   },
+   {
+    "item": "The pending question as state of the row that asked, read as 'the sender's immediately preceding message'",
+    "why": "It has no lifecycle writes: nothing opens, closes or expires it, so a re-processed message derives the same answer (src/store.ts:237-248). A separate question table would add consumed/closed state for no gain."
+   },
+   {
+    "item": "src/resolve.ts as pure functions",
+    "why": "155 lines, no I/O, a 217-line test. Code answers a bare '2', 'sí' or 'deshacer' without a model call, which is the right owner for those."
+   },
+   {
+    "item": "MCP replay rule: same person, same tool, same checked input, else refused",
+    "why": "src/mcp/write.ts:162-181 matches the Stripe design (key, request hash, stored response). Only where it is stored is wrong."
+   },
+   {
+    "item": "The 30 s setInterval tick and the SKIP LOCKED claim, with no queue library and no LISTEN/NOTIFY",
+    "why": "The webhook already wakes the worker directly (src/app.ts:103); the tick is only recovery (src/server.ts:79-85)."
+   },
+   {
+    "item": "Passing a sender's turn at the commit, not at the send",
+    "why": "src/process.ts:478. Ordering only needs the stored change; docs/spec.md:212 measured about 0.6 s saved per queued message."
+   },
+   {
+    "item": "The `reply` table as a status sink keyed by outbound wamid",
+    "why": "One upsert handles statuses in any arrival order, including a status that beats our own insert (src/store.ts:134-146)."
+   },
+   {
+    "item": "reminder_send as its own delivery table, for now",
+    "why": "It already is a row-per-send design with a unique key. Merge it with reply sends into one `outbound` table only when a second unsolicited send (budget alerts) or a second chat channel arrives."
+   }
+  ],
+  "redesign": [
+   {
+    "item": "A channel-neutral `turn` table: the batch, the stored reply and question, and the MCP request record",
+    "problem": "inbound_message has no account_id, so a batch is tied to a person by a string join on wa_id (src/ledger.ts:189) and MCP must be handed the person's WhatsApp id just to be findable (src/mcp/write.ts:31-32, src/mcp/door.ts:131). A batch is not stored but derived: 'action and reply_text set, not an undo' (src/ledger.ts:144-147). An MCP write is a fake message: wamid 'mcp:<id>', kind 'tool', status 'done', payload reused as the stored response (src/mcp/write.ts:117-127, :150), finished by a second UPDATE (src/ledger.ts:153-174). Seven queries must then remember `channel = 'whatsapp'` (5 in src/store.ts, src/latency-report.ts:29, src/reminders/send.ts:185). I found none that forgets it today; the cost is that every new query must. The request id is unique across all accounts, not per account (low severity: the schema forces a uuid).",
+    "proposal": "New table, created only inside a commit transaction:\n\nturn(id bigint identity pk, account_id bigint not null references account, channel text not null check in ('whatsapp','mcp'), created_at timestamptz not null default now(), action text not null, command jsonb not null, reply text, question jsonb, undoes bigint references turn check (undoes <> id), request_id uuid, request_hash text, result jsonb, unique (account_id, request_id), check ((request_id is null) = (request_hash is null))); unique index on (undoes) where undoes is not null; index (account_id, id desc).\n\n`reply` is null only between the insert and the final update of the same transaction (effects need the id first).\n\ninbound_message keeps: id, wamid, wa_id, kind, body, payload, meta_ts, received_at, status, attempts, claimed_at, the five send stamps, error, timings, parsed, tool_calls, model_turns, model_ms. It gains `turn_id bigint unique references turn`; non-null means committed, replacing the `reply_text IS NULL` guard. It loses channel, action, command, reply_text, asked_numbers, asked_ids, pending, undoes.\n\nmovement.inbound_message_id, fact.inbound_message_id and reminder.inbound_message_id are renamed turn_id; those and deleted_by, forgotten_by, cancelled_by reference turn.\n\nInterfaces (new src/turn.ts): openTurn(tx, {accountId, channel, action, command, request?}) returns the id; closeTurn(tx, id, {reply, question, result?}). store.commit becomes: lock the guard row, lock the account, openTurn, execute(tx, turnId), closeTurn, set inbound_message.turn_id and the diagnostics. writeAsMcp becomes: lock the account, SELECT a prior turn by (account_id, request_id) and replay or refuse, openTurn, applyCall, roll back if nothing changed, closeTurn. ApplyContext carries turnId and channel, so src/undo.ts:104-107 needs no query. lastBatch reads `turn t WHERE t.account_id = cur.account_id AND t.id < cur.id` plus the effect test.\n\nMigration (one file, one transaction, after a pg_dump, deployed at a quiet moment): insert a turn for every inbound_message row with action and reply_text set, WITH THE SAME id (join account on wa_id; question built from asked_numbers, asked_ids, pending; request_id, hash and result from the wamid and payload of MCP rows); copy undoes in a second statement; setval the turn sequence to max(inbound_message.id); set turn_id = id on WhatsApp rows; drop and re-add the six foreign keys against turn (values unchanged, so an orphan makes the migration fail and roll back); delete MCP rows from inbound_message; drop the moved columns and the channel column.",
+    "evidence": "src/ledger.ts:144-147, :153-174, :185-207; src/mcp/write.ts:117-181; src/store.ts:162, :168, :174, :234, :245; src/migrations/013_channel.sql:4-8; docs/mcp-spec.md:30 ('A batch table and renaming inbound_message: that is the post-slice-6 overhaul') and :120 ('From scratch we would put a channel-neutral batch table under both channels').",
+    "size": "About +70 lines of SQL; src about -60 net (ledger -40, mcp/write -20, store +10, undo -4, filters -8); test fixtures about 100 lines touched (src/command-fixtures.ts:156, src/mcp-test-kit.ts:120, src/test-harness.ts:421).",
+    "confidence": "high on the shape; medium on the exact column list for diagnostics (parsed, tool_calls could move too)"
+   },
+   {
+    "item": "Claim inside the per-sender lane, so order comes from the database",
+    "problem": "Rows are claimed first and then chained 'in the order they were handed in' (src/process.ts:544-556, :572-573, :584-585). Three holes follow. (1) The claim's RETURNING order is not id order: on PGlite (PostgreSQL 18.6) the same statement returned 302,304,305,307,308,309,310,306,303,301, the heap order of a Hash Semi Join over a Seq Scan. In practice fresh rows sit in id order, so this bites only rows updated out of order. (2) Two webhooks from one sender each run three statements before their claim returns, so the later message can enter the lane first (reasoned, not reproduced). (3) Across a deploy the lane map is empty in the new process: message 1 is released to 'pending' at shutdown (src/process.ts:412) or stays 'processing' for 120 s, message 2 is kicked alone by wamid and answered first (reasoned, not reproduced). Also, a sweep claims up to 50 rows and works them one after another across all senders (:584-585), so claimed_at ages while rows wait and one sender's slow message delays another's toward its 30 s deadline.",
+    "proposal": "Keep the promise chain and the turn passing at commit. Move the claim into the lane step.\n\nstore.claimNext(waId): one UPDATE that takes the sender's oldest open row (`WHERE id = (SELECT id ... WHERE wa_id = $1 AND attempts < max AND (status = 'pending' OR stale) ORDER BY id LIMIT 1 FOR UPDATE)`), returning the Claim or null. Optional hardening: `AND NOT EXISTS` an older row of the sender that is 'processing', uncommitted and not stale (another live process holds it); the step then does nothing and retries after 1 s.\nstore.settleAbandoned(): the two housekeeping UPDATEs, called by the sweep only.\nstore.openSenders(): wa_id and count of due rows.\n\nprocessor.kick(senders) appends one step per received message to the sender's lane; each step calls claimNext and runs what it gets. sweep() calls settleAbandoned, then appends steps for openSenders, all senders in parallel. src/app.ts:103 passes the senders, not the wamids. claimed_at then means 'work started'.",
+    "evidence": "src/process.ts:544-556, :568-595; src/store.ts:152-184; src/app.ts:97-103; src/server.ts:22 (staleMs 120 s) and :84 (startup sweep while the old process may be alive). Experiment script and output: /private/tmp/claude-501/-Users-ticianomorvan--t3-scratch-2026-11-20-i-want-to-build-a-4d2cab94/cd699e81-c159-495b-8462-5ba18adbe8ec/scratchpad/order.mjs. The existing burst test posts one webhook at a time (src/concurrency.test.ts:339-348), so it does not cover holes 2 and 3.",
+    "size": "process.ts about +15/-10, store.ts about +25/-15, app.ts 2 lines, one new concurrency test",
+    "confidence": "high for hole 1 (measured); medium for 2 and 3 (read from code)"
+   },
+   {
+    "item": "One account-row lock at the two commit entry points (cross-group: facts, reminders, undo)",
+    "problem": "Writes take locks in the order of a message's actions: 7203003 for facts (src/apply.ts:142, src/facts.ts:70), 7203005 for reminders (src/apply.ts:181), movement rows in action order. An undo takes 7203002, movement rows in id order, then 7203003, then 7203005 (src/undo.ts:86, :95, :100; src/undo-facts.ts:44). The docs accept the resulting deadlock as 'never one process: a sender's messages are queued in order' (docs/agent-spec.md:685-686, :1160). That was written before MCP writes: an MCP call does not pass through the lane, so one process can now run a WhatsApp commit and an MCP undo for the same account at once. Postgres would abort one, and the WhatsApp side would send the failure notice.",
+    "proposal": "First statement after the guard row in store.commit, and first statement in writeAsMcp: `SELECT 1 FROM account WHERE id = $1 FOR NO KEY UPDATE` (NO KEY, so foreign-key checks from other transactions are not blocked). Every write for an account is then serial. Delete lock namespaces 7203002, 7203003 and 7203005 and lockRows; lockLive keeps its 'still live and the account's' check. The reminder sender keeps its own row locks and never takes the account lock, so there is no cycle. Namespaces left: migrations and sign-in.",
+    "evidence": "src/undo.ts:86-100; src/apply.ts:142, :181; src/facts.ts:144, :169; src/reminders/db.ts:57-58; docs/agent-spec.md:685-686, :1160; src/db.ts:19-20 lists four namespaces and omits 7203005.",
+    "size": "+4 lines, about -25",
+    "confidence": "high"
+   },
+   {
+    "item": "Pending question as one typed column on the turn that asked it",
+    "problem": "The question is three columns with an implicit union: asked_numbers, asked_ids, pending (src/store.ts:290-292). 'Forget everything' and the sign-in question offer no movement, so the reader special-cases them first (:253-254) and the forget-all writer stores dummy arrays [1] and [0] (docs/agent-spec.md:1108). The jsonb is read by type assertion, not parsed (:237-240).",
+    "proposal": "turn.question jsonb, null when nothing was asked: {options: [{number, id}], then: Pending | null}, with a zod schema in src/resolve.ts parsed on read. The read stays 'the turn of the sender's immediately preceding inbound_message, if it is under 10 minutes old' (join inbound_message p to turn on p.turn_id), which keeps today's rule that a failed or non-text message in between closes the question. Do not create a question table.",
+    "evidence": "src/store.ts:237-264, :290-292; src/migrations/006_asked_numbers.sql, 007_asked_ids.sql, 008_agent.sql:8; src/agent/schema.ts:254-260.",
+    "size": "about -15 in store.ts, +10 schema; part of the turn migration",
+    "confidence": "high"
+   },
+   {
+    "item": "Split src/process.ts along the channel seam",
+    "problem": "720 lines hold four things: the queue (lanes, kick, sweep, drain, stop), the at-most-once sends (once, fail, deliver), the understanding of one message (a 140-line closure inside parseAndAnswer, :263-401) and media helpers. The understanding part is channel-neutral in substance but closes over the WhatsApp Claim, the graph client and the timers, so a second chat channel would have to copy it.",
+    "proposal": "No new abstraction, three files. src/understand.ts: `understand(deps, {accountId, text, kind, photo?, voice?, conversation, now, today, signal})` returns what parseAndAnswer calls Worked (actions, audit, turns, usage, facts, window, heard). src/whatsapp/worker.ts: claim, lanes, typing, interim, deadline, deliver, shutdown. Media helpers (fetchPhoto, hear) go next to src/whatsapp/graph.ts. Define a Channel interface only when the second chat channel exists.",
+    "evidence": "src/process.ts:208-485 (parseAndAnswer), :263-401 (the closure), :643-708 (media helpers).",
+    "size": "about 300 lines moved, near zero net; no behaviour change",
+    "confidence": "medium"
+   },
+   {
+    "item": "The routing of code-answered messages as one pure function",
+    "problem": "Which message code answers before the agent is a five-level nested conditional inside process.ts (:332-341): sign-in code first, then the answer to an open question, then undo and disconnect only when no question is open, and never for a photo or a voice note. That policy is the security-relevant part (voice never deletes) and is tested only through the whole pipeline.",
+    "proposal": "resolve.ts gains `codeAnswer(text, {question, typed, signIn}): Action | null` with the same order, unit-tested; process.ts calls it once.",
+    "evidence": "src/process.ts:327-344; src/resolve.ts:66-155.",
+    "size": "+20/-12",
+    "confidence": "high"
+   },
+   {
+    "item": "Give shutdown the time its code assumes",
+    "problem": "processor.stop(10_000) releases unparsed messages and waits for sends in flight (src/server.ts:87-97, src/process.ts:613-616). Railway's default is 0 seconds between SIGTERM and SIGKILL, and .railway/railway.ts sets no draining time. If the variable is not set by hand, every deploy during a send leaves that row 'unknown' (a committed change with no reply), and unparsed rows wait 120 s for the stale takeover. I could not read the service variables, so this is unverified.",
+    "proposal": "Set the draining time to about 15 s in .railway/railway.ts (or RAILWAY_DEPLOYMENT_DRAINING_SECONDS), next to the healthcheck settings, so it is in code.",
+    "evidence": "Railway docs, Deployments reference: 'By default, it is given 0 seconds to gracefully shutdown before being forcefully stopped with a SIGKILL' (https://docs.railway.com/deployments/reference). .railway/railway.ts has no draining or overlap key.",
+    "size": "1 line",
+    "confidence": "medium (depends on a variable I could not see)"
+   }
+  ],
+  "delete": [
+   {
+    "item": "MCP rows in inbound_message, the channel column, batchRow and settleBatchRow, the 'mcp:' wamid, payload as response store",
+    "why": "All exist only because the batch has no table of its own. They go with the turn table.",
+    "evidence": "src/mcp/write.ts:117-127, :145-152; src/ledger.ts:144-174; src/migrations/013_channel.sql:12-13"
+   },
+   {
+    "item": "waId threaded through MCP (door extra, ToolContext, WriteRequest)",
+    "why": "It is carried only so the fake row can be found by wa_id. With turn.account_id the door hands over accountId alone.",
+    "evidence": "src/mcp/door.ts:131; src/mcp/write-tools.ts:119; src/mcp/write.ts:31-32, :168"
+   },
+   {
+    "item": "inbound_message.updated_at and the second column of inbound_message_open_idx",
+    "why": "Written in 13 statements and read by none; the claim uses claimed_at.",
+    "evidence": "grep of src (non-test) finds only `updated_at = now()`; src/migrations/001_init.sql:20, :23"
+   },
+   {
+    "item": "The two housekeeping UPDATEs on the webhook path",
+    "why": "Every kick runs three statements; the first two settle abandoned rows, which a message inserted a millisecond ago cannot be. Run them in the sweep only.",
+    "evidence": "src/store.ts:158-168, called from src/process.ts:572"
+   },
+   {
+    "item": "The four pass-through methods on the store (recentMovements, reminders, facts, find)",
+    "why": "Each is one line forwarding to another module; they make the store look like the owner of tables it does not own.",
+    "evidence": "src/store.ts:197-215"
+   },
+   {
+    "item": "The synthesized one-entry audit of an MCP write",
+    "why": "It repeats the command and a status that `result` already holds.",
+    "evidence": "src/mcp/write.ts:134-144"
+   },
+   {
+    "item": "`payload = payload` in the commit UPDATE",
+    "why": "A no-op assignment used as the else-branch of a fragment; compose the SET list instead.",
+    "evidence": "src/store.ts:285"
+   },
+   {
+    "item": "The sweep's serial loop over all senders",
+    "why": "Lanes already serialize per sender; serial across senders only delays them. Goes with the claim redesign.",
+    "evidence": "src/process.ts:585"
+   }
+  ],
+  "naming": [
+   "inbound_message_id on movement, fact and reminder should be turn_id: it names the batch, not a message (an MCP write has no message).",
+   "The same id has three names in code: batchId (src/apply.ts:52), inboundId (src/ledger.ts, src/undo.ts:83, src/execute.ts:51), batch (src/mcp/write.ts:187). Use turnId everywhere.",
+   "Keep the table name inbound_message once MCP rows leave it; it is accurate again, and a rename touches about 40 call sites for no gain. Rename only if a second chat channel shares the table.",
+   "The table `reply` holds delivery statuses of outbound messages, while `reply_text` is the text; after the split, turn.reply is the text and the table would read better as outbound_status.",
+   "src/resolve.ts says nothing about what it resolves; code-answers.ts matches what AGENTS.md calls it ('done in code').",
+   "src/store.ts after the split is the WhatsApp inbox (claim, stamps, statuses); the commit point and turn SQL belong in src/turn.ts.",
+   "The comment listing advisory locks (src/db.ts:19-20) omits 7203005; with the account lock the list shrinks to two and can be exact."
+  ],
+  "challenged_decisions": [
+   {
+    "decision": "Single replica on Railway, as the basis for per-sender ordering ('Single process, so a promise chain is enough', src/process.ts:542)",
+    "challenge": "I do not challenge the single replica. I challenge the inference that one replica means one process: during every deploy the new process boots and runs its startup sweep while the old one is still alive, and the lane map is per process. Ordering should rest on the claim query (oldest open row of the sender), with the in-memory chain kept only as the wake-up.",
+    "evidence": "src/server.ts:84 (startup sweep), src/process.ts:535-556 (lanes), :412 (release to pending at shutdown); Railway keeps the old deployment until the new one is active (https://docs.railway.com/deployments/reference). Measured: the claim's RETURNING order is not id order on PostgreSQL 18.6 (PGlite). The deploy scenario itself is read from code, not reproduced."
+   },
+   {
+    "decision": "All other listed decisions (own agent loop, postgres.js with plain SQL, visible history, cross-channel undo, at-most-once sends, first signal under 1 s, reminders)",
+    "challenge": "Not challenged. Nothing I found in this group argues against them; the turn table and the account lock make cross-channel undo and at-most-once simpler to hold, not different."
+   }
+  ],
+  "questions_for_owner": [
+   "Is RAILWAY_DEPLOYMENT_DRAINING_SECONDS set on the warren service? .railway/railway.ts sets none and Railway's default is 0 s, which would make the 10 s graceful stop in src/server.ts:94 never run.",
+   "With turn ids given at commit, an undo reaches 'the newest change committed before it'. Today it reaches 'the newest batch whose message arrived before the asking message' (src/ledger.ts:189, i.id < cur.id). They differ only when a WhatsApp message and an MCP write overlap. Is commit order the one you want?",
+   "Should a failed message in between still close an open question, as today (the reader looks at the immediately preceding message, whatever its fate)? The proposal keeps that; the alternative is 'the previous turn', which would let a retried 'sí' answer.",
+   "During a deploy, when an older message of the sender is still held by the old process, do you prefer the newer message to wait (and possibly hit the 30 s deadline) or to be answered out of order? The claim redesign can do either; I would make it wait and retry after 1 s.",
+   "Should MCP writes show in the WhatsApp agent's conversation window? Today they do not; with the turn table it becomes a one-line choice.",
+   "After an outage the sweep sends one failure notice per message that passed its deadline, up to 50 in a pass (src/process.ts:511-515). Is one notice per message what you want, or one per sender?"
+  ]
+ },
+ {
+  "group": "write-path",
+  "model": "opus",
+  "verdict": "redesign. The write path is careful: it checks the account, locks rows and refuses when something changed, and its tests drive behaviour through execute(), so they can prove a rewrite. Its weakness is identity, not correctness. A \"batch\" is a derived property of inbound_message (action and reply_text set, not an undo, at least one row in one of three tables) and is found by wa_id. Each of three stores records lineage its own way: movement points forward through superseded_by and backward through restores, fact is the same plus a DEFERRABLE nextval trick, and reminder only points backward. So undo needs three planners, a recursive walk, a 20-query loop and a special-cased four-way EXISTS. My answer to the council question has three parts. Yes to a channel-neutral `turn` table, locked per account, with MCP idempotency split into its own table. No to a separately written effect log: it would be the second source of truth that agent-spec.md:646-650 rightly rejected. Instead, give the three stores the same lineage columns (lineage_id, made_in, ended_in), define the effect log as a SQL VIEW over them, and write one undo engine with small per-entity hooks. Separately, applyCall is not the single write path it claims to be (reminders, forget-all and undo's internals bypass it). The execute/apply split is right in principle but drawn in the wrong place, and the outcome rendering is written twice, once per channel.",
+  "keep": [
+   {
+    "item": "applyCall(tx, ctx, call) → Outcome as a concept (src/apply.ts:90)",
+    "why": "A write that does not know about channels, runs inside the caller's transaction and returns data, not text. Both channels render from it. This is the right seam; the redesign widens it, it does not replace it."
+   },
+   {
+    "item": "lockLive + account filter + 'gone' outcome (src/ledger.ts:80-90, src/apply.ts:104-105,119-120)",
+    "why": "Lock-then-check-live-and-owned is the correct, documented FOR UPDATE pattern. It gives the account-ownership guarantee, and it lets a lost race turn into a reply instead of an error."
+   },
+   {
+    "item": "Append-only versions with compensating rows (copyVersion INSERT…SELECT, src/ledger.ts:291-315; restoreFact, src/facts.ts:201)",
+    "why": "This matches current practice (compensating rows, not edits to history), and copying the values inside SQL makes a restore exact. The redesign changes how lineage is recorded, not the append-only rule."
+   },
+   {
+    "item": "inbound_message_undoes_idx unique, fact_live_key_idx, *_restores_idx, the *_pair/*_one_ending CHECKs (009, 011, 014 migrations)",
+    "why": "These put the state-machine invariants in the database (a batch is undone once, one live fact per key). Carry each one over to the new columns."
+   },
+   {
+    "item": "Undo semantics: newest non-undone batch, no redo, all-or-nothing stale refusal, 24 h window (agent-spec.md:669-692)",
+    "why": "They are well reasoned and tested, and they are owner decisions. The redesign keeps every rule and changes only how the data is found."
+   },
+   {
+    "item": "render.ts as pure templates over stored values (renderCorrection, renderUndo, reminderReply at src/render.ts:356)",
+    "why": "Code renders every line, so the model never invents a number. reminderReply, which maps an outcome to {line, outcome}, is already the shape every outcome should have."
+   },
+   {
+    "item": "MCP replay check by call hash (src/mcp/write.ts:75-78,162-181)",
+    "why": "It matches Stripe's and Brandur's idempotency design: a key reused with different input is refused, and the first answer is replayed. Keep the logic and move only where it is stored."
+   },
+   {
+    "item": "Behaviour-level undo tests through execute() (src/undo.test.ts imports execute, not the planners)",
+    "why": "Because they test behaviour, they prove a rewrite of the internals. Run them unchanged against the new engine."
+   }
+  ],
+  "redesign": [
+   {
+    "item": "Channel-neutral `turn` table, one per-account lock, MCP idempotency in its own table",
+    "problem": "inbound_message does four jobs. A batch is a derived predicate, `action IS NOT NULL AND reply_text IS NOT NULL AND undoes IS NULL` (src/ledger.ts:144-147). It is set by two writers in two modules, store.commit (src/store.ts:273-294) and settleBatchRow (src/ledger.ts:153-174), which sits in ledger.ts but writes inbound_message. Batches are found by wa_id (src/ledger.ts:189), which is why an MCP row has to carry wa_id, a fake wamid, `kind 'tool'` and `payload '{}'` (src/mcp/write.ts:31,124-125). MCP request ids are global, because wamid is UNIQUE across accounts (001_init.sql:6, src/mcp/write.ts:117), so one account's request_id blocks another's. The undo stack is ordered by inbound id, `i.id < cur.id` (src/ledger.ts:189). For WhatsApp that id is assigned at receipt, for MCP at request time, so a WhatsApp \"deshacer\" received just before an MCP write commits can miss that write (PLAUSIBLE, narrow window). The locks are three advisory keys taken in an order that depends on the path: undo takes 7203002, then movement rows, then 7203003, then 7203005 (src/undo.ts:86,95,97,100), while a WhatsApp turn [set_reminder, correct_movement] takes 7203005 and then a movement row in action order (src/execute.ts:268-273 then :129, src/apply.ts:181). A concurrent MCP undo and that WhatsApp turn can therefore deadlock (PLAUSIBLE; agent-spec.md:686-687 already records the movement-only variant as 'known, not fixed').",
+    "proposal": "DDL: `turn(id bigserial PK, account_id bigint NOT NULL REFERENCES account, channel text NOT NULL CHECK (channel IN ('whatsapp','mcp','system')), received_at timestamptz NOT NULL, committed_at timestamptz NOT NULL DEFAULT now(), label text, record text, undoes bigint REFERENCES turn(id) CHECK (undoes <> id))`, with UNIQUE INDEX on (undoes) WHERE undoes IS NOT NULL and INDEX on (account_id, id DESC). A turn row is inserted only at the commit point, in the commit transaction, so 'committed' means 'exists' and id order is commit order. WhatsApp: `inbound_message.turn_id bigint UNIQUE REFERENCES turn`. Transport, queue, send markers and pending question stay on inbound_message (that is another group). MCP: `mcp_request(account_id bigint, request_id text, call_hash text NOT NULL, result jsonb NOT NULL, turn_id bigint NOT NULL REFERENCES turn, created_at timestamptz DEFAULT now(), PRIMARY KEY (account_id, request_id))`, pruned after 24 h if wanted. Lock: every write turn (store.commit, writeAsMcp, the reminder CLI) starts with `SELECT 1 FROM account WHERE id = $1 FOR UPDATE`. That replaces advisory keys 7203002, 7203003 and 7203005 (src/undo.ts:86, src/facts.ts:70, src/reminders/db.ts:58) and removes every lock-order question. Row FOR UPDATE stays only where the reminder sweep competes (src/reminders/send.ts:163). Module: `src/turn.ts` exports `openTurn(tx, {accountId, channel, receivedAt}) → id`, `lastUndoable(tx, accountId, turnId)` and `markUndoes`. settleBatchRow and batchRow are deleted. Migration (016): create turn and `INSERT INTO turn (id, …) SELECT id, a.id, channel, received_at, updated_at, action, reply_text, undoes FROM inbound_message i JOIN account a USING (wa_id) WHERE action IS NOT NULL AND reply_text IS NOT NULL`, which keeps the ids so every existing FK value and every audit line such as 'undid batch 12' stays true. Then setval the sequence, set inbound_message.turn_id = id for channel='whatsapp', copy channel='mcp' rows into mcp_request (payload->>'input_hash', payload->'result'), and add one 'system' turn for reminder rows whose inbound_message_id IS NULL (src/reminders/cli.ts:91).",
+    "evidence": "src/ledger.ts:144-215, src/store.ts:273-294, src/mcp/write.ts:116-181, src/undo.ts:86-108, src/execute.ts:268-273, src/apply.ts:181, agent-spec.md:686-687, mcp-spec.md:30,120 (the overhaul is already planned: 'From scratch we would put a channel-neutral batch table under both channels')",
+    "size": "M: about +120 lines (SQL plus turn.ts), about −110 (settleBatchRow, batchRow, the channel query in undo, three lock helpers, fake-row fields)",
+    "confidence": "high on the direction; medium on the cross-channel ordering bug actually happening"
+   },
+   {
+    "item": "Uniform lineage columns + effect VIEW + one undo engine",
+    "problem": "Each store records history differently. movement uses a forward superseded_by plus a backward restores, so followForward walks both directions (src/ledger.ts:259-275). fact uses a forward superseded_by with a nextval and DEFERRABLE dance (src/facts.ts:123-131, 011_facts.sql:24). reminder uses only a backward restores, so headOf loops up to 20 queries (src/undo-reminders.ts:32-43). 'What batch B did' is three hand-written classifiers: effectsOf (src/undo.ts:56-66), planFactUndo (src/undo-facts.ts:43-66) and planReminderUndo (src/undo-reminders.ts:53-76). The same net-of-nothing rules appear again in SQL in lastBatch (src/ledger.ts:192-204). Movements have no net-of-nothing rule at all: effectsOf checks deletedBy===batch first, so a row logged and deleted in the same batch would be 'restored' by undo. That is unreachable today, because the model never sees ids it just created (a latent asymmetry). The stale check needs settledBatches plus chain walks only because concurrent writers were not serialized (agent-spec.md:678-679: 'in ordinary use the stack makes this unreachable').",
+    "proposal": "On movement, fact and reminder, add `lineage_id bigint NOT NULL` (the id of the first version), `made_in bigint NOT NULL REFERENCES turn`, `ended_in bigint REFERENCES turn` and `ended_at timestamptz` with CHECK ((ended_at IS NULL) = (ended_in IS NULL)), plus UNIQUE INDEX on (lineage_id) WHERE ended_in IS NULL, so the database enforces one live version per logical thing (today nothing enforces this for movements). Live is `ended_in IS NULL`, and for reminders also `AND next_due_at IS NOT NULL`. A correction ends the old row and inserts the new one with the same lineage. A delete, forget or cancel ends the row. A restore inserts a copy into the same lineage. The facts nextval/DEFERRABLE trick goes away because the old row is ended before the insert. Effect VIEW: `CREATE VIEW effect AS SELECT 'movement' entity, id, lineage_id, made_in turn_id, 'made' op FROM movement WHERE ended_in IS DISTINCT FROM made_in UNION ALL SELECT 'movement', id, lineage_id, ended_in, 'ended' FROM movement WHERE ended_in IS NOT NULL AND ended_in <> made_in UNION ALL …fact…reminder`. This one row-level rule is exactly the net-effect test: it covers the fact cases in src/ledger.ts:196-199 and the reminder case at :202-204, and it fixes the movement gap. lastUndoable becomes `…FROM turn t WHERE account_id=$a AND id<$cur AND undoes IS NULL AND NOT EXISTS (SELECT 1 FROM turn u WHERE u.undoes=t.id) AND EXISTS (SELECT 1 FROM effect e WHERE e.turn_id=t.id) ORDER BY id DESC LIMIT 1`. Engine (src/undo.ts, about 150 lines): for each lineage the turn touched, before = the version it ended that was made earlier, after = the version it made and did not end. 'As left' = the live head of the lineage has the same content as after (or there is no live head when after is null), checked under the account lock. This is the value comparison planFactUndo already uses (src/undo-facts.ts:54). Writes: end the head, and/or copy before into the lineage. Per-entity descriptor `{table, content: string[], restore?(tx, row, now) → 'ok' | 'stale'}`: movement has no hook; fact checks that its (kind, key) is free; reminder checks for a next occurrence and the MAX_REMINDERS cap and recomputes next_due_at. Identifiers go through postgres.js `sql(table)`. UndoOutcome becomes `{status:'undone', turn, items:{entity, did:'created'|'replaced'|'ended', before?, after?}[]} | {status:'nothing'|'expired'} | {status:'stale', items} | {status:'refused', entity}`, where the caller passes the entities it may undo: MCP passes movement and fact, which replaces the channel query at src/undo.ts:104-107. Migration (017, same release): backfill lineage_id with one recursive CTE from roots (rows no other row points to through superseded_by or restores) over the about 100 live rows. Set made_in = inbound_message_id. Set ended_in = COALESCE(deleted_by | forgotten_by | cancelled_by, the made_in of the successor). Keep the old columns for one release, with a test that the effect view's turns equal old lastBatch's on the test-harness fixtures, then drop superseded_by, deleted_*, forgotten_*, cancelled_*, restores and their indexes.",
+    "evidence": "src/ledger.ts:192-204,259-284,291-320; src/undo.ts:56-192; src/undo-facts.ts:43-95; src/undo-reminders.ts:32-101; src/facts.ts:119-131,176-213; src/reminders/db.ts:122-176; 011_facts.sql:24; agent-spec.md:646-650,673-679",
+    "size": "L: deletes about 600 lines (undo-facts 95, undo-reminders 101, most of undo.ts, the ledger undo section about 190, the facts and reminders batch sections about 95); adds about 200 (engine, descriptors, view, migration)",
+    "confidence": "medium: the lineage and view model is sound, but the migration backfill and the reminder hook need care. The proof is the existing undo.test.ts and memory/reminder tests passing unchanged."
+   },
+   {
+    "item": "One write path for every effect tool, uniform Outcome, one record function",
+    "problem": "apply.ts:83 says applyCall is 'the one write path of both channels', but it is not. applyReminderCall is a second function (apply.ts:174-206), kept apart so that MCP cannot reach it: an authorization rule expressed as a function boundary (apply.ts:154). forget_all_confirmed writes facts straight from execute (src/execute.ts:230-235). The Outcome union is inconsistent. `kind` is the status for correct/delete/log but the FactKind for remember_fact (apply.ts:78). undo_last and forget_fact have no status at all. `rows` exists only to thread `position`. Turning outcomes into a record line and a status is written twice with the same render calls: execute.ts:135-212 for WhatsApp and mcp/write.ts:199-345 for MCP (the remember_fact detail appears at execute.ts:202 and write.ts:328). Both callers compute newestLiveId before writing, only to choose whether to show a time (execute.ts:99, write.ts:129).",
+    "proposal": "`applyCall(tx, ctx: {accountId, turnId, now}, call: EffectCall): Promise<Outcome>`, where EffectCall = log, correct, delete, undo, remember, forget, forget_all_confirmed, set_reminder, cancel_reminder. Every Outcome has `{tool, status: 'applied'|'unchanged'|'gone'|'full'|'past'|'nothing'|'expired'|'stale'|'refused', effect: Effect | null, newest?: boolean, ...data}` (`factKind`, not `kind`). The MCP restriction stays where it already is, in write-tools.ts, which exposes only its six tools (write-tools.ts:98), plus the undo entity allow-list above. In render.ts: `recordOf(outcome, today): {line: string, status: string, detail?: string}`, generalizing reminderReply (render.ts:356). execute() keeps only the non-effect actions (summaries, lists, ask_user, link and disconnect, help, notice, reply) and composeReply. writeAsMcp keeps only its JSON views, and its record comes from recordOf.",
+    "evidence": "src/apply.ts:25-206; src/execute.ts:97-213,230-235,268-282; src/mcp/write.ts:183-345; src/render.ts:356-375",
+    "size": "M: about −150 (the duplicate switch in execute about 80, the presentOutcome record and status parts about 50, applyReminderCall wrapper about 20) and about +40",
+    "confidence": "high"
+   },
+   {
+    "item": "One source of truth for tool kinds: the effect lives on the outcome",
+    "problem": "The same tool set is listed five times. The WriteCall type (apply.ts:26-37) and WRITE_TOOLS (apply.ts:39-46, unused anywhere in src). CHANGES (execute.ts:77-87). KIND_OF_TOOL (say.ts:95-105), which is the same nine tools as CHANGES. The action-label map (action-label.ts:7-29). The case list at execute.ts:122-127. say.ts and execute decide what was applied by tool name plus the string outcome 'applied' (execute.ts:350, say.ts:487-490), and Step is `{tool: string, outcome: string}` (say.ts:447-450), so a new tool is silently left out.",
+    "proposal": "Step becomes `{tool, status, effect: 'logged'|'corrected'|'deleted'|'undone'|'remembered'|'forgotten'|'reminded'|'unreminded'|null}`, filled from Outcome.effect. say.ts sets applied[step.effect], and execute's heard rule is `steps.some(s => s.effect)`. Delete CHANGES, KIND_OF_TOOL and WRITE_TOOLS. For anything still keyed by tool (the label), use one `const TOOL_LABEL = {...} satisfies Record<Action['tool'], string>` in agent/schema.ts next to TOOL_INPUTS, so a missing tool fails to compile. Or drop the label altogether and store the tool name or 'multi'. latency-report then maps the pre-008 labels.",
+    "evidence": "src/apply.ts:26-46; src/execute.ts:77-87,350; src/agent/say.ts:80-105,447-450,487-490; src/action-label.ts:4-31; grep shows WRITE_TOOLS defined only at apply.ts:39",
+    "size": "S: about −45",
+    "confidence": "high"
+   },
+   {
+    "item": "Delete movement.position and Outcome.rows",
+    "problem": "position is threaded through execute (execute.ts:100-101,134), apply (apply.ts:53-54,99,114), ledger (ledger.ts:52-60,108,114,296,303-305) and undo (undo.ts:159-182), only to satisfy UNIQUE(inbound_message_id, position) (003_logging.sql). Production code never reads it; only test-harness.ts:439 orders by it. Undo restarts positions at 0 (undo.ts:159), which is safe only because loop.ts:342-352 makes undo_last go alone. That invariant lives in the agent loop, not in the write path. Insertion order is already given by id, and the commit guard already prevents a double insert.",
+    "proposal": "Drop the unique constraint and the column (in 017 together with the lineage migration, or on its own). Remove ctx.position, Outcome.rows and firstPosition. Order test output by id.",
+    "evidence": "grep 'position' in src (non-test): only the plumbing listed; src/test-harness.ts:439; src/agent/loop.ts:342-352",
+    "size": "S: about −30",
+    "confidence": "high"
+   },
+   {
+    "item": "ledger.ts: movements only",
+    "problem": "One file holds movement writes, the inbound_message batch predicate and settle, the undo helpers, and the find and summary queries (src/ledger.ts:129-327 is not ledger code). supersede uses two statements, including `UPDATE movement SET created_at = old.created_at` (ledger.ts:118-120), which breaks the file's own 'nothing here updates a row's values' rule (:130).",
+    "proposal": "After the redesign, ledger.ts keeps insert, correct and end for movements plus the live reads. correct becomes one INSERT…SELECT that copies created_at, like copyVersion. The summary and find queries go to summary.ts or a queries module (another group's call). The turn code goes to turn.ts and the undo code to undo.ts.",
+    "evidence": "src/ledger.ts:100-127,129-327",
+    "size": "S-M: about 0 net, moved",
+    "confidence": "medium"
+   }
+  ],
+  "delete": [
+   {
+    "item": "WRITE_TOOLS (src/apply.ts:39-46)",
+    "why": "It is exported and never imported, and it duplicates the WriteCall type.",
+    "evidence": "grep -rn WRITE_TOOLS src → only apply.ts:39"
+   },
+   {
+    "item": "execute.ts 'whatsapp_only' branch (src/execute.ts:166)",
+    "why": "undoLast returns whatsapp_only only when the asking row is not a WhatsApp row (undo.ts:107), so this branch never runs on WhatsApp. It goes away once the caller passes an entity allow-list.",
+    "evidence": "src/undo.ts:102-108; src/execute.ts:160-176"
+   },
+   {
+    "item": "settleBatchRow and batchRow (src/ledger.ts:138-174)",
+    "why": "They exist only because a batch is a property derived from inbound_message columns. With a turn row inserted at commit, 'is a batch' becomes 'the turn exists and has an effect'.",
+    "evidence": "src/ledger.ts:144-174; src/store.ts:273"
+   },
+   {
+    "item": "followForward, settledBatches, lockRows, headOf, the 20-query loop and the 'hop < 50' guard (src/ledger.ts:237-284, src/undo-reminders.ts:32-43)",
+    "why": "lineage_id plus a unique live index gives the head in one indexed lookup, and the account lock removes the race that settledBatches covered.",
+    "evidence": "src/ledger.ts:259-284; src/undo-reminders.ts:32-43; agent-spec.md:678-679"
+   },
+   {
+    "item": "`restores IS NULL` in batchReminders and lastBatch (src/reminders/db.ts:162, src/ledger.ts:203)",
+    "why": "Guess: only an undo turn makes a restored row, and undo turns are already excluded (`undoes IS NULL`, ledger.ts:146), so the filter looks redundant. Worth confirming with a test before the redesign removes it anyway.",
+    "evidence": "src/undo-reminders.ts:96; src/ledger.ts:146,203"
+   },
+   {
+    "item": "The facts nextval and DEFERRABLE dance (src/facts.ts:119-131, 011_facts.sql:24)",
+    "why": "With backward-only lineage, the old row is ended before the new one is inserted, so the deferred forward FK is never needed.",
+    "evidence": "src/facts.ts:123-131"
+   }
+  ],
+  "naming": [
+   "`inboundId` (ledger, facts, reminders, undo), `batchId` (ApplyContext) and `inbound_message_id` (columns) are three names for one thing. Use `turnId` and `made_in`/`ended_in`.",
+   "Outcome's `kind` is the status in correct/delete/log but the fact's FactKind in remember_fact (src/apply.ts:63-78), and Remembered also has a `kind` (src/facts.ts:134). Rename it to `status`, with `factKind` for the data.",
+   "The Undone union mixes two viewpoints: 'logged'|'corrected'|'deleted' says what the batch did (src/undo.ts:25-31), while 'fact_removed'|'fact_restored'|'reminder_removed' says what the undo did (src/undo-facts.ts:15-21, src/undo-reminders.ts:15-19). Use one shape, `{entity, did, before, after}`.",
+   "`batchRow` (the SQL predicate, ledger.ts:144) and `BatchRow` (a movement row type, ledger.ts:211) are unrelated things with the same name.",
+   "`lastBatch` → `lastUndoable`; `settledBatches` → what it means (undone, or itself an undo).",
+   "Executed, Outcome, Written, Presented and Step are five names for 'what happened'. After the redesign: Outcome (core), Record (line and status, render.ts), and each channel's view.",
+   "ledger.ts should hold only movements: the batch and undo helpers in it are not ledger code."
+  ],
+  "challenged_decisions": [
+   {
+    "decision": "agent-spec.md:646-650, a prior design decision rather than one of the owner's: 'The action log is the data already stored; no table… A batch/action table would have been a second source of truth'",
+    "challenge": "Half kept, half reversed. The argument is still right against a separately written effect log, which is why the redesign makes the effect log a VIEW. It does not hold against a batch identity table: the cost of deriving the batch is lastBatch's four-way EXISTS with net-of-nothing rules per store, three planners, and MCP rows faking a WhatsApp message.",
+    "evidence": "src/ledger.ts:181-208; src/mcp/write.ts:124-125; mcp-spec.md:120 (the same docs already say 'from scratch we would put a channel-neutral batch table')"
+   },
+   {
+    "decision": "Owner: per-sender ordering",
+    "challenge": "I do not challenge the decision itself, only whether it holds. The guarantee exists only within WhatsApp, through the single worker loop. An MCP write and a WhatsApp turn for the same account are not ordered against each other. The undo stack orders by inbound id (src/ledger.ts:189), which is receipt time for WhatsApp and request time for MCP, not commit time. And path-dependent advisory and row lock order can deadlock across channels (PLAUSIBLE: undo.ts:86-100 against execute.ts action order; agent-spec.md:686-687 already records the movement-only variant). A per-account row lock plus turn ids assigned at commit makes the decision true across channels.",
+    "evidence": "src/ledger.ts:189; src/undo.ts:86,95,97,100; src/apply.ts:181; src/execute.ts:110-273; agent-spec.md:686-687"
+   },
+   {
+    "decision": "src/apply.ts:83 claim: applyCall is 'the one write path of both channels'",
+    "challenge": "It is false as written. Reminder writes go through applyReminderCall (apply.ts:174), forget-all writes from execute (execute.ts:231), and the reminder CLI inserts with no batch (src/reminders/cli.ts:91). The MCP restriction should be a list of exposed tools, not a separate function.",
+    "evidence": "src/apply.ts:154-206; src/execute.ts:230-235; src/reminders/cli.ts:91"
+   },
+   {
+    "decision": "Owner: undo within 24 h across channels; at-most-once; single replica; postgres.js plain SQL; own loop",
+    "challenge": "Not challenged. Nothing in this group contradicts them. The redesign stays within plain SQL (a view, partial unique indexes, `sql(identifier)`) and keeps the cross-channel undo, now on account_id instead of wa_id."
+   }
+  ],
+  "questions_for_owner": [
+   "Should the movement id that the model and MCP clients see stay the same across corrections, by exposing lineage_id? It is cheap once the column exists, and it helps card statements and budgets that refer to a movement, but it changes prompt.ts and the MCP outputs, which belong to other groups.",
+   "Once undo takes an entity allow-list, should warren_undo_last over MCP still refuse batches that contain reminders (whatsapp_only)? Or should it be allowed, given that its result names what came back?",
+   "Can movement.position be dropped? Nothing in production reads it (only test-harness.ts:439). A future PDF or statement import might want an explicit in-document order, and if so it should be its own column, named for that purpose.",
+   "Should a restored fact respect MAX_FACTS the way restored reminders respect MAX_REMINDERS (src/undo-reminders.ts:69-74)? Today planFactUndo does not check the cap.",
+   "Should MCP idempotency records be pruned after about 24 h, as Stripe does, or kept forever as an audit of what each client was told?",
+   "Should the turn row also take over the conversation transcript (body, reply) from inbound_message? I scoped it to identity, record and undo, and left transcript and pending question to the store/process group."
+  ]
+ },
+ {
+  "group": "write-path",
+  "model": "fable",
+  "verdict": "redesign. (All `src/...` and `docs/...` paths below are under /Users/ticianomorvan/Projects/personal/warren, commit 066eb87; nothing was run against a database, every claim is from reading.) The layering \"a write returns data, each channel presents it\" is right and stays, but the batch is in the wrong place: it is an `inbound_message` row recognised by a latency label plus a reply text, owned through a phone-number string, and it forces a four-table EXISTS, fake MCP messages, three undo planners with three different definitions of \"as the batch left it\", and five lock keys taken in orders that can deadlock. My answer to the council question: yes to a channel-neutral `batch` table and one undo engine, no to a separate effect-log table. The three stores already are the effect log; give them the same three columns (`entity_id`, `created_in`, `ended_in`/`ended_at`) and one engine can read all of them, with no second source of truth to drift. `applyCall` is the single write path for six of the nine undoable writes only; make it cover all nine, give outcomes one status vocabulary, and render the record line in one place instead of two. Do it in three steps that each keep the suite and `pnpm eval:scenarios` green: (1) pure refactor of outcomes and record rendering, (2) `batch` table plus one account lock, (3) uniform version columns plus the single undo engine. The repo's own spec already says step 2 is what would be built from scratch (docs/mcp-spec.md:30 and :120-121).",
+  "keep": [
+   {
+    "item": "The split between effects-as-data (src/apply.ts) and per-channel presentation (src/execute.ts for WhatsApp, src/mcp/write.ts for MCP)",
+    "why": "MCP needs structured before/after values and WhatsApp needs template lines; both read the same Outcome. Two layers is the right count. What is wrong is where the seam sits (see redesign 4), not that it exists."
+   },
+   {
+    "item": "Lock-then-check liveness inside the write: `lockLive` returns null and the call answers `gone` (src/ledger.ts:80-90, src/apply.ts:104-105, 119-120)",
+    "why": "This is the ownership and stale-id guard for both channels in one place: the id must be the account's and live under a row lock. It survives every redesign below; only the lock that serialises writers changes."
+   },
+   {
+    "item": "Append-only stamps with CHECK pairs and partial unique indexes (`*_pair`, `*_one_ending`, `fact_live_key_idx`, the unique `undoes`)",
+    "why": "The database, not code, refuses a second undo of one batch and a second live fact per key (src/migrations/009_undo.sql:9-12, 011_facts.sql:26-31). Carry these to the new shape; they are the cheapest correctness in the project."
+   },
+   {
+    "item": "Undo semantics: last batch as a whole, all or nothing, the undo is itself a recorded batch, no redo, 24 h measured between request times (src/undo.ts:69-80, src/ledger.ts:186)",
+    "why": "Simple for the person, simple to reason about, and well covered (src/undo.test.ts, 597 lines). The redesign changes how it is computed, not what it does."
+   },
+   {
+    "item": "MCP idempotency semantics: same account, same tool, same hash of the checked input replays the first answer; anything else is refused (src/mcp/write.ts:74-78, 161-181)",
+    "why": "Matches the Stripe/Brandur design the practice brief describes. Keep the behaviour; only move the record off the message log."
+   },
+   {
+    "item": "SQL does every sum; filters are composed from postgres.js fragments (src/ledger.ts:349-375, 399-449)",
+    "why": "Rule 1 (no arithmetic outside code/SQL) is enforced by construction, and conditional fragments are the documented postgres.js way. `insertMovements` using the multi-row `sql(values)` helper (src/ledger.ts:70-72) is also idiomatic."
+   },
+   {
+    "item": "`reminderReply` in src/render.ts:356-376 as a pattern",
+    "why": "It already maps a reminder outcome to its line and its status in one pure function. That is exactly what the six other writes lack; generalise it rather than invent something new."
+   },
+   {
+    "item": "The rule that `undo_last` and `forget_all_facts` go alone (src/agent/loop.ts:342-352)",
+    "why": "It keeps 'the last thing' unambiguous. Note it is enforced only in the WhatsApp loop; the write path itself does not check it, which is acceptable while MCP sends one call per request."
+   }
+  ],
+  "redesign": [
+   {
+    "item": "1. A `batch` table: where 'a batch of effects' lives, and its minimal definition",
+    "problem": "A batch today is 'an inbound_message row with action and reply_text set that is not an undo' (src/ledger.ts:144-147). That makes a latency-report label load-bearing for undo, makes every non-writing message a candidate that a four-way EXISTS over movement, fact and reminder must filter out (src/ledger.ts:185-206), forces MCP to insert a fake message (`wamid 'mcp:<uuid>'`, `kind 'tool'`, `payload '{}'`, `status 'done'`, src/mcp/write.ts:123-127) and then roll it back by throwing `NothingChanged` when the call changed nothing (src/mcp/write.ts:83-88, 133, 155), and makes ledger.ts update `inbound_message` (src/ledger.ts:167-173) although store.ts claims that table. Ownership of a batch is a text match on `wa_id` (src/ledger.ts:188-189), not a foreign key to the account; `settledBatches` and `markUndone` take no account at all (src/ledger.ts:278-284, 318-320). Ledger rows also pin message rows forever through their foreign keys, so message bodies and payloads can never be pruned.",
+    "proposal": "Minimal definition: a batch is one committed request of one account that changed at least one stored row; it exists only if something was written. Tables:\n\nCREATE TABLE batch (\n  id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,\n  account_id bigint NOT NULL REFERENCES account (id),\n  source text NOT NULL CHECK (source IN ('whatsapp','mcp','cli')),\n  message_id bigint UNIQUE REFERENCES inbound_message (id),  -- the WhatsApp message, else null\n  requested_at timestamptz NOT NULL,  -- the message's received_at, or now() for an MCP call: orders batches and bounds the 24 h window\n  created_at timestamptz NOT NULL DEFAULT now(),\n  undoes bigint UNIQUE REFERENCES batch (id) CHECK (undoes <> id));\nCREATE INDEX batch_account_idx ON batch (account_id, id DESC);\n\nCREATE TABLE mcp_request (\n  account_id bigint NOT NULL REFERENCES account (id), request_id uuid NOT NULL,\n  input_hash text NOT NULL, result jsonb NOT NULL, call jsonb, batch_id bigint REFERENCES batch (id),\n  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (account_id, request_id));\n\nModule src/batch.ts (about 80 lines, all SQL on `batch`):\n  interface Write { tx; accountId; source; at: Date; messageId?: number; newest: number | null; batch(o?: { undoes: number }): Promise<number> }  // batch() inserts on first use, memoised\n  writing(sql, o, fn: (w: Write) => Promise<T>): begins, locks the account (redesign 2), runs fn\n  lastBatch(tx, accountId, before: Date): SELECT id, requested_at FROM batch b WHERE account_id = $1 AND undoes IS NULL AND requested_at < $2 AND NOT EXISTS (SELECT 1 FROM batch u WHERE u.undoes = b.id) ORDER BY id DESC LIMIT 1\n`requested_at < $2` keeps today's rule that an undo only reaches what was asked before it (`i.id < cur.id`, src/ledger.ts:189). A batch whose net effect is nothing (remember then forget the same new key in one message) now exists as a row: the undo loops to the next candidate when its plan is empty (bounded, e.g. 5).\nMCP: under the account lock, look up `mcp_request` first, else apply, then insert the request row; no fake message, no exception as rollback. `mcp_request` can be pruned by age; `batch` never is.\n\nMigration 016 from the live DB, ids preserved so no ledger row is rewritten:\n  INSERT INTO batch (id, account_id, source, message_id, requested_at, created_at, undoes)\n  SELECT i.id, a.id, i.channel, CASE WHEN i.channel = 'whatsapp' THEN i.id END, i.received_at, i.updated_at, i.undoes\n  FROM inbound_message i JOIN account a ON a.wa_id = i.wa_id\n  WHERE i.undoes IS NOT NULL OR i.channel = 'mcp' OR i.id IN (every inbound_message_id, deleted_by, forgotten_by, cancelled_by in movement, fact, reminder);\n  then setval the identity to max(inbound_message.id); copy MCP rows into mcp_request (request_id = substr(wamid, 5)::uuid, hash and result from payload); drop and re-add the eight foreign keys to point at batch (id); delete the MCP rows from inbound_message; drop inbound_message.channel and inbound_message.undoes. One statement inserts all batches, so the self-reference on `undoes` is checked at statement end.",
+    "evidence": "src/ledger.ts:144-147 (predicate), :153-174 (settleBatchRow), :181-208 (lastBatch, four EXISTS and the net-of-nothing rule in SQL), :188-189 (ownership by wa_id). src/mcp/write.ts:117-159 (fake row, NothingChanged). src/store.ts:273 (a comment is the only thing tying commit to the batch predicate) and the `channel = 'whatsapp'` filter repeated in claim and conversation (src/store.ts:158-172, 232, 243). src/reminders/db.ts:110 (`inboundId?` because the CLI has no message to point at). docs/mcp-spec.md:120-121: 'From scratch we would put a channel-neutral batch table under both channels'.",
+    "size": "About +80 lines src/batch.ts, +60 lines SQL; about -200 lines in src/ledger.ts (129-208, 277-284, 317-320), src/mcp/write.ts, src/store.ts filters. Net about -120 source lines. Tests: roughly 40 references to `undoes` and the MCP row shape in src/undo.test.ts and src/mcp-write.test.ts need new queries.",
+    "confidence": "high"
+   },
+   {
+    "item": "2. One lock per account for every write transaction",
+    "problem": "Three per-account advisory keys (7203002 undo, 7203003 facts, 7203005 reminders) plus movement row locks are taken in an order that depends on the order of the model's actions. That is a lock-order inversion between the two channels. Example by reading, not reproduced: a WhatsApp message whose actions are [remember_fact, correct_movement 5] takes the facts lock (src/facts.ts:142) and then the row lock on movement 5 (src/ledger.ts:85-88); a concurrent MCP `warren_undo_last` whose batch touched movement 5 takes the row lock first (src/undo.ts:95) and then the facts lock (src/undo-facts.ts:44). Postgres aborts one with 40P01; nothing retries, so a WhatsApp victim ends as 'commit failed' with the failure notice (src/process.ts:460). The same inversion exists between [set_reminder, remember_fact] (src/apply.ts:181 then src/facts.ts:142) and the undo (facts at src/undo.ts:97, reminders at :100). Per-sender ordering is an in-process promise chain for WhatsApp only (src/process.ts:534-555); MCP writes bypass it. src/concurrency.test.ts covers undo against a correction but has no case with a fact or reminder in the same message.",
+    "proposal": "First statement of every write transaction (`writing()` in src/batch.ts): `SELECT id FROM account WHERE id = $1 FOR NO KEY UPDATE`. NO KEY UPDATE so that inserts holding FOR KEY SHARE on the account row through their foreign keys are not blocked. Order is then fixed: the message's own guard row (WhatsApp only, src/store.ts:276-279), then the account, then anything else. Delete `lockFacts`, `lockReminders`, the 7203002 lock and `lockRows`. Keep row-level FOR UPDATE only where a writer outside this lock exists: the reminder sweep (src/reminders/send.ts:153-163), which never takes the account lock, so no cycle is possible. With batch ids allocated under this lock, batch id order is commit order, which is what makes the single stale guard in redesign 3 a one-line comparison. Can ship before the batch table as a one-day change.",
+    "evidence": "src/undo.ts:86, 95, 97, 100; src/undo-facts.ts:44; src/facts.ts:69-71, 142; src/reminders/db.ts:57-59; src/apply.ts:142, 181; src/ledger.ts:238-242; src/db.ts:19-20 documents four keys and omits 7203005; src/process.ts:458-461.",
+    "size": "About -40 lines, +5. No schema change.",
+    "confidence": "high for the inversion existing in the code as written; medium that it has ever fired (needs two channels active within the same second)"
+   },
+   {
+    "item": "3. The same three columns on movement, fact and reminder, and one undo engine (no separate effect-log table)",
+    "problem": "What a batch did is already recorded on the rows, but each store spells it differently and links versions with pointers that must be walked: movement (`inbound_message_id`, `deleted_by`, `superseded_by`, `restores`), fact (`inbound_message_id`, `forgotten_by`, `superseded_by`, `restores`), reminder (`inbound_message_id`, `cancelled_by`, `restores`). Consequences: three planners (src/undo.ts 203 lines, src/undo-facts.ts 95, src/undo-reminders.ts 101) plus about 190 lines of undo SQL spread over src/ledger.ts:210-320, src/facts.ts:176-213 and src/reminders/db.ts:130-178; three different definitions of 'as the batch left it' (a chain walk with settled batches for movements at src/undo.ts:118-134, value equality for facts at src/undo-facts.ts:53-54, a restore-chain loop of up to 20 queries for reminders at src/undo-reminders.ts:32-45); a 50-hop recursive CTE (src/ledger.ts:259-275); a sequence value fetched ahead of the insert and a DEFERRABLE foreign key only so a fact can point forward at a row that does not exist yet (src/facts.ts:123-131, src/migrations/011_facts.sql:21); an UPDATE of `created_at` after insert that breaks the stated append-only rule (src/ledger.ts:118-120). Nothing in the database stops two live rows of one movement lineage. Five UPDATEs end or relink a row by id alone, with no account in the WHERE, although the docblock says every query takes the account (src/ledger.ts:121, 126, 312; src/facts.ts:158-159; src/reminders/db.ts:86-87 against src/apply.ts:84). They are safe today only because each caller did an account-scoped locked read first. The reminders slice shows the cost of the current shape: its undo was written by copying the facts one (docs/reminders-spec.md:106).",
+    "proposal": "Each store row is one version of an entity:\n  entity_id bigint NOT NULL   -- the id of the entity's first version; copied to every later version\n  created_in bigint NOT NULL REFERENCES batch (id)\n  ended_in bigint REFERENCES batch (id), ended_at timestamptz\n  CHECK (ended_in IS NULL OR ended_at IS NOT NULL)\n  CREATE UNIQUE INDEX <t>_live_idx ON <t> (entity_id) WHERE ended_at IS NULL\nLive is `ended_at IS NULL` on all three tables (one predicate, not three string constants). Log = insert. Correct = stamp the old version ended, insert a new version with the same entity_id (and the same `logged_at`, set in the INSERT). Delete, forget, cancel = stamp ended. A one-off reminder the sweep finishes gets `ended_at` with `ended_in` null. `superseded_by`, `restores`, `deleted_by`, `forgotten_by`, `cancelled_by` and their seven indexes go.\n\nOne engine, src/undo.ts, about 170 lines, generic over the table name (postgres.js `sql(table)` is the documented safe identifier helper):\n  effects(tx, table, accountId, L): per entity touched by batch L, `before` = the version L ended that L did not create (or none), `after` = the last version L created that L did not end (or none).\n  guard, same text for every store: stale if any version of the entity was created or ended by a batch X with X.id > L.id that is neither an undo nor undone; or if the entity's liveness now differs from what L left (catches the sweep and hand edits).\n  invert: before none and a live version V: end V. before present and V live: end V, copy before. before present and nothing live: copy before. Both none: net of nothing, no item.\n  `end` is one function for all stores: UPDATE t SET ended_at = now(), ended_in = $batch WHERE id = $id AND account_id = $account AND ended_at IS NULL RETURNING id (the account is in the WHERE, once).\n  Per store only: `copy(w, fromId)` (the column list; reminders recompute next_due_at from `w.at` and may refuse: no occurrence left, cap), `rows(ids)` for rendering. About 25 lines each.\nItems become { store, op: 'removed' | 'reverted' | 'restored', before?, after? } with typed rows; `renderUndo` keeps its wording.\n\nMigration 017 from the live DB: add the columns nullable; `entity_id` by one recursive CTE from each root (a row with `restores` null that no row's `superseded_by` names) forward through `superseded_by` and `restores`; `ended_in`/`ended_at` from `deleted_by`/`deleted_at` (and the fact and reminder equivalents), and for superseded rows from the superseding row's `created_in` and that batch's `created_at`; finished one-offs get `ended_at = now()`; set NOT NULL, create the live index, drop the old columns. `created_in` is `inbound_message_id` renamed (ids were preserved in step 1). A handful of rows; verify with a query that live counts per account are unchanged before the drop.\n\nWhy not a separate effect table: it would restate what `created_in` and `ended_in` say, the sweep's and any manual change would not be in it, and rendering still needs the typed rows.",
+    "evidence": "src/undo.ts:56-66 (effects rebuilt from pointer columns), :118-143 (chain guard); src/undo-facts.ts:42-66; src/undo-reminders.ts:32-45, 53-78; src/ledger.ts:210-315; src/facts.ts:123-131, 176-213; src/reminders/db.ts:130-178; the three LIVE constants at src/ledger.ts:31, src/facts.ts:27, src/reminders/db.ts:48. The movement stale guard is reachable only by an interleaving (cross-channel race, or a retried message committing after a later one) or by editing rows by hand: every test that reaches it writes `superseded_by` or `deleted_by` with raw SQL first (src/undo.test.ts:240-256, 257-268, 282-293). Reminders are not append-only: the sweep updates `next_due_at` and `sent_count` in place (src/reminders/send.ts:176, 180, 263; src/reminders/db.ts:200), which is why `copy` is the per-store hook.",
+    "size": "About -590 lines of undo code across six files, +170 engine, +75 store hooks, +80 lines SQL: net about -350. Tests and fixtures reference the old columns roughly 150 times (counted with grep across src and evals: `superseded_by` about 60, `inbound_message_id` about 37, `deleted_by` about 24, `restores` about 17, the rest fact and reminder columns), mostly in seed helpers (src/command-fixtures.ts, src/mcp-test-kit.ts, evals/scenarios/drive.ts) and state assertions.",
+    "confidence": "medium-high. The shape is sound and the live data is tiny; the risk is rewriting the highest-integrity code, so do it last and only with src/undo.test.ts, src/memory.test.ts, src/reminder-agent.test.ts, src/mcp-write.test.ts and the real-Postgres src/concurrency.test.ts passing unchanged in behaviour."
+   },
+   {
+    "item": "4. One applyCall for all nine writes, one status vocabulary, one record renderer, one table of per-tool facts",
+    "problem": "`applyCall` is documented as 'the one write path of both channels' (src/apply.ts:83-84) but covers six tools. Reminders have a second function with a second outcome union (src/apply.ts:156-206); 'forget everything' writes facts straight from execute.ts (src/execute.ts:231) and is an undoable batch effect; the undo writes through store functions directly. The reason given for the reminder split is that MCP does not expose reminders (src/apply.ts:154): the `WriteCall` type is doing double duty as the MCP allowlist. The Outcome union has no common status: `kind` is the status in six variants and the fact's kind (alias, category, note) in `remember_fact` (src/apply.ts:78), `undo_last` nests it in `undo.kind`, `remember_fact` in `stored.kind`, `forget_fact` has none and `gone` there means 'what was forgotten' while `kind: 'gone'` elsewhere means 'not found' (src/apply.ts:63, 75, 79-80). So both consumers re-derive status with if-ladders (src/execute.ts:138, 150, 158, 173-176, 193-201, 210; src/mcp/write.ts:199-345) and both render the same record line with the same arguments, each pre-reading `newestLiveId` for the `old.id === newest` flag (src/execute.ts:99, 135-213; src/mcp/write.ts:129, 199-345). Static facts about a tool are spread over the WriteCall union (src/apply.ts:26-37), a dead `WRITE_TOOLS` copy (:39-46), the case labels (src/execute.ts:122-127), `CHANGES` (src/execute.ts:77-87, compared against outcome strings at :350), `KIND_OF_TOOL` (src/agent/say.ts:95-105) and the 22-entry label map (src/action-label.ts:8-29). `CHANGES` and `KIND_OF_TOOL` are not compiler-checked: a new write tool left out of them fails silently (a voice transcript shown over a change record; a true 'anoté' dropped).",
+    "proposal": "Keep exhaustive switches for behaviour; remove the duplicated data.\n(a) `WriteCall` = the nine tools that change undoable state: log_movements, correct_movement, delete_movement, undo_last, remember_fact, forget_fact, forget_all_confirmed, set_reminder, cancel_reminder. `applyCall(w: Write, call: WriteCall): Promise<Outcome>`; `applyReminderCall` and `ReminderOutcome` merge in. The MCP allowlist moves to src/mcp/write-tools.ts as `const MCP_WRITES = [...] as const satisfies readonly WriteCall['tool'][]`.\n(b) Every outcome is { tool, status, ...data } with one `Status = 'applied' | 'unchanged' | 'gone' | 'full' | 'past' | 'nothing' | 'expired' | 'stale'`. A batch was made iff status is 'applied'. The fact's kind is named `factKind`; `forget_fact.gone` becomes `forgotten`.\n(c) src/record.ts (pure, about 90 lines): `record(outcome, { today, newest }): { lines: string[]; detail?: string }`, the generalisation of `reminderReply`. execute.ts pushes its lines and `{ tool, outcome: status }`; mcp/write.ts takes `lines.join('\\n')` as `record` and keeps only its structured view.\n(d) One table next to the Action type: `ACTION_META = { log_movements: { label: 'log', claim: 'logged' }, ... } satisfies Record<Action['tool'], { label: string; claim?: keyof Applied }>`. `actionLabel`, `CHANGES` (tools with a `claim`) and `KIND_OF_TOOL` read it; src/action-label.ts is deleted. Leave src/agent/tools.ts alone: its order and bytes are the cached prompt prefix.\n(e) `now` required in the context (today src/apply.ts:127 falls back to `new Date()` for MCP).\nNo schema change; this is step 1 and makes steps 2 and 3 smaller.",
+    "evidence": "As cited in the problem, plus: `WRITE_TOOLS` has no reference outside its definition (grep over src and evals); the link and disconnect actions also write inside the commit transaction (src/execute.ts:236-267) but are not undoable and correctly stay outside applyCall; AGENTS.md documents `applyCall(tx, {accountId, inboundId, today}, call)` and docs/mcp-spec.md:92 `{accountId, requestId, today}` while the real context is `{accountId, batchId, position?, now?}` (src/apply.ts:48-57).",
+    "size": "src/execute.ts 365 to about 240; src/mcp/write.ts 349 to about 240; src/action-label.ts -31; +90 src/record.ts; src/apply.ts about the same. Net about -150 lines.",
+    "confidence": "high for (a), (b), (c), (e); medium for (d), which is tidiness more than risk reduction"
+   },
+   {
+    "item": "5. Split src/ledger.ts by what it owns",
+    "problem": "AGENTS.md calls it 'All SQL on movement', but 468 lines hold four jobs: movement reads and writes (1-127), batch SQL that reads and writes `inbound_message`, `fact` and `reminder` (129-208, 277-284, 317-320), undo chain helpers (210-315), and find and summary queries (329-468). store.ts in turn claims `inbound_message` while ledger.ts updates it. Names collide inside the file: `BatchRow` is a movement row (211), `batchRow` an `inbound_message` predicate (144), `batchRows` a query (221), `settleBatchRow` makes a row a batch (153), `settledBatches` means undone-or-an-undo (278).",
+    "proposal": "After steps 2 and 3 this mostly falls out: batch SQL lives in src/batch.ts, the undo helpers are gone, and what remains is src/movements.ts (versions: insert, lockLive, copy; about 110 lines) and the find and summary queries (about 140 lines, unchanged; they can stay in ledger.ts). While there: `supersede` becomes end-old plus one INSERT that sets `logged_at` (no follow-up UPDATE, no `id ?? null`); the word-splitting and LIKE-escaping lines duplicated at src/ledger.ts:355-358 and :401-404 become one helper.",
+    "evidence": "src/ledger.ts:101-123, 144-147, 153-174, 181-208, 211, 221, 278, 355-358, 401-404; src/store.ts:107-111.",
+    "size": "About 0 net; a move, after the deletions of steps 2 and 3.",
+    "confidence": "high"
+   }
+  ],
+  "delete": [
+   {
+    "item": "`WRITE_TOOLS` in src/apply.ts:39-46",
+    "why": "Dead export: a second copy of the list in the `WriteCall` type eight lines above it.",
+    "evidence": "grep over src and evals finds only the definition."
+   },
+   {
+    "item": "`movement.position`, its UNIQUE (inbound_message_id, position), `ApplyContext.position`, `rows` on every Outcome variant, and the counters that feed them",
+    "why": "No non-test code reads the column; row id order within a batch is the same order. It exists to be threaded: the context field (src/apply.ts:53-54), a `rows` count on all nine outcome variants of which seven are the literal 0 (src/apply.ts:61-80), a counter in execute (src/execute.ts:101, 134), a second counter restarting at 0 in undo (src/undo.ts:159, 172, 182), and parameters on three ledger functions (src/ledger.ts:52-60, 108, 296). Two code paths that both start at 0 in one batch would violate the unique key and fail the commit; today only the 'undo goes alone' rule in the WhatsApp loop prevents it. Guess: it dates from before the commit guard, as an idempotency key for the insert.",
+    "evidence": "src/migrations/003_logging.sql:21, 32; the only reader is the test helper at src/test-harness.ts:439."
+   },
+   {
+    "item": "src/action-label.ts (31 lines)",
+    "why": "Its label is today half of what makes a row a batch (src/ledger.ts:146). With a batch table it is only a reporting label; keep the label in the per-tool table of redesign 4d, or derive it in the latency query from `command`. It is computed twice per message (src/process.ts:439, 470) and once per MCP call (src/mcp/write.ts:118).",
+    "evidence": "src/action-label.ts:4-31; src/latency-report.ts:26."
+   },
+   {
+    "item": "`batchRow`, `settleBatchRow`, the `NothingChanged` class and the fake MCP `inbound_message` row",
+    "why": "All four exist only because the batch is a message row: a predicate to recognise it, a second writer of its columns, and an exception thrown to roll the fake row back.",
+    "evidence": "src/ledger.ts:144-174; src/mcp/write.ts:83-88, 123-127, 133, 145-155."
+   },
+   {
+    "item": "Advisory keys 7203002, 7203003, 7203005 and `lockRows`",
+    "why": "One account row lock replaces them and removes the ordering hazard (redesign 2).",
+    "evidence": "src/undo.ts:86, 95; src/facts.ts:69-71; src/reminders/db.ts:57-59; src/ledger.ts:238-242."
+   },
+   {
+    "item": "`followForward`, `settledBatches`, `headOf`, the `hop < 50` and `hop < 20` guards, `copyVersion`'s `restoresIt`/`replaces` flags",
+    "why": "With `entity_id` the current version of a movement, fact or reminder is one indexed lookup; there is no chain to walk.",
+    "evidence": "src/ledger.ts:259-284, 291-315; src/undo-reminders.ts:32-45."
+   },
+   {
+    "item": "`supersedeFact`'s sequence pre-allocation and the DEFERRABLE foreign key on `fact.superseded_by`",
+    "why": "Both exist only so the old row can point forward at a row not yet inserted while the live-key index forbids two live rows. Ending the old row with `ended_in` (a batch, which exists) needs neither.",
+    "evidence": "src/facts.ts:123-131; src/migrations/011_facts.sql:21."
+   },
+   {
+    "item": "`UPDATE movement SET created_at = old.created_at` after the insert",
+    "why": "It edits a stored value in a table whose rule is that no value is edited; pass the time in the INSERT (as `copyVersion` already does at src/ledger.ts:303-307).",
+    "evidence": "src/ledger.ts:117-120."
+   },
+   {
+    "item": "The `whatsapp_only` undo outcome and the channel lookup inside `undoLast`",
+    "why": "The channel-neutral engine asks which channel is asking by querying `inbound_message` mid-undo; WhatsApp code must then handle a variant it can never receive (src/execute.ts:166). Make it a parameter of the call (`refuse: ['reminder']` from the MCP tool) or drop it when MCP gets reminder tools (docs/reminders-spec.md:28). Pending the owner's answer below.",
+    "evidence": "src/undo.ts:44, 101-108; src/mcp/write.ts:269-273, 289."
+   },
+   {
+    "item": "`ReminderCall`, `ReminderOutcome`, `applyReminderCall` as separate things",
+    "why": "Merged into `WriteCall`, `Outcome`, `applyCall` (redesign 4a).",
+    "evidence": "src/apply.ts:154-206."
+   }
+  ],
+  "naming": [
+   "One thing, five names: the batch id is `batchId` (src/apply.ts:52), `inboundId` (src/ledger.ts:50, src/undo.ts:83, src/facts.ts NewFact), `inbound` (src/ledger.ts:213), `madeIn` (src/ledger.ts:251) and `batch` (src/ledger.ts:221). Use `batch` for the id everywhere and `created_in` / `ended_in` for the columns.",
+   "`Outcome.kind` is the result status in six variants and the fact's kind (alias, category, note) in `remember_fact` (src/apply.ts:78; read as `done.kind` at src/execute.ts:202). Name the status `status` and the other `factKind`.",
+   "`gone` has two opposite meanings in one union: `kind: 'gone'` is 'the target was not found' (src/apply.ts:63, 75) and `forget_fact.gone` is 'the facts that were forgotten' (src/apply.ts:80); the step outcome is then 'gone' when `gone` is empty (src/execute.ts:210). Rename the list `forgotten`.",
+   "'settle' means three things: `settleBatchRow` makes a row a batch (src/ledger.ts:153), `settledBatches` means undone or itself an undo (src/ledger.ts:278), `store.settle` moves a message out of processing (src/store.ts:387). After the redesign only the last remains; call the undo notion `reverted`.",
+   "`BatchRow` (a movement row, src/ledger.ts:211), `batchRow` (a predicate on inbound_message, :144) and `batchRows` (a query, :221) differ by one letter or one capital.",
+   "The same operation has three names: `softDelete` (src/ledger.ts:125), `forgetFact` (src/facts.ts:156), `cancelReminder` (src/reminders/db.ts:84), with two return conventions (void, boolean). One `end(table, id, accountId, batch)` returning whether it ended a live row.",
+   "Three things are called execute: `execute()` (src/execute.ts:97), the `Commit.execute` callback (src/store.ts:52) and the `Executed` result (src/store.ts:60). After redesign 4, `execute` is 'run a turn's actions' and the callback can be `effects`.",
+   "Eleven result types for one idea: Outcome, ReminderOutcome, UndoOutcome, Undone, FactUndone, ReminderUndone, UndoLine, Remembered, Executed, Presented, Written. Target: Outcome (what a write did), UndoItem (one reverted entity), Executed (a WhatsApp turn), Written (an MCP answer).",
+   "`ledger.ts` is described as 'All SQL on movement' (AGENTS.md layout) but queries inbound_message, fact and reminder (src/ledger.ts:185-206). After the split the name is true again or the file is `movements.ts`.",
+   "`wamid = 'mcp:<uuid>'`, `kind = 'tool'` and `wa_id` on MCP rows are WhatsApp words carrying MCP meanings (src/mcp/write.ts:117, 125). They disappear with `mcp_request`.",
+   "`actionLabel` returns 'multi' and collapses seven tools to 'reply' and three to 'forget' (src/action-label.ts:8-29): fine as a report label, misleading as the column that marks a batch. Name the column's role, e.g. `report_label`, or drop it.",
+   "AGENTS.md and docs/mcp-spec.md:92 document `applyCall` with contexts that do not exist (`{accountId, inboundId, today}`, `{accountId, requestId, today}`); the code is `{accountId, batchId, position?, now?}` (src/apply.ts:48-57). Fix the docs when the signature changes to `applyCall(w, call)`."
+  ],
+  "challenged_decisions": [
+   {
+    "decision": "Per-sender ordering",
+    "challenge": "Not a challenge to the goal, a challenge to its scope: for the write path the unit that must be serialised is the account, not the sender, because two channels write one account. The WhatsApp promise chain orders a sender's messages inside one process only; MCP writes do not pass through it, and the database-side locks that should cover the gap are taken in action-dependent order. I am saying explicitly that this is the only owner decision I push on, and only to widen it: keep per-sender ordering for the conversation, add one per-account lock for every write transaction.",
+    "evidence": "src/process.ts:534-555 (in-process chain, 'Single process, so a promise chain is enough'); src/mcp/write.ts:121 (MCP opens its own transaction with no account lock); lock-order inversion between src/facts.ts:142 then src/ledger.ts:85-88 on one side and src/undo.ts:95 then src/undo-facts.ts:44 on the other. Read from the code, not reproduced."
+   },
+   {
+    "decision": "Undo within 24 h across channels (a WhatsApp 'deshacer' can undo an MCP write)",
+    "challenge": "The decision holds and the redesign keeps it; I am flagging that the code already carves an exception in the other direction that the decision does not mention: an MCP undo refuses any batch that touched a reminder, and because undo always takes the newest batch, that one batch blocks MCP from undoing anything older until WhatsApp undoes it. Decide whether that is a rule (then make it a parameter at the MCP boundary) or a stopgap until MCP has reminder tools (then delete it).",
+    "evidence": "src/undo.ts:101-108; src/mcp/write.ts:269-273; docs/reminders-spec.md:28 and :257."
+   }
+  ],
+  "questions_for_owner": [
+   "Should an MCP client be able to undo a batch that set or cancelled a reminder once MCP has reminder tools (docs/reminders-spec.md:28)? If yes, `whatsapp_only` is deleted; if no, it becomes a `refuse` parameter passed by the MCP undo tool and the engine stays channel-free.",
+   "When a 'deshacer' is processed after a later message of the same person has already committed (a retry after a crash can do this: the sweep claims pending rows before a stale processing one), should it reach only what was asked before it (today's `i.id < cur.id`, which I kept as `requested_at < at`) or simply the newest committed batch? The first needs the stale guard to stay user-facing; the second would let the guard become an internal assertion.",
+   "A batch whose net effect is nothing (remember and forget the same new key in one message) is skipped silently today so 'deshacer' reaches the batch before it (src/ledger.ts:196-199). Keep that behaviour (the new engine loops past an empty plan), or answer that the last change left nothing to undo?",
+   "Is a fact that is remembered again after being forgotten the same fact (identity is account, kind and key) or a new one? It decides whether `fact.entity_id` is reused on re-remember, which lets the generic guard cover the 'said it again since' case with no fact-specific check.",
+   "Do you intend to prune or redact `inbound_message` bodies and payloads over time (privacy, more users)? If yes, that alone settles the batch-table question: today every ledger row holds a foreign key to a message row, so none can ever be deleted.",
+   "Does anything outside the repo (a manual SQL habit, a dashboard) read `movement.position` or the exact `inbound_message.action` labels? Inside the repo nothing but a test helper reads `position`, and only the latency report reads the labels."
+  ]
+ },
+ {
+  "group": "history-undo",
+  "model": "opus",
+  "verdict": "adjust, leaning to a medium redesign of the history columns. The underlying model is right: versioned append-only rows, a batch as the unit of undo, all-or-nothing stale refusal, and stack semantics with no redo. Keep it. Do not move to event sourcing, and do not add a separate effect table. What is wrong is that the three stores spell one concept three ways. They use different \"ended\" columns (superseded_by/deleted_by, superseded_by/forgotten_by, cancelled_by), different `restores` semantics and different definitions of \"as the batch left it\". The cause is that no row has a stable entity identity. That forces a recursive chain walk for movements (ledger.ts:259-275), a 20-query loop for reminders (undo-reminders.ts:32-43), a value-equality check for facts (undo-facts.ts:53-54), and a four-way EXISTS that repeats each planner's \"net of nothing\" rule (ledger.ts:192-204 vs undo-facts.ts:48-51 and undo-reminders.ts:61). Give every versioned table the same five lineage columns (entity_id, made_by, ended_at, ended_by, copy_of), derive the effect log as a view, and write one ~140-line undo engine with per-store hooks only for reminders' real side effects. One account-row lock replaces three advisory keys. One SQL data migration with backfill gets there from the live DB. Do not reset it.",
+  "keep": [
+   {
+    "item": "Versioned append-only rows for movement, fact and reminder (a new row per change, a soft end, no DELETE)",
+    "why": "This is the right shape for a money ledger. Live totals are one partial-indexed filter (005_corrections.sql:16-19), and \"antes …\" comes from typed columns, not from jsonb. Event sourcing would add projections and replay with no consumer. Current rows plus an audit log would overwrite money rows (AGENTS.md rule 3) and push stale detection into jsonb comparison."
+   },
+   {
+    "item": "Deriving a batch's effects from the rows themselves instead of a separate effect table (agent-spec.md:646-650)",
+    "why": "The original argument still holds: a separate effect table is a second source of truth that every write site must keep in step. With uniform lineage columns, a UNION ALL view gives the one effect log both briefs want, with nothing to drift. I keep this decision against both briefs' suggestion of an effect table."
+   },
+   {
+    "item": "inbound_message_undoes_idx (unique undoes, 009_undo.sql:12) and the CHECK undoes <> id",
+    "why": "This is the database half of \"a batch is undone once, whatever races\". It carries over unchanged to whatever batch table the turn redesign produces."
+   },
+   {
+    "item": "Stack semantics: the newest batch that is neither undone nor an undo, no redo (agent-spec.md:669-672)",
+    "why": "Simple and correct. It is also what makes most of today's stale machinery unnecessary (see the redesign items)."
+   },
+   {
+    "item": "All-or-nothing stale refusal, and the 24 h window computed in SQL from the batch's time (ledger.ts:186, undo.ts:89)",
+    "why": "Owner decision and correct. The engine keeps both."
+   },
+   {
+    "item": "fact_live_key_idx (one live fact per account, kind and key; 011_facts.sql:39-40)",
+    "why": "It is the database guarantee behind rememberFact's check-then-insert. Keep it alongside the new live-entity index."
+   },
+   {
+    "item": "Reminder-specific undo rules: refuse undoing a one-off that was already sent, refuse restoring a cancel with no occurrence left, keep the MAX_REMINDERS cap on restore, recompute next_due_at from the asking message's time (undo-reminders.ts:63-73, 89-97)",
+    "why": "These are real compensating actions, not data copies. They stay as the one store-specific hook in the new engine."
+   },
+   {
+    "item": "Undo reading reminder rows FOR UPDATE against the sweep's SKIP LOCKED claim (reminders/db.ts:163, send.ts:160-163)",
+    "why": "This is what lets an undo see a one-off as already sent instead of racing the sweep. The engine's generic current-version read keeps FOR UPDATE."
+   },
+   {
+    "item": "reminder_send with unique (reminder_id, due_at) and the started → unknown rule (014_reminders.sql:36-47)",
+    "why": "The at-most-once protocol. It is orthogonal to history and stays untouched."
+   },
+   {
+    "item": "toRow tolerating a schedule that no longer parses (reminders/db.ts:37-44)",
+    "why": "One corrupt row must not break every read. Keep it."
+   },
+   {
+    "item": "Undo is itself a recorded batch whose rows are made_by the undo message",
+    "why": "Rule 3 and the audit. The new engine does the same."
+   }
+  ],
+  "redesign": [
+   {
+    "item": "Uniform lineage columns on movement, fact and reminder (migration 016_versions.sql)",
+    "problem": "Each table invents its own lineage. movement uses superseded_by, deleted_at/deleted_by and restores (003/005/009). fact uses superseded_by DEFERRABLE, forgotten_at/forgotten_by and restores (011:28-31). reminder uses cancelled_at/cancelled_by and restores, with no supersede (014:24-26). No row has a stable entity identity, so finding where a movement or reminder stands now means walking pointers. Facts dodge this only because (kind, key) happens to be an identity. There is no database guarantee that a movement chain has at most one live row. 'Live' is three string constants spliced with sql.unsafe (ledger.ts:31, facts.ts:27, reminders/db.ts:49).",
+    "proposal": "Every versioned table gets the same columns, with no others for lineage:\n- `entity_id bigint NOT NULL DEFAULT nextval('<table>_entity_seq')`: stable across versions. A new entity takes the default, and a new version passes its entity_id.\n- `made_by bigint NOT NULL`: the batch that wrote this version. Renamed from inbound_message_id, and an FK to inbound_message until the turn/batch table lands.\n- `ended_at timestamptz` and `ended_by bigint`, with `CHECK ((ended_at IS NULL) = (ended_by IS NULL))`.\n- `copy_of bigint REFERENCES <table>(id)`: set only by an undo, to the origin version whose values it copies, `coalesce(src.copy_of, src.id)`.\n\nIndexes per table: `UNIQUE (entity_id) WHERE ended_at IS NULL`, which is new and makes \"one live version per entity\" a database fact; `(made_by)`; `(ended_by) WHERE ended_by IS NOT NULL`; and the existing live partial indexes rewritten as `WHERE ended_at IS NULL`.\n\nDrop superseded_by, deleted_*, forgotten_*, cancelled_*, restores, the *_one_ending and *_pair checks, the *_restores_idx indexes and the DEFERRABLE FK. Live is `ended_at IS NULL`, plus `next_due_at IS NOT NULL` for reminders. One `live(sql)` fragment, or the literal, replaces the three constants.\n\nWhether a change was a correction or a delete is no longer stored. It is derived: the ended version has a successor in the same entity made by the same batch, or it does not. The supersede value-copy `UPDATE movement SET created_at = old.created_at` (ledger.ts:118-120) goes away. Add `logged_at` (copied in the INSERT…SELECT) for the time the person sees, and let created_at be the true version time. Today nothing records when a correction happened.\n\nMigration path from the live DB, in one plain-SQL file inside the migrate transaction:\n1. Create the sequences and add the nullable columns.\n2. Set entity_id = the root of each chain, with a WITH RECURSIVE over superseded_by/restores whose seeds are rows with no predecessor and restores IS NULL (the same walk as ledger.ts:261-269, run once).\n3. Set ended_* from deleted_*/forgotten_*/cancelled_*. For superseded rows, set ended_by = successor.inbound_message_id and ended_at = that message's received_at.\n4. Backfill copy_of for rows made by undo messages (inbound_message.undoes IS NOT NULL). A restores row gets origin(restores). An undo-of-correction row R gets origin(predecessor of R's predecessor). Use a small DO block in id order. Only rows inside the 24 h window can ever matter, so deploying at a quiet hour bounds the risk.\n5. Run setval on the sequences, add SET NOT NULL, defaults and indexes, and drop the old columns.\n\nProof: extend migrations.test.ts the way the 009 test does (migrations.test.ts:10-62). Seed a log, a correction, a delete, an undo of each and a reminder cancel-and-restore. Apply 016. Assert identical live sets and identical sum(amount) per account, direction and currency, and assert the new constraints refuse a second live version. Before deploying, run the same comparison on a pg_dump of production. Reminder rows made by `pnpm reminder:add` have a null inbound_message_id (014:14). Either keep made_by nullable on reminder until a 'cli' batch exists, or backfill those rows to a synthetic batch.",
+    "evidence": "ledger.ts:31, 101-127, 259-275, 291-315; facts.ts:27, 119-131 (the nextval and deferred-FK trick exists only because the old row points forward at the new one); reminders/db.ts:49, 84-89, 154-176; undo-reminders.ts:32-43; 011_facts.sql:28-31; 014_reminders.sql:24-26. Column names are confined to these modules, send.ts:160 (`cancelled_at IS NULL`), evals/scenarios/drive.ts and the tests (grep).",
+    "size": "+90 lines SQL migration, -60 lines TS in the store modules, about +60 lines of test updates (by-hand `UPDATE movement SET superseded_by` becomes `ended_by`)",
+    "confidence": "high on the shape; medium on the copy_of backfill SQL until it runs against a dump"
+   },
+   {
+    "item": "One undo engine over a derived effect view (replaces undo.ts, undo-facts.ts, undo-reminders.ts and the undo half of ledger.ts)",
+    "problem": "There are three planners with three definitions of \"as the batch left it\". Movements use lineage where every later step was made by a settled batch (undo.ts:126-134, plus settledBatches at ledger.ts:278-284). Facts use value equality of the live (kind, key) head (undo-facts.ts:53-54). Reminders use the head of the restores chain, live (undo-reminders.ts:63-64). \"Net of nothing\" is written twice per store, once in lastBatch's SQL (ledger.ts:196-204) and once in the planner (undo-facts.ts:48-51, undo-reminders.ts:61), so they can drift. Movements have no net-of-nothing rule at all. effectsOf (undo.ts:56-66) classifies a row that one batch both logged and deleted as 'deleted', so the undo would bring back something the batch netted to nothing. A log followed by a correction in one batch is refused as stale, because the root's next hop was made by the unsettled batch itself (undo.ts:131). Both cases are unreachable today: the model cannot target a row it logged in the same turn, and an MCP request is one call. A statement import or a multi-step tool turn would reach them. Every new store (budgets) would add an EXISTS branch, a planner and a second copy of net-of-nothing.",
+    "proposal": "Views from migration 016:\n```sql\nCREATE VIEW version AS\n  SELECT 'movement'::text AS store, id, account_id, entity_id, made_by, ended_by, copy_of FROM movement\n  UNION ALL SELECT 'fact', id, account_id, entity_id, made_by, ended_by, copy_of FROM fact\n  UNION ALL SELECT 'reminder', id, account_id, entity_id, made_by, ended_by, copy_of FROM reminder;\nCREATE VIEW batch_effect AS\n  SELECT b AS batch_id, store, account_id, entity_id,\n    max(id) FILTER (WHERE ended_by = b AND made_by <> b) AS before_id,\n    max(id) FILTER (WHERE made_by = b AND ended_by IS DISTINCT FROM b) AS after_id\n  FROM version, LATERAL (VALUES (made_by), (ended_by)) t(b) WHERE b IS NOT NULL\n  GROUP BY b, store, account_id, entity_id;\n```\nA row with both ids null is a net of nothing. before and after set is 'changed', before only is 'ended', after only is 'created'. One rule covers every store.\n\nlastBatch becomes: the newest write batch of the account, not undone and not an undo, with `EXISTS (SELECT 1 FROM batch_effect e WHERE e.batch_id = i.id AND (e.before_id IS NOT NULL OR e.after_id IS NOT NULL))`.\n\nThe stale check is O(1) and needs no walk. For each effect, read the live version `cur` of the entity FOR UPDATE. It is as the batch left it iff:\n- after set: cur exists, `coalesce(cur.copy_of, cur.id) = coalesce(after.copy_of, after.id)`, and `store.stillLive(cur)` holds (reminders: next_due_at not null);\n- after null: cur is null;\n- and, if before is set, `store.canRestore(before, now)` holds (reminders: nextOccurrence, plus the cap counted once over the plan).\n\nThis is enough because of the stack. Any later batch that touched the entity is either undone or an undo, otherwise it would be lastBatch. So the only things that can move an entity are out-of-band edits, races and the reminder sweep, and every one of those yields a version whose origin differs or that is no longer live.\n\nApply: for each effect, end cur if there is one (`UPDATE t SET ended_at = now(), ended_by = $undo WHERE id = cur AND ended_at IS NULL`, generic through sql(table)). Then, if before is set, `store.copy(tx, before, undoBatch, now)`, an INSERT…SELECT with entity_id, copy_of = origin and logged_at. Reminders recompute next_due_at there. Ending before inserting means fact_live_key_idx never sees two live rows, so the deferral goes.\n\nInterface:\n```ts\ninterface VersionedStore { table: 'movement'|'fact'|'reminder'; stillLive?(row): boolean; canRestore?(tx, row, now): Promise<boolean>; copy(tx, o:{from:number; batch:number; position:number; now:Date}): Promise<number> }\nundoLast(tx, {accountId, batchId, now, stores}): Promise<UndoOutcome>\ntype Undone = { store; op: 'created'|'changed'|'ended'; before: Row|null; after: Row|null; now: Row|null }\ntype UndoOutcome = {kind:'undone'; batch; items: Undone[]} | {kind:'nothing'} | {kind:'expired'} | {kind:'refused_store'; store} | {kind:'stale'; items: {store; row}[]}\n```\nThe renderers map (store, op) to today's lines. Cross-channel undo is unchanged, because the batch is found by account, not channel. The 24 h window is unchanged.",
+    "evidence": "undo.ts:56-66, 93-144; undo-facts.ts:43-66; undo-reminders.ts:32-76; ledger.ts:181-208, 221-228, 259-284; facts.ts:179-198; reminders/db.ts:126-176. agent-spec.md:678-679 says the stale guard \"in ordinary use … is unreachable … it fires for a race and for changes made outside a batch\", which is why origin equality is enough.",
+    "size": "-480 lines TS (undo-facts.ts 95, undo-reminders.ts 101, about 190 in ledger.ts:129-320, about 38 in facts.ts:176-213, about 54 in reminders/db.ts:123-176) +140 for the new undo.ts and +40 for the store hooks. Net about -300.",
+    "confidence": "medium-high. The origin rule holds on every case in undo.test.ts I traced by hand (correction, then undo, then undo; delete, then undo, then undo; forget-all, then undo). It needs the existing suite plus new same-batch log+delete and log+correct cases to prove it."
+   },
+   {
+    "item": "One per-account writer lock instead of 7203002, 7203003 and 7203005",
+    "problem": "Undo takes 7203002 (undo.ts:86), then 7203003 inside planFactUndo (undo-facts.ts:44), then 7203005 (undo.ts:100). A WhatsApp turn whose actions are set_reminder then remember_fact takes 7203005 (apply.ts:181) then 7203003 (facts.ts:144) in one transaction (execute.ts:110 loop). MCP writes run outside the per-sender worker, so an MCP undo concurrent with such a turn can deadlock. Postgres aborts one and the person gets the failure notice. I did not reproduce this. It is plausible and rare. db.ts:19-20 lists the keys and omits 7203005. agent-spec.md:685-686 already records a movement-lock-order deadlock as known and not fixed.",
+    "proposal": "`lockAccount(tx, accountId)`: `SELECT 1 FROM account WHERE id = $1 FOR UPDATE`, taken once as the first statement of every write commit (applyCall, applyReminderCall, forgetAll, undoLast). It is better taken once by the commit point, which belongs to the turn group. Delete lockFacts, lockReminders and the 7203002 line. Row FOR UPDATE stays only where a non-account writer exists, which is the reminder sweep (it keeps SKIP LOCKED and takes no account lock). With every account writer serialized, the row-lock ordering issue in agent-spec.md:685 also goes away.",
+    "evidence": "undo.ts:86, 100; undo-facts.ts:44; facts.ts:69-71, 144, 169; reminders/db.ts:57-59; apply.ts:142, 181; execute.ts:110; db.ts:19-20.",
+    "size": "-25 lines",
+    "confidence": "high"
+   },
+   {
+    "item": "Append-only enforced by the database: one guard trigger for the three tables",
+    "problem": "Rule 3 is a discipline in code. ledger.ts:118-120 already updates a value column (created_at). Nothing stops an UPDATE of amount or value, or a DELETE.",
+    "proposal": "Write one plpgsql function `versions_append_only()`. BEFORE UPDATE, it raises unless the only columns changed are ended_at and ended_by (and, on reminder, next_due_at and sent_count, the sweep's operational state). BEFORE DELETE, it raises. Attach it to movement, fact and reminder in 016 after the backfill. TRUNCATE in tests does not fire row triggers. Check that PGlite, used by the test harness, ships plpgsql. I believe it does but have not verified.",
+    "evidence": "ledger.ts:118-121; AGENTS.md rule 3; send.ts (the sweep's UPDATE reminder SET next_due_at) and reminders/db.ts:200 (`sent_count - 1`) are the legitimate in-place updates.",
+    "size": "+25 lines SQL",
+    "confidence": "medium (the PGlite plpgsql support is a guess)"
+   },
+   {
+    "item": "Channel policy out of the undo engine (whatsapp_only)",
+    "problem": "undo.ts:102-108 queries inbound_message.channel from inside the undo to decide whether reminders may be undone. That is a channel rule living in the history engine, and it reaches back into the message table.",
+    "proposal": "Callers pass `stores: ReadonlySet<Store>` (WhatsApp: all; MCP: movement and fact). The engine returns `{kind:'refused_store', store}` when the batch has an effect outside the set. MCP's presenter (mcp/write.ts:259-261) keeps its wording. When reminders get MCP tools, MCP passes all three and the carve-out disappears with no engine change.",
+    "evidence": "undo.ts:102-108; mcp/write.ts:259-261, 278-279; reminders-spec.md:257.",
+    "size": "-5 lines",
+    "confidence": "high"
+   },
+   {
+    "item": "Staged FK target: made_by and ended_by point at the batch, not at inbound_message",
+    "problem": "lastBatch finds ownership through `i.wa_id = a.wa_id` (ledger.ts:189), and the batch predicate is derived (`action IS NOT NULL AND reply_text IS NOT NULL AND undoes IS NULL`, ledger.ts:144-147). That is a cross-group concern, but this group's FKs depend on it.",
+    "proposal": "Do 016 first, with FKs still on inbound_message. It is independent of the turn redesign and delivers all the deletions above. When the turn/batch table lands (`batch(id, account_id, channel, created_at, undoes bigint UNIQUE REFERENCES batch, kind 'write'|'undo')`), repoint made_by and ended_by in one ALTER plus an UPDATE through a mapping. lastBatch then filters `batch.account_id`, and its batchRow predicate is deleted.",
+    "evidence": "ledger.ts:139-147, 185-206; mcp-spec.md:120-121 (\"From scratch we would put a channel-neutral batch table under both channels\").",
+    "size": "about 20 lines later",
+    "confidence": "high"
+   }
+  ],
+  "delete": [
+   {
+    "item": "followForward (recursive CTE with hop < 50) and settledBatches",
+    "why": "A stable entity_id plus the origin check replaces walking the chain and checking which batches are settled.",
+    "evidence": "ledger.ts:244-284; undo.ts:118-134"
+   },
+   {
+    "item": "headOf (up to 20 sequential queries)",
+    "why": "Same reason. The live version of an entity is one indexed SELECT.",
+    "evidence": "undo-reminders.ts:31-43"
+   },
+   {
+    "item": "effectsOf, BatchRow, batchRows, BatchFact, batchFacts, BatchReminder, batchReminders, reminderById, toBatchRow",
+    "why": "The batch_effect view gives (store, entity, before, after) for every store in one query.",
+    "evidence": "undo.ts:49-66; ledger.ts:210-228; facts.ts:178-198; reminders/db.ts:125-176"
+   },
+   {
+    "item": "The four-way EXISTS in lastBatch with its per-store net-of-nothing rules",
+    "why": "This is the second copy of logic the planners also hold. It becomes one EXISTS on batch_effect.",
+    "evidence": "ledger.ts:192-204 vs undo-facts.ts:48-51 and undo-reminders.ts:61"
+   },
+   {
+    "item": "supersedeFact's nextval pre-allocation and the DEFERRABLE superseded_by FK",
+    "why": "They exist only because the old row points forward at the new one. With entity_id there is no forward pointer: end, then insert.",
+    "evidence": "facts.ts:119-131; 011_facts.sql:28"
+   },
+   {
+    "item": "copyVersion's `replaces`/`restoresIt` modes and supersede's post-insert `UPDATE … SET created_at` and `SET superseded_by`",
+    "why": "One generic copy (INSERT…SELECT with entity_id, copy_of and logged_at) plus one generic end replaces them.",
+    "evidence": "ledger.ts:111-122, 291-315"
+   },
+   {
+    "item": "The `restores IS NULL` conditions in batchReminders and lastBatch's reminder branch",
+    "why": "They are dead. Restore rows are made by undo messages, and batchRow (ledger.ts:146) already excludes undo messages from being a batch. Movements and facts carry no such condition.",
+    "evidence": "reminders/db.ts:162; ledger.ts:203"
+   },
+   {
+    "item": "Three LIVE string constants and their about 20 sql.unsafe(LIVE) splices",
+    "why": "Live becomes `ended_at IS NULL` everywhere, a plain literal in the query or one shared sql fragment. No unsafe is needed.",
+    "evidence": "ledger.ts:31; facts.ts:27; reminders/db.ts:49"
+   },
+   {
+    "item": "lockFacts, lockReminders, and the 7203002 advisory lock in undoLast",
+    "why": "Replaced by one account-row lock.",
+    "evidence": "facts.ts:69-71; reminders/db.ts:57-59; undo.ts:86"
+   },
+   {
+    "item": "undo-facts.ts and undo-reminders.ts as modules",
+    "why": "Their only non-generic content is the reminder hooks (stillLive, canRestore, copy with next_due_at recomputed, cap), about 30 lines that move next to reminders/db.ts. The fact half has nothing store-specific left once facts use entity_id.",
+    "evidence": "undo-facts.ts:1-95; undo-reminders.ts:1-101"
+   }
+  ],
+  "naming": [
+   "Rename `inbound_message_id` on movement, fact and reminder to `made_by`. It names a batch, which over MCP is not a message. Today the same concept is `batchId` in ApplyContext (apply.ts:52), `inboundId` in ledger, facts and undo, and `inbound` in the Batch* types.",
+   "Replace superseded_by, deleted_by, forgotten_by and cancelled_by with `ended_by` and `ended_at`. Keep the user-facing verbs (borrar, olvidar, cancelar) in render.ts, where they belong.",
+   "Rename `restores` to `copy_of`, holding the origin version, not the immediate source.",
+   "Undone kinds mix two points of view. Movement kinds say what the batch did ('logged', 'corrected', 'deleted'; undo.ts:25-31). Fact and reminder kinds say what the undo did ('fact_removed', 'fact_reverted', 'fact_restored', 'reminder_removed', 'reminder_restored'; undo-facts.ts:15-21, undo-reminders.ts:15-19). Use one shape, `{store, op: 'created'|'changed'|'ended', ...}`, from the batch's point of view.",
+   "Replace `UndoOutcome.stale {moved, facts, reminders}` with one list `{store, row}[]`.",
+   "`movement.created_at` is copied from the first version (ledger.ts:117-120, 304-306), so it is not when the row was created. Split it into true `created_at` and `logged_at`.",
+   "`whatsapp_only` becomes `refused_store`. The rule is about what a channel may undo, not about WhatsApp."
+  ],
+  "challenged_decisions": [
+   {
+    "decision": "Undo across channels within 24 h (owner decision), as implemented with the whatsapp_only carve-out",
+    "challenge": "No owner decision is contradicted. One part of the implementation deserves a challenge. When the newest batch touched reminders, an MCP undo refuses the whole stack, not just that batch, so an MCP client can undo nothing at all until the person says \"deshacer\" on WhatsApp. That is consistent with stack semantics, and I would keep the behaviour. But it should be a parameter the channel passes, not a lookup inside the engine. It should go away when reminders get MCP tools.",
+    "evidence": "undo.ts:102-108; mcp/write.ts:259-261; reminders-spec.md:257, 282"
+   },
+   {
+    "decision": "agent-spec.md:646-650, \"The action log is the data already stored; no table\" (not an owner decision, but an earlier design decision both briefs lean against)",
+    "challenge": "Both briefs propose an explicit effect table. I keep the original decision. The real defect is non-uniform lineage columns and the missing entity identity, not a missing table. With uniform columns, a view is the effect log and cannot disagree with the ledger. An effect table would add a write at every write site and a new way for history to be wrong.",
+    "evidence": "ledger.ts:192-204 and undo.ts:56-66 show the cost comes from three spellings, not from deriving"
+   },
+   {
+    "decision": "Append-only for every column (AGENTS.md rule 3: \"No row is edited\")",
+    "challenge": "Reminders already break this by design. The sweep updates next_due_at and sent_count in place (send.ts claimDue; reminders/db.ts:200). Make the exception explicit: append-only covers user-authored columns, and a trigger enforces it, allowing only the lineage end columns and those two operational columns. That turns rule 3 from a convention into a guarantee.",
+    "evidence": "ledger.ts:118-120; reminders/db.ts:200; send.ts (`UPDATE reminder SET next_due_at`)"
+   }
+  ],
+  "questions_for_owner": [
+   "Should the model and MCP clients keep seeing version ids (today's row ids, which change on every correction; apply.ts:69-71), or should they see the new stable entity_id? Stable ids are friendlier for MCP clients. They would also change the race guard: today a second correction of an already-corrected id gets 'gone' (\"ya fue corregido o borrado\"), and with entity ids it would apply on top. I recommend keeping version ids externally and using entity_id only internally, unless you want that trade.",
+   "How many rows in the live DB were made by undo messages (`SELECT count(*) FROM movement m JOIN inbound_message i ON i.id = m.inbound_message_id WHERE i.undoes IS NOT NULL`, and the same for fact and reminder)? I did not query production. The answer sizes the copy_of backfill. If none fall inside the last 24 h at deploy time, copy_of can simply start null.",
+   "May the `pnpm reminder:add` CLI create a batch (a 'cli' channel) so that made_by can be NOT NULL on reminder? Its rows have a null inbound_message_id today (014_reminders.sql:14).",
+   "Are you fine with a plpgsql guard trigger in plain-SQL migrations, given that the test harness runs on PGlite? It needs a check that PGlite ships plpgsql.",
+   "Should 016 (uniform lineage) ship before the turn/batch table split? I recommend yes. It is independent, and it delivers the deletions now, with FKs repointed in a later migration."
+  ]
+ },
+ {
+  "group": "history-undo",
+  "model": "fable",
+  "verdict": "redesign. All paths below are under /Users/ticianomorvan/Projects/personal/warren. The behaviour of this group is right and well tested (LIFO undo, all-or-nothing, 24 h, never a redo, at-most-once reminder sends), but the storage shape makes every store re-derive the same three things by hand: what a batch did, where an entity stands now, and who may write. I would build it today as (1) an explicit channel-neutral `batch` row allocated at commit, (2) one append-only `effect` log with a before and after image per changed entity, (3) plain current-state tables with stable ids for movement, fact and reminder, (4) one undo engine over effects with a small per-store hook, and (5) one per-account write lock. Event sourcing is too much for this app and today's versioned rows cost every reader and every new store; current rows plus an effect log is the fit. The live DB is small enough to migrate in place in one SQL file, keeping live rows and their ids. I ran nothing: every claim is from reading code at 066eb87, and sizes are estimates.",
+  "keep": [
+   {
+    "item": "Undo semantics: newest batch not yet undone, all-or-nothing, a second 'deshacer' reaches the batch before, never a redo, the undo is itself a recorded batch, and it runs inside the commit transaction (src/undo.ts:68-80, docs/agent-spec.md:659-679)",
+    "why": "These are product decisions, they are covered by src/undo.test.ts (597 lines) and mutation runs, and none of them depends on the storage shape. The redesign keeps every one."
+   },
+   {
+    "item": "`undoes` as a partial unique index: a batch is undone once whatever races (src/migrations/009_undo.sql:9-12)",
+    "why": "The database half of 'once only'. It moves unchanged to `batch.undoes`."
+   },
+   {
+    "item": "`fact_live_key_idx`: one live fact per (account, kind, key) as a partial unique index (src/migrations/011_facts.sql:30-31)",
+    "why": "Right use of Postgres. It stays as the backstop, with `removed_at IS NULL` as its predicate."
+   },
+   {
+    "item": "`reminder_send` with `UNIQUE (reminder_id, due_at)`, the marker row committed before the send, `started` becoming `unknown` (src/migrations/014_reminders.sql:34-44, src/reminders/send.ts:192-197, 296-299)",
+    "why": "This is the at-most-once protocol and it is correct. A stable reminder id makes it stronger: today an undo of a cancel makes a new reminder id (src/undo-reminders.ts:90-97), so the unique key no longer spans the logical reminder."
+   },
+   {
+    "item": "Writes return data (`Outcome`, `Remembered`, `ReminderOutcome`) and rendering happens elsewhere (src/apply.ts:60-80, src/facts.ts:134-140)",
+    "why": "This is what let MCP share the write path. The effect log fits under it without changing it."
+   },
+   {
+    "item": "Schedule logic in app code (`nextOccurrence`), tolerant row parsing (`toRow`, src/reminders/db.ts:37-44), `tidyWhat`",
+    "why": "Postgres has no recurrence rules, and one bad row must not break a person's messages. Unrelated to the history question."
+   },
+   {
+    "item": "text + CHECK for closed sets, CHECK pairs for state (src/migrations/005_corrections.sql:7-10, 011_facts.sql:25-27)",
+    "why": "Cheap, plain SQL, and easy to change at this size."
+   },
+   {
+    "item": "Reading and locking the reminder row `FOR UPDATE` when a person's write meets the sweep (src/reminders/db.ts:76-80, 159-163; docs/reminders-spec.md:259-260)",
+    "why": "The sweep is the one writer that does not act for a person, so a row lock is still needed there even with one account lock."
+   },
+   {
+    "item": "The summary and find SQL in src/ledger.ts:341-468",
+    "why": "Outside the history question. It only loses the `superseded_by` half of its live predicate."
+   }
+  ],
+  "redesign": [
+   {
+    "item": "Explicit `batch` and one `effect` log (answers question 1)",
+    "problem": "A batch is inferred, twice. `lastBatch` decides in SQL whether a message is a batch with a four-way EXISTS over three tables that carries the 'net of nothing' rules (src/ledger.ts:181-208, rules at :196-204). The planners then re-derive the same rules in TypeScript (src/undo.ts:56-66, src/undo-facts.ts:48-51, src/undo-reminders.ts:61). When the two disagree, the stack jams: this already happened (docs/agent-spec.md:1166-1170, 'lastBatch kept picking a batch whose net effect was nothing'). A latent copy remains: src/undo.ts:109-115 returns `nothing` without marking a batch that `lastBatch` chose, which happens if its only reminder row no longer parses (src/reminders/db.ts:138-147 drops it) - a guess, it needs a corrupt schedule. Each new store adds an EXISTS branch, a planner file, `*_by` and `restores` columns and indexes.",
+    "proposal": "Two tables, written only inside the commit transaction.\n\nCREATE TABLE batch (\n  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  account_id bigint NOT NULL REFERENCES account (id),\n  turn_id bigint UNIQUE REFERENCES <turn or inbound_message> (id),  -- null for a CLI write; UNIQUE is the second layer of 'applied once'\n  undoes bigint REFERENCES batch (id),\n  created_at timestamptz NOT NULL DEFAULT now(),\n  CHECK (undoes <> id));\nCREATE UNIQUE INDEX batch_undoes_idx ON batch (undoes) WHERE undoes IS NOT NULL;\nCREATE INDEX batch_account_idx ON batch (account_id, id DESC);\n\nCREATE TABLE effect (\n  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  batch_id bigint NOT NULL REFERENCES batch (id),\n  account_id bigint NOT NULL REFERENCES account (id),\n  store text NOT NULL CHECK (store IN ('movement','fact','reminder')),\n  entity_id bigint NOT NULL,\n  before jsonb,          -- null: this effect created the row\n  after jsonb NOT NULL); -- the row's person-set columns; a removal is removed_at inside the image\nCREATE INDEX effect_batch_idx ON effect (batch_id, id);\nCREATE INDEX effect_entity_idx ON effect (store, entity_id, id DESC);\n\nRules: the batch row is inserted lazily at the first effect, under the account lock, so a batch exists only if it changed something and batch ids are in commit order per account. Images are built in SQL by each store with an explicit `jsonb_build_object` and amounts as text (`amount::text`), and are applied back in SQL; the app never parses an amount out of one (rule 1). The row change and its effect go in one statement (a data-modifying CTE: `old` SELECT ... FOR UPDATE, `new` UPDATE ... RETURNING, INSERT INTO effect SELECT old.image, new.image), so they cannot drift. `lastBatch` becomes: newest batch of the account with `undoes IS NULL` and no batch that undoes it.",
+    "evidence": "src/ledger.ts:181-208, src/undo.ts:56-66 and 109-115, src/undo-facts.ts:48-51, src/undo-reminders.ts:61, docs/agent-spec.md:1166-1170. docs/mcp-spec.md:120-121 already says 'From scratch we would put a channel-neutral batch table under both channels'. The MCP path fakes a message row to have a batch and throws `NothingChanged` to roll it back for a no-op (src/mcp/write.ts:81-85, 123-127, 132).",
+    "size": "+60 lines of SQL for the two tables; -30 for `lastBatch`, `batchRow`, `markUndone`, `settledBatches` in src/ledger.ts",
+    "confidence": "high for batch + effect; medium for jsonb images against typed history tables (see challenged_decisions)"
+   },
+   {
+    "item": "Current-state tables with stable ids for movement, fact and reminder (answers question 3)",
+    "problem": "An entity has no identity. A correction makes a new movement id (src/ledger.ts:111-122) and so does undoing a delete (:291-315). Identity is faked by copying `created_at` with an UPDATE, 'that is how the person tells it apart' (:117-120), and re-found by a recursive walk (:259-275). Ids held outside die on any correction: `asked_ids` (src/store.ts:291) and ids an MCP client holds. 'Append-only' is a convention with exceptions already: `created_at` is updated (src/ledger.ts:118), and the sweep updates `next_due_at` and `sent_count` in place (src/reminders/send.ts:176, 180, 263; src/reminders/db.ts:200). The three stores differ in what they guard: `softDelete` and `supersede` have no live or account predicate and no row count (src/ledger.ts:121, 125-127), while `forgetFact` and `cancelReminder` check both live and row count (src/facts.ts:156-161, src/reminders/db.ts:84-89). Facts need a `nextval` plus deferred-FK dance to swap a version (src/facts.ts:123-131, src/migrations/011_facts.sql:21). Nothing in production reads the version chain except undo: 'antes ...' is rendered at write time from the in-memory old row (src/render.ts:199, 404).",
+    "proposal": "One row per entity, updated in place, never hard-deleted; history lives in `effect`.\n\nmovement(id, account_id, direction, amount, currency, occurred_on, description, category, payment, confidence, created_at, removed_at)\n  indexes (account_id, id DESC) and (account_id, occurred_on), both WHERE removed_at IS NULL\nfact(id, account_id, kind, key, value, created_at, removed_at)\n  UNIQUE (account_id, kind, key) WHERE removed_at IS NULL\nreminder(id, account_id, what, schedule, created_at, removed_at, next_due_at)   -- next_due_at is scheduler state, not in the image\nreminder_send unchanged.\n\nDropped columns: `superseded_by` (2 tables), `restores` (3), `deleted_by`, `forgotten_by`, `cancelled_by`, `inbound_message_id` (3; provenance is first effect -> batch -> turn), `movement.position`, `reminder.sent_count`, and their 9 `*_by`/`restores` indexes. 'Live' is `removed_at IS NULL` everywhere, so the three `LIVE` string constants and about 20 `sql.unsafe(LIVE)` splices go (src/ledger.ts:31, src/facts.ts:27, src/reminders/db.ts:49). A correction is one UPDATE with the same id; a fact update is one UPDATE; undoing a delete clears `removed_at` on the same row. Every write statement carries `account_id` itself.\n\nWhy not the alternatives: event sourcing needs projections, replay and versioned event schemas for no consumer; versioned rows make every reader filter and every outside reference chase ids. A test-only invariant keeps the log honest: for every row, its image equals the `after` of its newest effect.",
+    "evidence": "src/ledger.ts:31, 101-127, 259-275, 291-315; src/facts.ts:27, 108-131; src/reminders/db.ts:49, 84-89; src/reminders/send.ts:176-180, 260-263; src/render.ts:199, 404; grep for `superseded_by|restores` outside ledger/undo/facts/reminders finds only tests, test kits and evals/scenarios/drive.ts:148-166, 292.",
+    "size": "-250 lines across src/ledger.ts, src/facts.ts, src/reminders/db.ts; +40 for the shared row-plus-effect writer. Tests and kits that assert on pointer columns (about 100 references in 20 files, e.g. src/memory.test.ts 20, src/undo.test.ts 19, src/migrations.test.ts 16) need rewriting: 200-400 test lines.",
+    "confidence": "medium-high"
+   },
+   {
+    "item": "One undo engine over effects, with a per-store hook (answers question 2)",
+    "problem": "Three planners with three different meanings of 'as the batch left it': movements walk a chain and ask whether every later step was made by an undone batch (src/undo.ts:117-144, src/ledger.ts:259-284), facts compare the live value of the key (src/undo-facts.ts:53-55), reminders walk `restores` in a loop of up to 20 x 2 queries (src/undo-reminders.ts:32-43). The fact planner is only right because a far-away guard refuses two values for one key in a message (src/agent/calls.ts:57-58, 330-334). The outcome type is three unions (src/undo.ts:25-35, src/undo-facts.ts:15-21, src/undo-reminders.ts:15-19) told apart with `'reminder' in u ? ... : 'fact' in u ? ...` (src/undo.ts:197). The engine reads the asking row's channel to apply a policy (src/undo.ts:102-108).",
+    "proposal": "src/history.ts replaces src/undo.ts, src/undo-facts.ts, src/undo-reminders.ts and the undo halves of ledger, facts and reminders/db.\n\ninterface Store { name: 'movement'|'fact'|'reminder'; table: string; image(sql): Fragment;\n  /** A domain reason a row that matches still cannot be taken back. */ blocked?(tx, accountId, id, to: Image|null, now): Promise<boolean>;\n  /** Columns outside the image to set when an image is written back. */ onRestore?(image, now): Fragment }\nopenBatch(tx, {accountId, turnId, undoes?}): Promise<Batch>\ncreate(tx, batch, store, values) / change(tx, batch, store, id, set): Promise<{id, before, after} | null>\nundoLast(tx, {accountId, turnId, askedAt, now, stores}): Promise<UndoOutcome>\nUndoOutcome = undone {batch, items: {store, id, before, after}[]} | nothing | expired | stale {items} | refused {store}\n\nAlgorithm: (1) newest batch not undone; none -> nothing; `askedAt - created_at > 24 h` -> expired, both on the database clock. (2) Fold its effects per (store, entity): before = first.before, after = last.after; drop an entity that is absent on both sides or unchanged. This one fold is the 'net of nothing' rule and the 'updated then forgot in one message' case. If nothing is left, mark the batch undone and look at the one before, so the stack cannot jam. (3) For each entity, read the row FOR UPDATE and require its image to equal `after` (jsonb equality in SQL, both sides built by the same expression) and `blocked` to be false; any failure -> stale, nothing written. (4) Open the undo batch (`undoes`), write each `before` back in reverse order (a created row gets `removed_at`), one effect each.\n\nThe second 'deshacer' needs no chain walk: undoing B2 writes B1's image back, so the row equals B1's `after` again. Reminder hook: `blocked` when a one-off was sent (`next_due_at IS NULL` and not removed), when a cancelled one has no occurrence after `now`, or when the cap would be passed; `onRestore` recomputes `next_due_at`. Fact hook: `blocked` when another live row holds the key. Movement: none. The MCP rule becomes the caller's argument (`stores: ['movement','fact']` -> `refused`), not a channel read in the engine. With commit-ordered batches and one account lock, stale is unreachable for movements and facts; it stays as a cheap check and is real for reminders, where the sweep writes too.",
+    "evidence": "src/undo.ts:86-191, src/undo-facts.ts:43-95, src/undo-reminders.ts:32-101, src/ledger.ts:210-320, src/facts.ts:176-213, src/reminders/db.ts:123-176. Today's batch id is the message's arrival id (`i.id < cur.id`, src/ledger.ts:189), assigned seconds before commit, which is what lets an MCP write that committed in between be skipped or surface as stale.",
+    "size": "-640 lines (399 in the three undo files, about 190 in src/ledger.ts:129-320, 38 in src/facts.ts:176-213, 54 in src/reminders/db.ts:123-176); +170 for src/history.ts and +60 for three hooks",
+    "confidence": "high that it keeps the 24 h window, cross-channel undo and stale refusal; medium on the line counts"
+   },
+   {
+    "item": "One per-account write lock",
+    "problem": "Three advisory keys for one idea: 7203002 undo (src/undo.ts:86), 7203003 facts (src/facts.ts:70), 7203005 reminders (src/reminders/db.ts:58), plus row locks on movements (src/ledger.ts:80-89, 238-242) and a second live-lock pass on heads (src/undo.ts:139-144). The comment that lists the keys omits 7203005 (src/db.ts:19-20). The order differs by path: an undo takes movement rows, then facts, then reminders (src/undo.ts:95, 97, 100); a WhatsApp message takes them in the model's action order (src/execute.ts:110-133). A message that remembers a fact and then corrects movement X, running beside an MCP `warren_undo_last` whose batch holds X, is a lock cycle. MCP requests are outside the per-sender lane (src/process.ts:534-555), nothing retries 40P01, and the loser gets the failure notice (src/process.ts:459-460) or an MCP error. Narrow, but the spec's 'never one sender' (docs/agent-spec.md:685-686) stopped being true when MCP writes shipped.",
+    "proposal": "`lockAccount(tx, accountId)` = `SELECT 1 FROM account WHERE id = $1 FOR NO KEY UPDATE`, the first statement of `store.commit` and `writeAsMcp`, before anything is read. `NO KEY` so that inserts with an `account_id` foreign key elsewhere (the webhook's message insert) do not wait on it. Every write for a person then runs one at a time, caps are decided under it, and batch ids are in commit order. Drop `lockFacts`, `lockReminders`, `lockRows`, `lockLive`, the undo advisory lock and the head re-check. Keep only the `FOR UPDATE` on a reminder row, for the sweep. Lock order is then account -> reminder row for people and reminder row alone for the sweep: no cycle. The commit transaction holds no model call (src/process.ts:432-458), so the lock is held for milliseconds.",
+    "evidence": "src/undo.ts:86-100, 139-144; src/facts.ts:69-71, 144, 169; src/reminders/db.ts:57-59; src/apply.ts:104, 119, 142, 181; src/db.ts:19-20; src/process.ts:459-460, 534-555; docs/agent-spec.md:680-686",
+    "size": "-60 lines; touches src/store.ts and src/mcp/write.ts (other groups) by one call each",
+    "confidence": "high"
+   },
+   {
+    "item": "Reminder row: person's state apart from scheduler state",
+    "problem": "`reminder` is called append-only (src/migrations/014_reminders.sql:4) but the sweep rewrites `next_due_at` and `sent_count` on it. `sent_count` is written in two places and read nowhere (src/reminders/send.ts:263, src/reminders/db.ts:200; no other reference in src or evals). Undoing a cancel inserts a new row (src/undo-reminders.ts:90-97), so the send history of one logical reminder is split across ids.",
+    "proposal": "Image = {what, schedule, removed_at}. `next_due_at` stays on the row as scheduler state, outside the image, written by the sweep and by the store's `onRestore`. Drop `sent_count`; if a count is ever shown, it is `count(*) FROM reminder_send WHERE status = 'sent'`. Cancel and its undo set and clear `removed_at` on the same row, so `UNIQUE (reminder_id, due_at)` covers the reminder for life and a restored reminder can never resend an occurrence it already sent (the claim's `ON CONFLICT DO NOTHING`, src/reminders/send.ts:195, skips it).",
+    "evidence": "src/reminders/send.ts:160, 176, 180, 192-197, 260-263; src/reminders/db.ts:185-200; src/undo-reminders.ts:90-97; src/migrations/014_reminders.sql:11-32",
+    "size": "-25 lines",
+    "confidence": "high"
+   },
+   {
+    "item": "`position` and `rows` bookkeeping",
+    "problem": "`movement.position` with `UNIQUE (inbound_message_id, position)` (src/migrations/003_logging.sql:21, 32) is read by no production query; the commit guard already stops a double apply (src/store.ts:276-280). It forces a counter through four modules: `ApplyContext.position` (src/apply.ts:53-54), a `rows` field on every `Outcome` variant, 0 on eight of ten (src/apply.ts:61-80), the counter in src/execute.ts:101, 134, and again in the undo (src/undo.ts:159, 172, 182).",
+    "proposal": "Drop the column and the constraint. Order within a batch is `effect.id`. `batch.turn_id UNIQUE` is the database's 'a turn is applied once'. Remove `position` from `ApplyContext` and `rows` from `Outcome`.",
+    "evidence": "src/apply.ts:53-80, src/execute.ts:101-134, src/undo.ts:159-182, src/ledger.ts:52-60, 296-305; grep for `position` in non-test src shows only these writers and src/test-harness.ts:439",
+    "size": "-30 lines",
+    "confidence": "high"
+   },
+   {
+    "item": "Migration path from the live DB",
+    "problem": "The new shape cannot be reached by additive columns alone: superseded movement and fact rows are old versions, not entities, and must leave the live tables.",
+    "proposal": "One file, `016_history.sql`, run by the existing single-transaction migrator (src/db.ts:23-34), after a `pg_dump` of the live DB. Steps: (1) `CREATE TABLE movement_v1 AS TABLE movement`, same for `fact` and `reminder`: archives nothing reads. (2) Create `batch` and `effect`. (3) Backfill `batch` in id order from every `inbound_message` that is a batch today (`action` and `reply_text` set), with `turn_id` = its id, `undoes` mapped, `created_at = received_at`. (4) Drop the self-referencing foreign keys, delete superseded rows from `movement` and `fact`, rename `deleted_at`/`forgotten_at`/`cancelled_at` to `removed_at`, drop the pointer columns, `position`, `sent_count` and their indexes. Surviving rows keep their ids, so ids in recent replies and in `reminder_send` stay valid. (5) Insert one create-effect per surviving row, under the batch of the message that made it. (6) Drop `inbound_message.undoes`. What is lost: 'deshacer' for corrections and deletes made in the 24 h before the cutover (their before-images are only in the `_v1` archives). With one user, deploy after a quiet day or accept it. Proof, in src/migrations.test.ts, which already applies a migration over seeded rows: totals per direction and currency of live movements, the set of live facts and the set of live reminders with `next_due_at` are equal before and after, and every row's image equals its newest effect's `after`.",
+    "evidence": "src/db.ts:23-34; src/migrations/009_undo.sql, 011_facts.sql, 014_reminders.sql; docs/agent-spec.md:654-655 (the 009 test pattern). I did not look at the live DB: row counts are the brief's.",
+    "size": "+120 lines of SQL, +80 lines of migration test",
+    "confidence": "medium"
+   }
+  ],
+  "delete": [
+   {
+    "item": "`reminder.sent_count` and its two UPDATEs",
+    "why": "Written, never read. Derivable from `reminder_send`.",
+    "evidence": "src/reminders/send.ts:263, src/reminders/db.ts:200; no reader in src or evals"
+   },
+   {
+    "item": "`movement.position`, `UNIQUE (inbound_message_id, position)`, `ApplyContext.position`, `Outcome.rows`",
+    "why": "No production reader; the commit guard and `batch.turn_id UNIQUE` cover the double-apply case.",
+    "evidence": "src/migrations/003_logging.sql:21, 32; src/apply.ts:53-80; src/execute.ts:101, 134"
+   },
+   {
+    "item": "`followForward`, `settledBatches`, `headOf`, `effectsOf`, `batchRows`, `batchFacts`, `batchReminders`, `reminderById`, `rowsByIds` as an undo read, `copyVersion`, `restoreFact`, `markUndone`",
+    "why": "All of them re-derive what an effect row states directly: what the batch did and what the entity was before.",
+    "evidence": "src/ledger.ts:210-320, src/undo.ts:56-66, src/undo-reminders.ts:32-43, src/facts.ts:176-213, src/reminders/db.ts:123-176"
+   },
+   {
+    "item": "`restores` on three tables, `superseded_by` on two, `deleted_by`, `forgotten_by`, `cancelled_by`, and their nine indexes",
+    "why": "Pointer columns that exist only so undo can reconstruct a batch and a chain.",
+    "evidence": "src/migrations/009_undo.sql:14-21, 011_facts.sql:21-38, 014_reminders.sql:21-32, 005_corrections.sql:3-5"
+   },
+   {
+    "item": "The three `LIVE` constants and `sql.unsafe(LIVE)`",
+    "why": "One predicate, `removed_at IS NULL`, written inline.",
+    "evidence": "src/ledger.ts:31, src/facts.ts:27, src/reminders/db.ts:49"
+   },
+   {
+    "item": "`supersedeFact`'s `nextval` plus deferred foreign key, and `insertFact`'s optional explicit id",
+    "why": "Exists only to swap two version rows without two live keys at any statement. An in-place UPDATE needs none of it.",
+    "evidence": "src/facts.ts:108-131, src/migrations/011_facts.sql:21"
+   },
+   {
+    "item": "The copy of `created_at` onto a correction's new row",
+    "why": "Fakes identity across versions and is itself an UPDATE of a value in an 'append-only' table.",
+    "evidence": "src/ledger.ts:117-120"
+   },
+   {
+    "item": "`lockFacts`, `lockReminders`, `lockRows`, `lockLive`, advisory key 7203002, and the head re-lock",
+    "why": "Replaced by one account lock.",
+    "evidence": "src/facts.ts:69-71, src/reminders/db.ts:57-59, src/ledger.ts:80-89, 238-242, src/undo.ts:86, 139-144"
+   },
+   {
+    "item": "The `whatsapp_only` channel read inside the engine",
+    "why": "A caller's policy, passed as an argument.",
+    "evidence": "src/undo.ts:43-44, 102-108"
+   },
+   {
+    "item": "`batchRow`, `settleBatchRow` and the `NothingChanged` rollback, as far as undo is their reason",
+    "why": "A lazily created `batch` row is the batch; a no-op makes none. The MCP idempotency record is a separate concern for the turn group.",
+    "evidence": "src/ledger.ts:138-174, src/mcp/write.ts:81-85, 132"
+   }
+  ],
+  "naming": [
+   "`inboundId` and `batchId` name the same thing: src/apply.ts:51 says `batchId`, then passes it as `inboundId` to src/undo.ts:83, src/facts.ts:102, src/ledger.ts:50. Use `batchId` everywhere once a batch is a row.",
+   "`BatchRow` (src/ledger.ts:211) is a movement row; `batchRow` (src/ledger.ts:144) is a predicate on `inbound_message`. Two names one capital apart for different things.",
+   "'settle' has three meanings: `Settled` is a message status (src/store.ts:84), `settleBatchRow` writes an MCP row (src/ledger.ts:153), `settledBatches` means 'undone, or itself an undo' (src/ledger.ts:278).",
+   "`moved` means 'no longer as the batch left it' (src/undo.ts:46, src/undo-facts.ts:30, src/undo-reminders.ts:28) while the outcome is called `stale`. Pick `stale`.",
+   "`made` in the fact and reminder plans against `logged` in the movement effects for the same idea (src/undo-facts.ts:26, src/undo-reminders.ts:24, src/undo.ts:50).",
+   "Four words for one state across stores: deleted, forgotten, cancelled, finished. In the schema use one column name, `removed_at`; keep the person's verbs in src/render.ts only.",
+   "`LIVE` is one name with three definitions, and the reminder one also means 'not finished' (src/reminders/db.ts:48-49). After the change, say 'live' for `removed_at IS NULL` and 'due' or 'pending' for `next_due_at IS NOT NULL`.",
+   "`Undone` (an item, src/undo.ts:25) against `UndoOutcome.kind: 'undone'` (the whole result, :38). Call the item `UndoItem`.",
+   "`Link` (src/ledger.ts:245) is a step of a movement's chain; 'link' elsewhere is the MCP sign-in (src/auth/link.ts). It goes away with the chain walk.",
+   "src/ledger.ts holds movement SQL plus message-table writes (`settleBatchRow`, `markUndone`, `lastBatch`). After the change it is movement only; batch and effect SQL live in src/history.ts.",
+   "src/reminders/db.ts holds `recordReminderStatus`, which is about `reminder_send` and opens its own transaction (:187-208). It reads better beside the sender in src/reminders/send.ts."
+  ],
+  "challenged_decisions": [
+   {
+    "decision": "AGENTS.md rule 3 as written ('Corrections never overwrite a movement, deletes never remove one, and neither does an undo'), and the slice C decision 'The action log is the data already stored; no table' (docs/agent-spec.md:645-650). I challenge the letter of both. I do not challenge the owner's listed decision: visible history ('antes ...') and undo within 24 h across channels are kept exactly.",
+    "challenge": "Keep the intent (nothing is ever lost, every change is recorded append-only, an undo is itself recorded) and move the guarantee from three tables of version rows to one insert-only `effect` log, with entity rows updated in place under a stable id. If the owner holds the letter of rule 3, the same batch, effect log, engine and lock still apply: only the image format changes, from jsonb images to typed per-store history tables (three more tables, and readers keep filtering for the head row). That choice is the debatable part; the batch and the engine are not.",
+    "evidence": "(1) Rows are already updated in place: `created_at` (src/ledger.ts:117-120), the ending stamps, and `next_due_at`/`sent_count` by the sweep (src/reminders/send.ts:176, 180, 263). (2) No production code reads the version chain except undo; 'antes' is rendered from memory at write time (src/render.ts:199, 404). (3) The 'no second source of truth' argument did not hold: batch-ness is encoded twice, in SQL and in TypeScript, and the mismatch jammed undo (docs/agent-spec.md:1166-1170). (4) Ids change on every correction (src/ledger.ts:111-122), which every future reference to a movement (a statement line, a budget, a pending question) would have to chase. (5) docs/mcp-spec.md:120-121 already states the batch table is what would be built from scratch. Costs I accept and name: jsonb images lose column types (mitigated by explicit images with amounts as text, applied in SQL, and a 24 h replay window), and an in-place UPDATE is one bug away from changing an amount, as it is today since nothing in the database forbids `UPDATE movement SET amount` now."
+   }
+  ],
+  "questions_for_owner": [
+   "Is rule 3 about the rows (a movement row's values are never updated) or about the record (every change is kept, append-only, and shown)? The first means typed history tables per store; the second allows current rows plus one effect log, which is what I would build.",
+   "When a person says 'olvidate de ...', should the value be erased after the 24 h undo window? Today a forgotten fact keeps its value forever (src/facts.ts:156-161 only stamps). An effect log can prune fact images by age; version rows cannot easily.",
+   "Is it acceptable to lose 'deshacer' for corrections and deletes made in the 24 h before the migration, or should the migration backfill their before-images from the superseded rows (about 30 more lines of SQL)?",
+   "Which order defines 'the last thing' when channels overlap: commit order (my proposal, the batch id) or arrival order (today, `i.id < cur.id` at src/ledger.ts:189)? They differ only when an MCP write commits while a WhatsApp 'deshacer' is still in the model.",
+   "A batch that can never be undone blocks every older batch: after a one-off reminder was sent, each 'deshacer' answers stale and the café logged before it is out of reach (src/undo-reminders.ts:64, src/undo.ts:135-137). Keep the strict stack, or let the engine pass over a batch that is blocked for good?",
+   "Should MCP keep refusing to undo a batch that touched reminders once MCP has reminder tools? In the redesign it is one argument (`stores`), so it is a product choice, not a code one.",
+   "Do you want the database to refuse a movement write with no effect row (a trigger, or a test-only invariant query)? I would start with the single-statement writer plus the invariant in tests, and add a trigger only if a second writer path appears."
+  ]
+ }
+]
