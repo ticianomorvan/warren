@@ -18,9 +18,11 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
    of its own, but it never writes a number code didn't give it (`src/agent/say.ts` checks every number;
    a text that fails is dropped) and never replaces the code-rendered record of a change. It never picks a
    target in code's place: an id it sends must be one it was shown, the sender's, and live.
-3. **Corrections never overwrite a movement, deletes never remove one.** A correction is a new row
-   that supersedes the old one (`superseded_by`); a delete stamps `deleted_at` and `deleted_by`. Only
-   movements that are neither count (the recent list, query totals).
+3. **Corrections never overwrite a movement, deletes never remove one, and neither does an undo.** A correction is a new
+   row that supersedes the old one (`superseded_by`); a delete stamps `deleted_at` and `deleted_by`. Only movements that
+   are neither count (the recent list, query totals). An undo is made of the same moves: undoing a log is a delete,
+   undoing a correction is a new row with the old values that supersedes the correction, undoing a delete is a new row
+   (`restores` names the deleted one). No row is edited, removed or un-deleted, and the undo is itself a recorded batch.
 4. **Secrets live only in the gitignored `.env`.** Never in code, logs, eval output or commits.
 
 ## Layout
@@ -38,9 +40,10 @@ src/store.ts  The rules of the tables (inbound_message, reply, account): due pre
               conversation window, the commit transaction (guard, then the actions' effects, then the stored
               reply and the audit), ownership-guarded writes
 src/ledger.ts All SQL on `movement`: live movements (not superseded, not deleted), find, insert, lock,
-              supersede, soft delete, summary totals
+              supersede, soft delete, summary totals, and what undo reads and writes (last batch, a batch's rows, the chain of a movement, `copyVersion`)
 src/movement.ts Pure: text normalizing, applying a correction's changes, which fields changed
-src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a question we asked (done in code)
+src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a question we asked (done in code), and `undoRequest`, a typed bare "deshacer" (done in code)
+src/undo.ts   Undo of the sender's last write batch (agent slice C): which batch, the stale-state guard, the append-only reversal; runs inside the commit transaction
 src/execute.ts  Runs a message's actions inside the commit transaction and returns the reply to store
 src/process.ts  Per message: ignored vs reply; for text, typing + agent together, the 10 s interim note, the 30 s
               deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
@@ -198,6 +201,12 @@ wrong changes. Its test split is held out like the other: never print or tune on
     `asked_numbers`, `asked_ids` and `pending`, what choosing an option will do; it has no `text`: code asks once), `reply({text})` (the model's
     own words, for what is not a change: a question about what Warren did, thanks, something off topic) and
     `help` (the one canned text, for "ayuda" and greetings).
+  - **Undo (slice C).** `undo_last` (input: only `text`) takes back the sender's last write batch, the whole of what one earlier message
+    logged, corrected or deleted. It goes alone in its turn (sent with another action it is refused and the model sends again).
+    The batch, the guard and the reversal are code's (`src/undo.ts`); the model sends no id. A typed bare "deshacer" / "volvé atrás" /
+    "anulá lo que hiciste" (`undoRequest`) is answered by code with no model call; by voice, and every other phrase ("no, eso no"), it
+    goes to the model. "deshacé el café" names one movement: that is a delete, not an undo. The record is `↩︎ Deshice: Súper $5.000 · Panadería
+    $3.000` (a log) or a bulleted list when a correction or delete is undone. See `docs/agent-spec.md`, Agent slice C notes.
   - **The model's own words (B2).** Every write tool and `summarize` carry a `text` (a nullable, always present). `text` is null unless it adds
     something; one that only repeats the person's message, or only restates the lines code rendered (every word is filler or already in a line: "Corregí el café de las 11:11" beside "✓ Corregido: Café …· 11:11"), is dropped (not an error; a `reply` is never dropped for this). Code sends the record of what changed (and the totals, and the question) first, then the texts, in
     order. A text goes out only if `checkSay` passes: at most 280 characters, no `✓`, no number in digits or
@@ -242,7 +251,7 @@ wrong changes. Its test split is held out like the other: never print or tune on
     delete reply shows before and after, and the logged time (and the day, if not today) when the movement is
     not the newest.
   - Stored on the message: `parsed` what the model asked for (null when no model ran), `command` what ran (both
-    lists of `{tool, input}`), `action` (log, correct, delete, summarize, ask, reply, multi), `tool_calls` the
+    lists of `{tool, input}`), `action` (log, correct, delete, summarize, ask, reply, undo, multi), `tool_calls` the
     audit (every call with turn, input, outcome, ms), `model_turns`, `model_ms`.
 - **Weeks, periods and queries.** Weeks are Monday to Sunday and whole, so `this_week` can end after today; months
   and years are calendar ones; all ranges are Argentine days (`periodRange`, from the message's own time).

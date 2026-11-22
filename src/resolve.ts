@@ -86,3 +86,25 @@ export function answerAction(text: string, question: PendingQuestion | null): Ac
     ? { tool: 'delete_movement', input: { id, text: null } }
     : { tool: 'correct_movement', input: { id, changes: question.pending.changes, text: null } }
 }
+
+const UNDO_VERB =
+  '(?:deshac(?:e|er|elo)|anul(?:a|ar|alo)|revert(?:i|ir|ilo)|volver? atras|vuelve atras)'
+/** What an undo may point at: the last thing, never one named movement ("deshacé el café") and never "todo". */
+const UNDO_OBJECT =
+  '(?:eso|esto|lo|lo ultimo|lo anterior|el ultimo|lo que (?:hiciste|hice|anotaste|puse|acabas de hacer|acabo de hacer)|lo ultimo que (?:hiciste|hice|anotaste|puse))'
+const UNDO = new RegExp(
+  `^(?:(?:ay|uy|ups|no|dale|bueno|perdon|mejor|ok)\\s+)*(?:(?:por favor|porfa)\\s+)?${UNDO_VERB}(?:\\s+${UNDO_OBJECT})?(?:\\s+(?:por favor|porfa|nomas))?$`,
+)
+
+/**
+ * "deshacer", "deshacé lo último", "volvé atrás", "anulá lo que hiciste": a typed message that is only that is
+ * the undo of the last batch, done by code with no model call. Anything with more in it, or that names one
+ * movement ("deshacé el café", "deshacer todo"), is not, and goes to the model.
+ */
+export function undoRequest(text: string): Action | null {
+  const words = normalizeText(text)
+    .replace(/[¡!¿?.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return UNDO.test(words) ? { tool: 'undo_last', input: { text: null } } : null
+}

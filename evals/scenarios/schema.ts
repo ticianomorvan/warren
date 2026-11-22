@@ -24,6 +24,8 @@ export const TAGS = [
   'typo',
   'time-reference',
   'other',
+  /** Taking back the last batch of changes ("deshacer"): graded as the delete, the correction or the log it comes to. */
+  'undo',
   /** A voice note: its latency includes the transcription, so it is kept apart from the other tags. */
   'voice',
 ] as const

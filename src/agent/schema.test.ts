@@ -23,6 +23,7 @@ describe('TOOLS', () => {
       'ask_user',
       'reply',
       'help',
+      'undo_last',
     ])
     expect(Object.keys(TOOL_INPUTS)).toEqual(TOOLS.map((t) => t.name))
   })

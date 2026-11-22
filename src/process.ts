@@ -22,7 +22,7 @@ import {
   REPLY_NON_TEXT,
   REPLY_VOICE,
 } from './render'
-import { answerAction } from './resolve'
+import { answerAction, undoRequest } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
 import { judgeTranscript, type Transcriber, TranscriptionError } from './transcribe'
@@ -276,9 +276,10 @@ export function createProcessor(o: ProcessorOptions) {
         text = voice.heard
         heard = voice.heard
       }
-      // A bare answer to the question we just asked is code's job: no model call at all. Not for a note
-      // of voice: a delete or a correction is never run on what a model of speech thought it heard.
-      const answer = isPhoto || voice ? null : answerAction(text, conversation.question)
+      // A bare answer to the question we just asked, or a bare "deshacer", is code's job: no model call at all. Not for a
+      // note of voice: a delete, a correction or an undo is never run on what a model of speech thought it heard.
+      const answer =
+        isPhoto || voice ? null : (answerAction(text, conversation.question) ?? undoRequest(text))
       if (answer) {
         return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }

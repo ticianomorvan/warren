@@ -125,6 +125,150 @@ export async function softDelete(sql: Sql, id: number, inboundId: number): Promi
   await sql`UPDATE movement SET deleted_at = now(), deleted_by = ${inboundId} WHERE id = ${id}`
 }
 
+// ---- Undo (agent slice C). A write batch is the inbound message that made the changes; what it did to each
+// ---- movement is in the rows themselves. Nothing here updates a row's values, deletes a row or clears a mark.
+
+/** The sender's newest write batch that is not undone, and how long before the asking message it was made. */
+export interface LastBatch {
+  id: number
+  ageSecs: number
+}
+
+/**
+ * The newest batch of the account before the message `inboundId` (the one asking to undo): a committed
+ * message from the sender that inserted or deleted a movement of the account, that is not itself an undo
+ * and that no undo reverted. An undone batch is skipped, so a second "deshacer" reaches the one before.
+ */
+export async function lastBatch(
+  sql: Sql,
+  o: { accountId: number; inboundId: number },
+): Promise<LastBatch | null> {
+  const [row] = await sql<LastBatch[]>`
+    SELECT i.id::int AS id, extract(epoch FROM cur.received_at - i.received_at)::float8 AS "ageSecs"
+    FROM inbound_message cur
+    JOIN account a ON a.id = ${o.accountId}
+    JOIN inbound_message i ON i.wa_id = a.wa_id AND i.id < cur.id
+    WHERE cur.id = ${o.inboundId}
+      AND i.action IS NOT NULL AND i.reply_text IS NOT NULL AND i.undoes IS NULL
+      AND (EXISTS (SELECT 1 FROM movement m WHERE m.inbound_message_id = i.id AND m.account_id = a.id)
+        OR EXISTS (SELECT 1 FROM movement m WHERE m.deleted_by = i.id AND m.account_id = a.id))
+      AND NOT EXISTS (SELECT 1 FROM inbound_message u WHERE u.undoes = i.id)
+    ORDER BY i.id DESC LIMIT 1`
+  return row ?? null
+}
+
+/** A movement row of a batch, in any state, with how the batch touched it. */
+export interface BatchRow extends MovementRow {
+  /** The message that inserted the row. */
+  inbound: number
+  /** The message that deleted it, if one did. */
+  deletedBy: number | null
+  /** The row a correction of this batch replaced; null when the row was logged. */
+  predecessor: number | null
+}
+
+/** Every row the batch inserted (a log, or a correction's new row) or deleted, of this account, oldest first. */
+export function batchRows(sql: Sql, accountId: number, batch: number) {
+  return sql<BatchRow[]>`
+    SELECT ${columns(sql)}, inbound_message_id::int AS inbound, deleted_by::int AS "deletedBy",
+      (SELECT p.id::int FROM movement p WHERE p.superseded_by = movement.id) AS predecessor
+    FROM movement
+    WHERE account_id = ${accountId} AND (inbound_message_id = ${batch} OR deleted_by = ${batch})
+    ORDER BY id`
+}
+
+/** Rows by id, in any state, only the account's. */
+export function rowsByIds(sql: Sql, accountId: number, ids: number[]) {
+  return sql<MovementRow[]>`
+    SELECT ${columns(sql)} FROM movement
+    WHERE account_id = ${accountId} AND id = ANY(${ids}::bigint[]) ORDER BY id`
+}
+
+/** Row locks on these rows whatever their state, in id order. A change that needs one of them waits for the commit. */
+export async function lockRows(sql: Sql, accountId: number, ids: number[]): Promise<void> {
+  await sql`
+    SELECT id FROM movement
+    WHERE account_id = ${accountId} AND id = ANY(${ids}::bigint[]) ORDER BY id FOR UPDATE`
+}
+
+/** One row of a movement's history, after the row it started from. */
+export interface Link {
+  root: number
+  /** 0 is the root itself. */
+  hop: number
+  id: number
+  /** The message that inserted this row. */
+  madeIn: number
+  live: boolean
+}
+
+/**
+ * Follows each root forward through what came after it: the row that replaced it, or the row that restored it
+ * after a delete. The last link of a root is where the movement stands now.
+ */
+export function followForward(sql: Sql, accountId: number, roots: number[]) {
+  return sql<Link[]>`
+    WITH RECURSIVE walk(root, id, hop) AS (
+        SELECT id, id, 0 FROM movement WHERE account_id = ${accountId} AND id = ANY(${roots}::bigint[])
+      UNION ALL
+        SELECT w.root, nxt.id, w.hop + 1
+        FROM walk w
+        JOIN movement cur ON cur.id = w.id
+        JOIN movement nxt ON nxt.account_id = ${accountId}
+          AND (nxt.id = cur.superseded_by OR nxt.restores = cur.id)
+        WHERE w.hop < 50)
+    SELECT w.root::int AS root, w.hop::int AS hop, m.id::int AS id,
+      m.inbound_message_id::int AS "madeIn",
+      (m.superseded_by IS NULL AND m.deleted_at IS NULL) AS live
+    FROM walk w JOIN movement m ON m.id = w.id
+    ORDER BY w.root, w.hop`
+}
+
+/** Which of these messages are undone, or are themselves an undo: changes they made were reversed or are the reversal. */
+export async function settledBatches(sql: Sql, ids: number[]): Promise<Set<number>> {
+  const rows = await sql<{ id: number }[]>`
+    SELECT i.id::int AS id FROM inbound_message i
+    WHERE i.id = ANY(${ids}::bigint[])
+      AND (i.undoes IS NOT NULL OR EXISTS (SELECT 1 FROM inbound_message u WHERE u.undoes = i.id))`
+  return new Set(rows.map((r) => r.id))
+}
+
+/**
+ * Inserts a new row with the values of `from` (the row an undo brings back), dated as it was first logged.
+ * `restoresIt` links it to a deleted row it replaces; a correction's restore instead supersedes the row it
+ * undoes (`replaces`). The source row is never touched, and the new row is live.
+ */
+export async function copyVersion(
+  sql: Sql,
+  o: {
+    accountId: number
+    inboundId: number
+    position: number
+    from: number
+    restoresIt?: boolean
+    replaces?: number
+  },
+): Promise<number> {
+  const [row] = await sql<{ id: number }[]>`
+    INSERT INTO movement (account_id, inbound_message_id, position, direction, amount, currency,
+      occurred_on, description, category, payment, confidence, created_at, restores)
+    SELECT account_id, ${o.inboundId}, ${o.position}, direction, amount, currency, occurred_on,
+      description, category, payment, confidence, created_at, ${o.restoresIt ? sql`id` : sql`NULL::bigint`}
+    FROM movement WHERE id = ${o.from} AND account_id = ${o.accountId}
+    RETURNING id::int AS id`
+  const id = row?.id
+  if (id === undefined) throw new Error(`undo: movement ${o.from} is not the account's`)
+  if (o.replaces !== undefined) {
+    await sql`UPDATE movement SET superseded_by = ${id} WHERE id = ${o.replaces}`
+  }
+  return id
+}
+
+/** Marks the message as the undo of `batch`. One undo per batch: the unique index refuses a second. */
+export async function markUndone(sql: Sql, inboundId: number, batch: number): Promise<void> {
+  await sql`UPDATE inbound_message SET undoes = ${batch} WHERE id = ${inboundId}`
+}
+
 /** The id of the account's newest live movement, or null when it has none. */
 export async function newestLiveId(sql: Sql, accountId: number): Promise<number | null> {
   const [row] = await sql<{ id: number | null }[]>`

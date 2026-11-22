@@ -31,6 +31,8 @@ export interface Summary {
   /** Only the agent loop (model calls and reads), as the pipeline stored it. */
   modelMs: Latency
   byAction: Partial<Record<Action, Latency>>
+  /** Turns that needed a second model call, over the turns that called the model at all. */
+  secondTurn: { turns: number; withModel: number }
   costUsd: number
   costPerTurnUsd: number
   gate: { passRate: boolean; noSilentWrong: boolean; noInvented: boolean; complete: boolean }
@@ -57,7 +59,16 @@ export function summarize(results: ScenarioResult[]): Summary {
     }
   }
   const byAction: Summary['byAction'] = {}
-  for (const action of ['log', 'correct', 'delete', 'query', 'ask', 'multi', 'other'] as const) {
+  for (const action of [
+    'log',
+    'correct',
+    'delete',
+    'undo',
+    'query',
+    'ask',
+    'multi',
+    'other',
+  ] as const) {
     const of = turns.filter((t) => t.action === action)
     if (of.length > 0) byAction[action] = latency(of.map((t) => t.wallMs))
   }
@@ -88,6 +99,10 @@ export function summarize(results: ScenarioResult[]): Summary {
     turnMs: latency(turns.map((t) => t.wallMs)),
     modelMs: latency(turns.flatMap((t) => (t.modelMs === null ? [] : [t.modelMs]))),
     byAction,
+    secondTurn: {
+      turns: turns.filter((t) => (t.modelTurns ?? 0) > 1).length,
+      withModel: turns.filter((t) => (t.modelTurns ?? 0) > 0).length,
+    },
     costUsd: turns.reduce((sum, t) => sum + t.costUsd, 0),
     costPerTurnUsd: mean(turns.map((t) => t.costUsd)),
     gate,
@@ -106,6 +121,7 @@ export function renderSummary(s: Summary): string[] {
     `unnecessary questions: ${s.unnecessaryQuestions}`,
     `invented numbers: ${s.inventedNumbers}`,
     `turns: ${s.turns}; per turn p50 ${ms(s.turnMs.p50)}, p95 ${ms(s.turnMs.p95)} (model alone p50 ${ms(s.modelMs.p50)}, p95 ${ms(s.modelMs.p95)})`,
+    `second model turn: ${s.secondTurn.turns} of ${s.secondTurn.withModel} turns that called the model (${pct(s.secondTurn.withModel === 0 ? 0 : s.secondTurn.turns / s.secondTurn.withModel)})`,
     `cost: US$${s.costUsd.toFixed(4)} (US$${s.costPerTurnUsd.toFixed(5)} per turn)`,
   ]
   for (const [action, l] of Object.entries(s.byAction)) {

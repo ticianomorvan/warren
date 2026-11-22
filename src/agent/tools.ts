@@ -16,6 +16,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   reply:
     'Answer in words, for anything that is not a change to the ledger: a question about what you did or what is stored, small talk, something you cannot do, a request outside expenses, a change when the person has no movements at all (never when some exist and none fits: that is ask_user). Short, in Argentine Spanish. The text may use only numbers that code gave you.',
   help: 'Send the canned help text: only when the person asks for help or what you can do, or greets you.',
+  undo_last:
+    'Undo the person\'s LAST batch of changes as a whole (everything one earlier message logged, corrected or deleted): "deshacer", "volvé atrás", "anulá lo que hiciste", "no, eso no" right after a record. Code finds the batch and writes what it undid; you send no id. Never for one named movement (that is delete_movement or correct_movement), and never together with another action.',
 }
 
 /** The strict-tool form of a zod schema: the API rejects numeric bounds and the `$schema` key. */

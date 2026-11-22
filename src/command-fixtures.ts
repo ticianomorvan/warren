@@ -30,6 +30,8 @@ export const remove = (id: number): ToolCall => ({
   name: 'delete_movement',
   input: { id, text: null },
 })
+/** The model takes back the last batch of changes. */
+export const undoCall: ToolCall = { name: 'undo_last', input: { text: null } }
 /** The same call with the model's own words added. */
 export const saying = (call: ToolCall, text: string): ToolCall => ({
   ...call,
