@@ -1,6 +1,6 @@
 # Slice 5: people as accounts, and Warren over MCP
 
-Status: spec, waiting for Ticiano's read (2026-11-22). Builds on `docs/agent-spec.md` and `AGENTS.md`.
+Status: approved by Ticiano 2026-11-22 (all packages below, writes included, URL `https://heywarren.app/mcp`). Builds on `docs/agent-spec.md` and `AGENTS.md`.
 
 ## Goal
 
@@ -9,7 +9,7 @@ message to Warren, and from then on their agent can read and write the same ledg
 WhatsApp uses, through the same code guards. WhatsApp becomes one channel of the core, MCP a second.
 
 Done means:
-- `https://wa.heywarren.app/mcp` answers 401 with RFC 9728 metadata; claude.ai and Claude Code finish
+- `https://heywarren.app/mcp` answers 401 with RFC 9728 metadata; claude.ai and Claude Code finish
   OAuth against it (CIMD, PKCE S256, audience-bound token) with no client registration step.
 - Sign-in: the page shows a code and a `wa.me` link; the person sends it, Warren asks "¿Conectar
   Claude…? sí/no", "sí" completes the browser flow. No email, no password, no outbound template.
@@ -112,7 +112,9 @@ Done means:
    `renderSummary` text. Refusals are `isError` results with the compact reason `checkCall` gives.
    Routes added to `handle()`: `/mcp`, `/api/auth/*`, `/.well-known/oauth-authorization-server`,
    `/.well-known/oauth-protected-resource` (+ `/mcp`), `/sign-in`, `/sign-in/status`, `/oauth/consent`.
-   Config: `PUBLIC_URL`, `BETTER_AUTH_SECRET`, `WHATSAPP_DISPLAY_NUMBER`.
+   Config: `PUBLIC_URL` (`https://heywarren.app`), `BETTER_AUTH_SECRET`, `WHATSAPP_DISPLAY_NUMBER`.
+   Both hosts reach the same service; OAuth and MCP routes answer only on `PUBLIC_URL`'s host (the
+   webhook stays on `wa.heywarren.app`), so tokens and metadata name one issuer.
 
 From scratch we would put a channel-neutral batch table under both channels; the `channel` column is
 the smallest step that keeps undo shared, and the overhaul can replace it with that table.
@@ -124,11 +126,11 @@ the smallest step that keeps undo shared, and the overhaul can replace it with t
    `src/auth.test.ts` — full flow on PGlite with a fake CIMD host: authorize → sign-in page → signed
    webhook "vincular X" → "sí" → status → consent → code → token (PKCE) → refresh rotation → reuse
    rejected; expired, foreign-cookie and disallowed-sender cases refused. Live: `curl -i
-   https://wa.heywarren.app/mcp` shows 401 + header; both `.well-known` documents validate.
+   https://heywarren.app/mcp` shows 401 + header; both `.well-known` documents validate.
    Pages checked in a browser with the `ui` skill.
 2. **Read tools.** Door + three read tools. Proof: an end-to-end test (JSON-RPC over HTTP with a real
    token) incl. cross-account isolation and expired/wrong-audience tokens; output validated against a
-   closed copy of each schema. Live: `claude mcp add --transport http warren https://wa.heywarren.app/mcp`
+   closed copy of each schema. Live: `claude mcp add --transport http warren https://heywarren.app/mcp`
    in Claude Code, sign in, ask for this month's total, and compare with `pnpm` summary from the DB.
 3. **Writes.** `applyCall` extraction (no behaviour change: full suite + `pnpm eval:scenarios --split
    all` at the previous 180/182 bar, 0 silent), `013_channel`, six write tools, and "desconectar"
@@ -137,14 +139,13 @@ the smallest step that keeps undo shared, and the overhaul can replace it with t
    Live: Ticiano adds the connector in claude.ai (replacing the dead v0 "Warren" connector), logs a
    café from Claude, sees it on WhatsApp, undoes it with "deshacer".
 
-## Open questions
+## Decisions (2026-11-22)
 
-1. **New packages.** Beyond the two approved, this needs `@better-auth/mcp`, `@better-auth/cimd`
-   (same family; `@better-auth/oauth-provider` comes with them), `@modelcontextprotocol/node` (the
-   node adapter of the approved SDK) and `kysely-postgres-js` (lets better-auth use our existing
-   driver instead of adding `pg`). OK?
-2. **Writes over MCP in this slice** (slice 3 above), or read-only first and writes after the overhaul?
-   I recommend writes now: they share every guard, and "deshacer" on WhatsApp covers a client mistake.
-3. **The URL people type.** `https://wa.heywarren.app/mcp` needs no DNS work, but a connector URL is
-   hard to change later. If you'd rather `https://heywarren.app/mcp` (apex freed by the v0 teardown),
-   point it at Railway and tell me.
+1. Packages approved: `better-auth`, `@better-auth/mcp`, `@better-auth/cimd` (+ `oauth-provider`),
+   `@modelcontextprotocol/server`, `@modelcontextprotocol/node`, `kysely-postgres-js`.
+   Drizzle was considered: better-auth's drizzle adapter also runs on our postgres.js driver, but it
+   adds `drizzle-orm` plus a schema file only for auth tables. Kysely is already a better-auth
+   dependency and needs no schema file. If the overhaul moves the whole app to Drizzle, switching the
+   auth adapter is a config change: the tables are the same.
+2. Writes are in this slice.
+3. Connector URL `https://heywarren.app/mcp`. Apex `ALIAS` → Railway added on Vercel DNS.
