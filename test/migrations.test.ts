@@ -267,7 +267,8 @@ describe('the append-only guard', () => {
   it('runs here: the trigger exists and plpgsql is available', async () => {
     const [row] = await sql<
       { n: number }[]
-    >`SELECT count(*)::int AS n FROM pg_trigger WHERE tgname LIKE '%append_only' AND NOT tgisinternal`
+    >`SELECT count(*)::int AS n FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+      WHERE t.tgname LIKE '%append_only' AND NOT t.tgisinternal AND c.relnamespace = current_schema()::regnamespace`
     expect(row?.n).toBe(5)
   })
 

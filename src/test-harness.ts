@@ -182,7 +182,20 @@ export const post = (base: string, body: string, signature = sign(body, SECRET))
     body,
   })
 
-export const settle = () => new Promise((r) => setTimeout(r, 150))
+/**
+ * Gives the worker time to finish what it started: 150 ms, then, for up to 2 s, as long as a row it claimed in the last seconds is
+ * still `processing` (a loaded machine takes longer than the fixed pause; a row seeded as abandoned has an old claim and does not wait).
+ */
+export async function settle(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 150))
+  const end = Date.now() + 2000
+  while (Date.now() < end) {
+    const busy = await sql`
+      SELECT 1 FROM inbound_message WHERE status = 'processing' AND claimed_at > now() - interval '5 seconds' LIMIT 1`
+    if (busy.length === 0) return
+    await new Promise((r) => setTimeout(r, 25))
+  }
+}
 export const count = async (table: 'inbound_message' | 'reply' | 'account') =>
   Number((await sql.unsafe(`SELECT count(*) AS n FROM ${table}`))[0]?.n)
 export const seed = (wamid: string, cols = "status = 'pending'") =>
