@@ -25,7 +25,7 @@ import {
   REPLY_NON_TEXT,
   REPLY_VOICE,
 } from './render'
-import { answerAction, undoRequest } from './resolve'
+import { answerAction, linkCode, undoRequest } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
 import type { Timings, TurnTiming } from './timings'
@@ -46,6 +46,8 @@ export interface ProcessorOptions {
   helpContact?: string
   /** Turns voice notes into text. Without one, a voice note is answered with a request for text. */
   transcriber?: Transcriber
+  /** Connecting an agent over MCP is on (docs/mcp-spec.md): "vincular <code>", and the "sí" to its question. Off: those messages are ordinary text. */
+  signIn?: boolean
   /** Ms after `received_at` at which a slow message gets one interim note. Default 10 s. */
   interimMs?: number
   /** Ms after `received_at` at which an uncommitted message fails. Default 30 s. */
@@ -313,11 +315,16 @@ export function createProcessor(o: ProcessorOptions) {
       // A bare answer to the question we just asked, or a bare "deshacer", is code's job: no model call at all. Not for a
       // note of voice: a delete, a correction or an undo is never run on what a model of speech thought it heard. A
       // "deshacer" while a question is open most likely means "never mind", not "undo the batch before": the model reads it.
+      // "vincular <code>" comes first, whatever else is open (typed text only, like every answer code gives). The "sí" or
+      // "no" to its question is `answerAction`'s: the question is the previous reply's own, so the newest one owns it.
+      const code = o.signIn && c.kind === 'text' ? linkCode(text) : null
       const answer =
         isPhoto || voice
           ? null
-          : (answerAction(text, conversation.question) ??
-            (conversation.question ? null : undoRequest(text)))
+          : code
+            ? ({ tool: 'link_ask', input: { code } } as const)
+            : (answerAction(text, conversation.question) ??
+              (conversation.question ? null : undoRequest(text)))
       if (answer) {
         return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }
@@ -337,14 +344,16 @@ export function createProcessor(o: ProcessorOptions) {
         conversation: conversation.turns,
         photo: Boolean(photo),
         voice: Boolean(voice),
-        pending: conversation.question
-          ? conversation.question.pending?.action === 'forget_all'
-            ? { asked: [], action: 'forget_all' }
-            : {
-                asked: conversation.question.asked,
-                action: conversation.question.pending?.action ?? 'none',
-              }
-          : null,
+        // The sign-in's question is code's alone: the model is not told about it.
+        pending:
+          conversation.question && conversation.question.pending?.action !== 'link'
+            ? conversation.question.pending?.action === 'forget_all'
+              ? { asked: [], action: 'forget_all' }
+              : {
+                  asked: conversation.question.asked,
+                  action: conversation.question.pending?.action ?? 'none',
+                }
+            : null,
       }
       const result = await runAgent({
         client: o.client ?? defaultClient(),

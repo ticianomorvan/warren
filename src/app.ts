@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import type { AuthRoutes } from './auth/routes'
 import type { Config } from './config'
 import { log } from './log'
 import type { Processor } from './process'
@@ -12,6 +13,8 @@ export interface AppOptions {
   store: Store
   config: Pick<Config, 'WHATSAPP_VERIFY_TOKEN' | 'META_APP_SECRET'>
   processor: Processor
+  /** The OAuth server's routes for MCP (docs/mcp-spec.md); without them none of its paths exist. */
+  auth?: AuthRoutes
 }
 
 /** The raw body, or null when it is over the limit. An oversized body is still read to the end. */
@@ -32,7 +35,7 @@ function send(res: ServerResponse, status: number, body = ''): void {
 
 const seconds = (n: number | undefined) => (n === undefined ? null : new Date(n * 1000))
 
-/** Plain node:http: three routes do not need a framework. */
+/** Plain node:http: a few routes do not need a framework. */
 export function createApp(o: AppOptions): Server {
   const { store, config, processor } = o
 
@@ -109,6 +112,7 @@ export function createApp(o: AppOptions): Server {
     if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, 'ok')
     if (url.pathname === '/webhook' && req.method === 'GET') return verify(url, res)
     if (url.pathname === '/webhook' && req.method === 'POST') return receive(req, res)
+    if (o.auth && (await o.auth(req, res, url))) return
     send(res, 404)
   }
 

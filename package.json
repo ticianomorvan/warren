@@ -18,6 +18,11 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.10.0",
+    "@better-auth/cimd": "1.7.26",
+    "@better-auth/mcp": "1.7.26",
+    "@better-auth/oauth-provider": "1.7.26",
+    "better-auth": "1.7.26",
+    "kysely-postgres-js": "5.1.0",
     "postgres": "^4.1.1",
     "tsx": "^4.23.15",
     "undici": "^8.12.4",

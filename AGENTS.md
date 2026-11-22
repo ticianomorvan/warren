@@ -43,6 +43,11 @@ src/time.ts   The Argentine calendar day and clock, and date arithmetic
 src/range.ts  Pure: a summary's range (a named period, a month, a year or explicit days) resolved to Argentine days, the range before it, and the refusals (not started, reversed, over two years)
 src/summary.ts  Pure: the difference and the percentage of two totals, in integer cents (`bigint`), never a float or a division by zero
 src/render-summary.ts  Pure: the reply to a summary (the range in words, totals, groups, comparisons), from SQL results only
+src/auth/     The OAuth server and WhatsApp sign-in for MCP (slice 5.1, `docs/mcp-spec.md`): config.ts (better-auth on our postgres.js through Kysely:
+              jwt + mcp + cimd, CIMD-only from claude.ai/claude.com, 15-min audience-bound JWT, strict refresh rotation), plugin.ts (the one endpoint that makes a session,
+              for an account that confirmed on WhatsApp), link.ts (`link_request` SQL: the page's side, and `askLink`/`confirmLink`/`declineLink` that run in the commit transaction), routes.ts
+              (/sign-in, /sign-in/status, /oauth/consent, /api/auth/*, /.well-known/*, /mcp's 401 challenge; only on PUBLIC_URL's host), pages.ts (the two HTML pages),
+              print-schema.ts (what better-auth wants as SQL; `012_auth.sql` is that, `auth_*`)
 src/server.ts Entry point: config, migrate, warm-up, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
 src/store.ts  The rules of the tables (inbound_message, reply, account): due predicate, claim, the
@@ -162,6 +167,17 @@ wrong changes. Its test split is held out like the other: never print or tune on
   and the sweep sends it without calling the model. The interim note (`interim_sent_at`) and the failure notice are committed before they are sent and never repeated. There is no done mark (a ✅ reaction was removed 2026-11-21). A tool call with an unstorable
   value (bad amount, date or description) is never repaired: the loop answers it with the reason and the
   model gets another turn; a model that cannot fix it within 3 turns fails the message.
+- **Sign-in and OAuth for MCP (slice 5.1; `docs/mcp-spec.md`).** Off unless `PUBLIC_URL` (`https://heywarren.app`) is set; it then requires `BETTER_AUTH_SECRET` (32+
+  characters) and `WHATSAPP_DISPLAY_NUMBER` (the number as people read it). Those routes answer only on `PUBLIC_URL`'s host (404 elsewhere); the webhook answers on any host.
+  better-auth never migrates: `012_auth.sql` is its schema as plain SQL, and `src/auth.test.ts` fails when a plugin or an upgrade wants a table or column that is not there
+  (regenerate the SQL with `pnpm tsx src/auth/print-schema.ts`). The sign-in is code's job before the agent, like `undoRequest`: `vincular <code>` (typed, a code the browser showed) from an allowed
+  sender runs `link_ask` at the commit point and its reply, "¿Conectar …? Respondé sí o no", carries `pending: {action: 'link', link_id}` like the forget-all question. Only the very next message
+  can answer it, and only as a bare "sí" (`link_confirm`; not "ok", "dale", "bueno") or a bare "no" (`link_decline`), both run by `answerAction`, never by voice; anything else leaves the sign-in
+  unconfirmed and goes to the agent. A newer code closes the sender's older open ones. A forget-all asked after the code owns the next "sí", and the reverse. Nothing about a sign-in changes before the
+  commit, so a message processed again does the same once. Unknown, expired, used or already-taken codes get one answer. Messages from senders that are not allowed are ignored as always.
+  Abuse limits: one address (Railway's `X-Real-IP`, which its edge writes and overwrites; not `X-Forwarded-For`; an IPv6 address counts as its /64, `src/auth/ip.ts`) may open 10 sign-in pages per 10 minutes (a reload keeps its row, by the cookie; count and insert run under a per-address advisory lock, key 7203004), at most 2000
+  are open at once, and better-auth's own limiter (in memory: one replica) runs on that address too, with 10 tries a minute at finishing a sign-in; its origin check is on in every environment. Once WhatsApp confirmed, the sign-in page itself asks "Vas a conectar la cuenta de +54 9 ····1234. ¿Es la tuya?": only the click on "Sí, continuar" calls the finishing endpoint (never the polling), "No es mía" closes the request (`POST /sign-in/cancel`). It has to be there: better-auth skips the consent page for a person who consented to that client before, and every Claude user shares one client id. The consent page names the account too. The browser holds an httpOnly secret
+  (only its hash is stored); the request is single use and lasts 10 minutes. Tests run the whole flow on PGlite with a fake claude.ai (`PG_TEST_URL` runs `src/auth.test.ts` on a real Postgres in its own schema).
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
 - **Photos (agent B2).** An `image` webhook message keeps its media id and caption in `inbound_message`
   (`payload`, `body`); the bytes are never stored. `graph.fetchImage` looks the id up, checks the declared size

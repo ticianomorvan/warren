@@ -6,6 +6,9 @@ import { PGLiteSocketServer } from '@electric-sql/pglite-socket'
 import { afterAll, beforeAll, beforeEach } from 'vitest'
 import type { Movement } from './agent'
 import { createApp } from './app'
+import { type Auth, createAuth } from './auth/config'
+import { createLinks } from './auth/link'
+import { type AuthRoutes, createAuthRoutes } from './auth/routes'
 import { connect, migrate, type Sql } from './db'
 import { createProcessor } from './process'
 import { createStore, type Store } from './store'
@@ -21,16 +24,24 @@ import {
 } from './whatsapp/graph'
 
 export const SECRET = 'app-secret'
+export const AUTH_SECRET = 'test-secret-for-better-auth-0123456789abcdef'
+export const DISPLAY_NUMBER = '+54 9 11 5555-0000'
 export const VERIFY = 'verify-token-123'
 
 /** The test database, set by `useDatabase`: in-process PGlite behind a socket, or a real Postgres (`real`). Migrated. */
 export let sql: Sql
 
 /** A migrated database and how to shut it down. Needs no test runner, so the scenario eval can use it. */
-export async function createTestDatabase(real?: { url: string; max: number }) {
+export async function createTestDatabase(real?: { url?: string; max?: number; schema?: string }) {
   let pg: PGlite | undefined
   let socket: PGLiteSocketServer | undefined
   let url = real?.url
+  // A real Postgres can be shared by several test files: one that names a schema gets its own, rebuilt each run.
+  if (url && real?.schema) {
+    const admin = connect(url, { max: 1 })
+    await admin.unsafe(`DROP SCHEMA IF EXISTS ${real.schema} CASCADE; CREATE SCHEMA ${real.schema}`)
+    await admin.end({ timeout: 1 })
+  }
   if (!url) {
     pg = await PGlite.create()
     socket = new PGLiteSocketServer({ db: pg, port: 0, host: '127.0.0.1', maxConnections: 10 })
@@ -38,7 +49,10 @@ export async function createTestDatabase(real?: { url: string; max: number }) {
     const port = (socket as unknown as { server: { address(): AddressInfo } }).server.address().port
     url = `postgres://postgres:postgres@127.0.0.1:${port}/postgres`
   }
-  const db = connect(url, { max: real?.max ?? 1 })
+  const db = connect(url, {
+    max: real?.max ?? 1,
+    ...(real?.url && real.schema ? { connection: { search_path: real.schema } } : {}),
+  })
   await migrate(db)
   await migrate(db) // idempotent
   return {
@@ -51,7 +65,7 @@ export async function createTestDatabase(real?: { url: string; max: number }) {
   }
 }
 
-export function useDatabase(real?: { url: string; max: number }) {
+export function useDatabase(real?: { url?: string; max?: number; schema?: string }) {
   let close: (() => Promise<void>) | undefined
   beforeAll(async () => {
     const db = await createTestDatabase(real)
@@ -64,7 +78,10 @@ export function useDatabase(real?: { url: string; max: number }) {
   })
 
   beforeEach(async () => {
-    await sql`TRUNCATE fact, movement, reply, inbound_message, account RESTART IDENTITY CASCADE`
+    await sql`TRUNCATE link_request, auth_oauth_access_token, auth_oauth_refresh_token, auth_oauth_consent,
+      auth_oauth_client_resource, auth_oauth_client_assertion, auth_oauth_resource, auth_oauth_client, auth_session,
+      auth_account, auth_verification, auth_jwks, auth_user,
+      fact, movement, reply, inbound_message, account RESTART IDENTITY CASCADE`
   })
 }
 
@@ -244,14 +261,18 @@ export async function setup(
     processorStore?: (store: Store) => Store
     /** A database other than the one `useDatabase` set (the scenario eval owns its own). */
     sql?: Sql
+    /** Turns on the OAuth server and the sign-in, on the test server's own origin (`auth.test.ts`). */
+    auth?: { fetchClient?: Parameters<typeof createAuth>[0]['fetchClientMetadataResource'] }
   } = {},
 ) {
   const fake = opts.fake ?? fakeGraph()
   const model = opts.model ?? fakeModel()
   const store = createStore(opts.sql ?? sql, { staleMs: opts.staleMs ?? 0, maxAttempts: 3 })
+  const links = opts.auth ? createLinks(opts.sql ?? sql) : undefined
   const makeProcessor = (s: Store, client: Anthropic = model.client) =>
     createProcessor({
       store: s,
+      signIn: opts.auth !== undefined,
       graph: fake.graph,
       allowed: opts.allowed ?? ['*'],
       maxAttempts: 3,
@@ -262,15 +283,41 @@ export async function setup(
       deadlineMs: opts.deadlineMs ?? 120_000,
     })
   const processor = makeProcessor(opts.processorStore?.(store) ?? store)
+  // The OAuth server's issuer is the server's own origin, which is known only once it listens.
+  let routes: AuthRoutes | undefined
   const server = createApp({
     store,
     processor,
     config: { WHATSAPP_VERIFY_TOKEN: VERIFY, META_APP_SECRET: SECRET },
+    ...(opts.auth
+      ? { auth: (req, res, url) => routes?.(req, res, url) ?? Promise.resolve(false) }
+      : {}),
   })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
   const port = (server.address() as AddressInfo).port
+  const base = `http://127.0.0.1:${port}`
+  let auth: Auth | undefined
+  if (opts.auth && links) {
+    const db = opts.sql ?? sql
+    auth = createAuth({
+      sql: db,
+      publicUrl: base,
+      secret: AUTH_SECRET,
+      links,
+      fetchClientMetadataResource: opts.auth.fetchClient,
+    })
+    routes = createAuthRoutes({
+      auth,
+      sql: db,
+      links,
+      publicUrl: base,
+      displayNumber: DISPLAY_NUMBER,
+    })
+  }
   return {
-    base: `http://127.0.0.1:${port}`,
+    auth,
+    links,
+    base,
     port,
     store,
     processor,
