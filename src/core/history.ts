@@ -323,7 +323,8 @@ function entitiesOf<R extends { id: number; version: number }>(
       pre: pre?.row ?? null,
       post: post?.row ?? null,
       head: all.at(-1) as Version<R>,
-      later: all.filter((v) => v.row.version > from.row.version),
+      // What came after, made by other turns: this turn's own other versions (a value replaced and forgotten in one message) are its own.
+      later: all.filter((v) => v.row.version > from.row.version && v.madeIn !== turn),
     })
   }
   return out
@@ -372,8 +373,11 @@ export async function undoLast(
   ) => {
     for (const e of entitiesOf(versions, last.id)) {
       touched.add(store)
-      // As the turn left it: still live, and whatever came after was made by a turn that was undone or is an undo.
-      const asLeft = e.head.live && e.later.every((v) => settled.has(v.madeIn))
+      // As the turn left it: what it made is still live, and whatever came after was made by a turn that was undone or is an undo.
+      // An entity the turn ended is as it left it when nothing has been made since (it is still ended).
+      const asLeft = e.post
+        ? e.head.live && e.later.every((v) => settled.has(v.madeIn))
+        : e.later.length === 0 && !e.head.live
       if (!asLeft) {
         movedInto.push((e.post ?? e.pre) as R)
         continue
