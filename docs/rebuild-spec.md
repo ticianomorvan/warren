@@ -1,6 +1,6 @@
 # Warren rebuild: one clean foundation
 
-Status: draft for Ticiano's read, 2026-11-22. This file is the source of truth for the build. A fresh session builds from it alone.
+Status: approved by Ticiano, 2026-11-22. This file is the source of truth for the build. A fresh session builds from it alone.
 
 The evidence behind it:
 - two councils, each with an Opus 5.5 and a Fable 5.2 judge per group, on 3 groups each;
@@ -283,12 +283,5 @@ All of them land on branch `rebuild`, in one PR, built by sequential Sonnet 5.5 
 1. Rebuild from scratch on main, autonomously, with no manual testing in the middle.
 2. Undo keeps the strict stack, and the reply explains a block.
 3. BAJA is removed, and cancelling goes through the agent (already shipped in #53).
-
-## Open questions
-
-1. **Template name.** Meta keeps refusing `warren_reminder` while it is "being deleted", and may block reusing the name for weeks (unconfirmed). Shall I submit `warren_reminder_v2` (same text, UTILITY, es_AR) now, so approval runs during the rebuild?
-2. **Spend.**
-   - Evals: about 25 scenario runs at about US$0.11 each, plus experiments, so I ask for a cap of **US$5**.
-   - Railway: a staging environment (one service and one Postgres) for the length of the rebuild, deleted after cutover.
-
-   Both fine?
+4. The reminder template keeps the name `warren_reminder`. No `_v2`: resubmitting it once Meta lets the name go stays a pending item, outside this rebuild.
+5. Spend approved: a cap of US$5 for evals and experiments, and a Railway `staging` environment (one service, one Postgres) for the length of the rebuild, deleted after cutover.
