@@ -23,6 +23,7 @@ import {
 } from '../../test/core'
 import { sql, useDatabase } from '../../test/db'
 import { MAX_FACTS } from '../domain/facts'
+import { recentMovements } from '../domain/movements'
 import { MAX_REMINDERS } from '../domain/reminders/guard'
 import type { Outcome } from './apply'
 import { schemaDir } from './db'
@@ -220,6 +221,37 @@ describe('what the undo reaches: the newest turn, in commit order', () => {
     expect(await undoAt(a, minutes(1))).toMatchObject({ status: 'applied' })
     await turn(sql, a, [log(cafe())], { channel: 'whatsapp', at: minutes(2) })
     expect(await undoAt(a, minutes(3), { channel: 'mcp' })).toMatchObject({ status: 'applied' })
+  })
+})
+
+describe('after an undo', () => {
+  it('the recent list is the live movements, newest first, and a later correction finds the restored one', async () => {
+    const a = await newAccount(sql)
+    await turn(sql, a, [log(cafe({ description: 'uno' }), cafe({ description: 'dos' }))])
+    await turn(sql, a, [remove(1)], { at: minutes(1) })
+    await undoAt(a, minutes(2)) // the delete is undone: `uno` is back as the newest version
+    expect((await recentMovements(sql, a)).map((m) => [m.id, m.description])).toEqual([
+      [1, 'uno'],
+      [2, 'dos'],
+    ])
+    const t = await turn(sql, a, [correct(1, { amount: '999' })], { at: minutes(3) })
+    expect(t.done[0]?.outcome).toMatchObject({ status: 'applied', next: { id: 1, amount: '999' } })
+  })
+
+  it('an undo and a correction one after the other: the undo first, so the correction finds the movement gone', async () => {
+    const a = await newAccount(sql)
+    await turn(sql, a, [log(cafe())])
+    await undoAt(a, minutes(1))
+    const t = await turn(sql, a, [correct(1, { amount: '999' })], { at: minutes(2) })
+    expect(t.done[0]?.outcome).toMatchObject({ status: 'gone', id: 1 })
+    expect(t.reply).toMatch(/^Ese movimiento ya fue corregido o borrado/)
+  })
+
+  it('what is kept: the undo’s turn says which turn it undid, the audit says what became of each entity', async () => {
+    const a = await newAccount(sql)
+    const t1 = await turn(sql, a, [log(cafe())])
+    const u = await undoAt(a, minutes(1))
+    expect(undoDetail(u)).toBe(`undid turn ${t1.turn}: logged 1`)
   })
 })
 
