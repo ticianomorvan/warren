@@ -1,6 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { warmUp } from './agent'
 import { createApp } from './app'
+import { createAuth } from './auth/config'
+import { createLinks } from './auth/link'
+import { createAuthRoutes } from './auth/routes'
 import { loadConfig } from './config'
 import { connect, migrate } from './db'
 import { keepAliveFetch } from './http'
@@ -22,8 +25,28 @@ const graph = createGraph({
   token: config.WHATSAPP_ACCESS_TOKEN,
 })
 const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, fetch: keepAliveFetch() })
+// The sign-in and OAuth server for MCP exist only when PUBLIC_URL is set (the config then requires the rest).
+const links = config.PUBLIC_URL ? createLinks(sql) : undefined
+const auth =
+  config.PUBLIC_URL && config.BETTER_AUTH_SECRET && config.WHATSAPP_DISPLAY_NUMBER && links
+    ? createAuthRoutes({
+        auth: createAuth({
+          sql,
+          publicUrl: config.PUBLIC_URL,
+          secret: config.BETTER_AUTH_SECRET,
+          links,
+          log: (level, message) =>
+            log('auth_log', { level, message }, level === 'error' ? 'error' : 'info'),
+        }),
+        sql,
+        links,
+        publicUrl: config.PUBLIC_URL,
+        displayNumber: config.WHATSAPP_DISPLAY_NUMBER,
+      })
+    : undefined
 const processor = createProcessor({
   store,
+  links,
   graph,
   allowed: config.ALLOWED_WA_IDS,
   maxAttempts: MAX_ATTEMPTS,
@@ -33,7 +56,7 @@ const processor = createProcessor({
     ? createTranscriber({ apiKey: config.OPENROUTER_API_KEY })
     : undefined,
 })
-const server = createApp({ store, config, processor })
+const server = createApp({ store, config, processor, auth })
 
 server.listen(config.PORT, () => log('listening', { port: config.PORT }))
 

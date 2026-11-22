@@ -210,6 +210,16 @@ export const renderUnchanged = (m: RecentMovement, today: string) =>
 export const renderDeletion = (m: RecentMovement, today: string, newest = true) =>
   `✓ Borré: ${movementText(m)}${when(m.date, today)}${logged(m.time, newest)}`
 
+/** Connecting an agent (claude.ai, Claude Code) to the person's account, over WhatsApp (docs/mcp-spec.md, Design 3). */
+export const REPLY_LINK = {
+  /** The one answer to a code that does not work: unknown, expired or already used. It says nothing about which. */
+  refused: 'Ese código no sirve: venció o ya se usó. Pedí uno nuevo desde la pantalla de conexión.',
+  ask: (client: string) =>
+    `¿Conectar ${client} a tu cuenta de Warren? Va a poder ver y anotar tus movimientos. Respondé sí o no.`,
+  done: (client: string) => `Listo, ${client} ya está conectado. Volvé a la pantalla de conexión.`,
+  declined: 'Está bien, no conecté nada.',
+}
+
 export const REPLY_UNDO_NOTHING = 'No tengo nada para deshacer.'
 export const REPLY_UNDO_EXPIRED =
   'Lo último que hice fue hace más de 24 horas y ya no lo deshago solo. Decime qué querés corregir o borrar.'

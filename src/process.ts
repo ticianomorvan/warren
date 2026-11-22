@@ -13,6 +13,7 @@ import {
   windowReplies,
 } from './agent'
 import { sensitive } from './agent/memory'
+import { answerLink, type Links } from './auth/link'
 import { actionLabel, execute } from './execute'
 import { RECENT_LIMIT } from './ledger'
 import { log } from './log'
@@ -46,6 +47,8 @@ export interface ProcessorOptions {
   helpContact?: string
   /** Turns voice notes into text. Without one, a voice note is answered with a request for text. */
   transcriber?: Transcriber
+  /** Sign-ins of an agent over MCP (docs/mcp-spec.md): the code a person sends and their "sí". Absent: those messages are ordinary text. */
+  links?: Links
   /** Ms after `received_at` at which a slow message gets one interim note. Default 10 s. */
   interimMs?: number
   /** Ms after `received_at` at which an uncommitted message fails. Default 30 s. */
@@ -309,6 +312,22 @@ export function createProcessor(o: ProcessorOptions) {
         heard = voice.heard
         // The facts the message names are known only now that it is heard.
         memory = await store.facts(accountId, text)
+      }
+      // "vincular <code>", and the "sí" to the question it raises, are code's job too: typed text only, never a
+      // model's reading and never a transcript. The newest open question owns a bare "sí" (see `answerLink`).
+      const linked =
+        o.links && !isPhoto && !voice && c.kind === 'text'
+          ? await answerLink(o.links, {
+              text,
+              accountId,
+              questionOpen: conversation.question !== null,
+            })
+          : null
+      if (linked) {
+        return unprompted(
+          { tool: 'notice', input: { text: linked } },
+          { tool: 'notice', input: { link: true }, status: 'answered' },
+        )
       }
       // A bare answer to the question we just asked, or a bare "deshacer", is code's job: no model call at all. Not for a
       // note of voice: a delete, a correction or an undo is never run on what a model of speech thought it heard. A

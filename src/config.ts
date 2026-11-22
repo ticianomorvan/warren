@@ -8,7 +8,7 @@ const list = z
   .default('')
   .transform((s) => s.split(',').map(normalizeId).filter(Boolean))
 
-const schema = z.object({
+const fields = z.object({
   DATABASE_URL: z.string().min(1),
   PORT: z.coerce.number().int().default(3000),
   WHATSAPP_VERIFY_TOKEN: z.string().min(8),
@@ -30,6 +30,42 @@ const schema = z.object({
     .string()
     .optional()
     .transform((s) => s?.trim() || undefined),
+  // The sign-in and OAuth server for MCP (docs/mcp-spec.md). `PUBLIC_URL` turns it on and makes the other two
+  // required. Unset, none of its routes exist and none of the three is read.
+  PUBLIC_URL: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim().replace(/\/$/, '') || undefined)
+    .pipe(
+      z
+        .string()
+        .regex(/^https:\/\/[^/]+$|^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/)
+        .optional(),
+    ),
+  BETTER_AUTH_SECRET: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() || undefined)
+    .pipe(z.string().min(32).optional()),
+  // The number people message, as they read it ("+54 9 11 1234-5678"); its digits make the `wa.me` link.
+  WHATSAPP_DISPLAY_NUMBER: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() || undefined)
+    .pipe(
+      z
+        .string()
+        .regex(/^\+?\d[\d\s().-]{6,}$/)
+        .optional(),
+    ),
+})
+
+const schema = fields.superRefine((c, ctx) => {
+  if (!c.PUBLIC_URL) return
+  for (const name of ['BETTER_AUTH_SECRET', 'WHATSAPP_DISPLAY_NUMBER'] as const) {
+    if (!c[name])
+      ctx.addIssue({ code: 'custom', path: [name], message: 'required with PUBLIC_URL' })
+  }
 })
 
 export type Config = z.infer<typeof schema>

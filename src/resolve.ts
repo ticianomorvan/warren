@@ -17,6 +17,7 @@ const NUMBER_WORDS: Record<string, number> = {
 const SHAPE =
   /^(?:(?:dale|bueno|ok|si)[,\s]+)?(?:(?:el|la|lo|numero|nro)\s*|#\s*)?(\d{1,2}|[a-z]+)\s*[.!]?$/
 const YES = /^(?:(?:si|dale|ok|bueno)[,\s]*)+[.!]?$/
+const NO = /^(?:(?:no|nop|nope)[,\s]*)+(?:gracias)?[.!]?$/
 /** "ese", "ese mismo", "sí, ese": pointing at the one movement the question offered. */
 const THAT_ONE =
   /^(?:(?:si|dale|ok|bueno)[,\s]+)?(?:ese|esa|eso|el mismo|la misma|ese mismo|esa misma|ese nomas|esa nomas)[.!]?$/
@@ -116,3 +117,20 @@ export function undoRequest(text: string): Action | null {
     .trim()
   return UNDO.test(words) ? { tool: 'undo_last', input: { text: null } } : null
 }
+
+const LINK_REQUEST = /^vincul(?:ar|a)\s+([a-z0-9]{6})[.!]?$/
+
+/**
+ * "vincular K7M2QX": a typed message that is only that is the code a browser showed (the `wa.me` link
+ * writes it), uppercased the way it is stored. Anything else with a code in it is not one.
+ */
+export function linkCode(text: string): string | null {
+  const code = LINK_REQUEST.exec(normalizeText(text).replace(/\s+/g, ' '))?.[1]
+  return code ? code.toUpperCase() : null
+}
+
+/** A bare "sí" / "dale" / "ok": the person agrees. Whether to what is not this function's business. */
+export const isYes = (text: string) => YES.test(normalizeText(text))
+
+/** A bare "no": the person refuses. */
+export const isNo = (text: string) => NO.test(normalizeText(text))
