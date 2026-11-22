@@ -1178,7 +1178,7 @@ Four bugs confirmed by probes through the whole pipeline, two weaker spots, and 
    (`recordFailure`, with its trace scrubbed). Tests assert the secret string is nowhere in any text or jsonb column of any table, for a text, a model that tried to store it, a model that echoes it, a failed message,
    a photo caption and a voice note; and that a message with a CBU used to pay (`por cbu 15000`) is kept as it was. **Limits:** until the commit the webhook's own row holds the text (it is how the agent reads it),
    so a message that dies before the commit and is never retried keeps it; and the model's provider saw the message, as it sees every message.
-4. **The detector missed** card numbers with `/`, ` - ` or `_`, 13 to 15 digits, a DNI with spaces or of 7 digits, "el código del cajero es 1234", a password with no keyword, emails and phones.
+4. **The detector missed** card numbers with `/`, `-` or `_`, 13 to 15 digits, a DNI with spaces or of 7 digits, "el código del cajero es 1234", a password with no keyword, emails and phones.
    Now (`src/agent/memory.ts`, all table-driven in both directions in `agent/memory.test.ts`):
    - **Cards, CBU/CVU:** 13 or more digits, joined by at most a space, `.`, `-`, `/` or `_`, with spaces around a separator. No Luhn: a mistyped card is still a card, and 13 digits in a row are never a useful fact.
    - **DNI** (in what would be stored): 7 or 8 digits, plain or grouped by dots or spaces, **unless money marks it** (`$1.850.000`, `usd 1.850.000`, `1.850.000 pesos`, "mil", "lucas", "palos"): a salary of a million and a DNI are written alike, and a money app has to keep the salary.
@@ -1192,14 +1192,16 @@ Four bugs confirmed by probes through the whole pipeline, two weaker spots, and 
    then find its fact, an undo racing a forget in both orders (the undo first: the forget finds nothing; the forget first: the undo refuses and writes nothing). The four near-identical lookups in `facts.ts` are one `findLive`.
 6. **Aliases outside the newest 30.** The context also shows every other live fact whose key appears in the message (at most 20 more, never twice, only the sender's, a voice note's transcript included),
    so an old alias still works. A deterministic payment override in code (a fact's payment applied after the model) waits for the overhaul, with the typed `summarize` range: it needs its own record line so the change is visible.
+
 - **One more thing the scenarios showed while testing this** (dev only): after the fixes "el sueldo me cae el 28" was answered by the model with a `reply` ("Anotado como dato: ...") about half the runs, which is a lie (nothing was stored). The prompt now says a
   plain statement about money habits is a fact to remember, with an example, and `checkSay` refuses a reply that opens with "Anotado"/"Tomo nota" when nothing was logged or stored (only at the start of a sentence, so "la nafta, anotada hoy" is fine). It fell to about 1 run in 10, and the
   model then sends `remember_fact`, or the reply says nothing it did not do. "lo de don Pepe 3100" after "8200 en el almacén, que es lo de don Pepe" was read as a correction of that movement 2 runs of 8, because the description carried the nickname: the prompt now keeps the nickname out of
   the description and says a nickname with an amount and no "fue" is a new expense (0 of 18 runs after).
 
 **Proof**
+
 - Tests: 885 (874 passed and 11 skipped without a real Postgres; **885 passed, none skipped, with `PG_TEST_URL`**), against 777 before the round. Biome and `tsc` clean.
-- Mutations of this round, one at a time with the whole suite and the real Postgres: **57 of 58 killed**, listed by fix: (1) the replaced fact not restored, `beforeId` not read, `lastBatch` keeping a net-nothing batch; (2) forget-all beside other actions, the
+- Mutations of this round, one at a time with the whole suite and the real Postgres: **56 of 57 killed**, listed by fix: (1) the replaced fact not restored, `beforeId` not read, `lastBatch` keeping a net-nothing batch; (2) forget-all beside other actions, the
   pending not read back, fake options stored; (3) nothing redacted, a refused secret not redacting, a secret-looking message not redacting, `command`/`parsed`/audit not scrubbed, the model's words kept, a reply the model's, the transcript echoed, the body kept, the raw webhook kept, a photo caption kept, a failed message keeping its text;
   (4) 13 to 14 digits, no `/`, no `_`, DNI of 7 digits, DNI with spaces, an amount with a money sign read as a DNI, no stored word "código", "cajero", the password heuristic off and with no cue, emails kept, phones kept, the `+` rule,
   the message-level "dni" and "código" rules, a lone "cbu" made a secret, contact answered as a secret; (5) no lock in `forget_fact`, `rememberFact`, `forgetAll` or the undo plan, `findLive` not requiring a live row or the account, forgetting or replacing without a live row or a row count;
