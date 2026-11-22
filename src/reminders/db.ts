@@ -32,7 +32,7 @@ interface RawRow {
 
 /**
  * A stored row as a `ReminderRow`, or null (logged) when its schedule no longer parses: one bad row must not fail every message
- * of the person that reads their reminders, BAJA included (the sender does the same: `reminder_bad_schedule`).
+ * of the person that reads their reminders (the sender does the same: `reminder_bad_schedule`).
  */
 function toRow(r: RawRow): ReminderRow | null {
   const schedule = ScheduleSchema.safeParse(r.schedule)
@@ -86,19 +86,6 @@ export async function cancelReminder(sql: Sql, id: number, inboundId: number): P
     UPDATE reminder SET cancelled_at = now(), cancelled_by = ${inboundId}
     WHERE id = ${id} AND ${sql.unsafe(LIVE)} RETURNING id`
   return stamped.length > 0
-}
-
-/** Cancels every live reminder of the account ("BAJA"), whatever its schedule holds; returns what each said. */
-export async function cancelAllReminders(
-  sql: Sql,
-  accountId: number,
-  inboundId: number,
-): Promise<{ id: number; what: string }[]> {
-  const rows = await sql<{ id: number; what: string }[]>`
-    UPDATE reminder SET cancelled_at = now(), cancelled_by = ${inboundId}
-    WHERE account_id = ${accountId} AND ${sql.unsafe(LIVE)}
-    RETURNING id::int AS id, what`
-  return rows.sort((a, b) => a.id - b.id)
 }
 
 export async function countLiveReminders(sql: Sql, accountId: number): Promise<number> {

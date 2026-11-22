@@ -11,7 +11,6 @@ import {
 import { insertMovements, lockLive, type MovementRow, softDelete, supersede } from './ledger'
 import { applyChanges, type ChangedField, changedFields } from './movement'
 import {
-  cancelAllReminders,
   cancelReminder,
   countLiveReminders,
   insertReminder,
@@ -154,11 +153,8 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
 
 // ---- Reminders (slice 6). Their own function and outcomes: the MCP write tools take `applyCall` and do not know of them.
 
-/** The calls that change a reminder: the agent's two tools, and BAJA, which is code's. */
-export type ReminderCall = Extract<
-  Action,
-  { tool: 'set_reminder' | 'cancel_reminder' | 'cancel_all_reminders' }
->
+/** The calls that change a reminder: the agent's two tools. */
+export type ReminderCall = Extract<Action, { tool: 'set_reminder' | 'cancel_reminder' }>
 
 export type ReminderOutcome =
   | { tool: 'set_reminder'; kind: 'applied'; reminder: ReminderRow }
@@ -169,7 +165,6 @@ export type ReminderOutcome =
   | { tool: 'cancel_reminder'; kind: 'applied'; reminder: ReminderRow }
   /** Not the person's, or no longer live (sent, or cancelled by a message that ran meanwhile): nothing was written. */
   | { tool: 'cancel_reminder'; kind: 'gone'; id: number }
-  | { tool: 'cancel_all_reminders'; kind: 'applied'; cancelled: { id: number; what: string }[] }
 
 /**
  * Runs one reminder write inside the transaction that already holds the batch's row. The account's reminders lock is taken
@@ -182,7 +177,7 @@ export async function applyReminderCall(
   call: ReminderCall,
 ): Promise<ReminderOutcome> {
   const { accountId, batchId, now } = ctx
-  // The one lock of a reminder write: the cap, a cancel and BAJA are decided after it, one writer at a time.
+  // The one lock of a reminder write: the cap, a cancel is decided after it, one writer at a time.
   await lockReminders(tx, accountId)
   switch (call.tool) {
     case 'set_reminder': {
@@ -207,11 +202,5 @@ export async function applyReminderCall(
       }
       return { tool: call.tool, kind: 'applied', reminder }
     }
-    case 'cancel_all_reminders':
-      return {
-        tool: call.tool,
-        kind: 'applied',
-        cancelled: await cancelAllReminders(tx, accountId, batchId),
-      }
   }
 }

@@ -8,7 +8,7 @@ The person says "recordame pagar la Visa el 10", "todos los meses el 5 avisame d
 "los lunes y jueves recordame la pastilla" (any periodicity).
 Warren confirms the exact day and time, and at that time sends "⏰ Recordatorio: pagar la Visa".
 The person can list ("¿qué recordatorios tengo?"), cancel ("cancelá el del alquiler"), undo
-("deshacer"), and stop all of them with "BAJA".
+("deshacer"), and stop them all by asking ("cancelá todos los recordatorios").
 
 Done means:
 
@@ -98,11 +98,13 @@ spending; there is no global block, only an alert above 200 sends a day. Meta's 
    - `cancel_reminder {id}`, `list_reminders {}`. Live reminders (id, what, next date) go in the
      per-message context, so "cancelá el del alquiler" resolves like a fact.
    - Prompt: for a reminder, "el 10" means the next 10th (the movement rule is the opposite).
-4. **BAJA** is a typed command in `resolve.ts`, handled without the model (Meta's policy requires
-   honouring opt-out). It cancels every live reminder in one batch. The reply says how many, and
-   "deshacer" restores them. Setting a new reminder later is a new opt-in.
+4. **Stopping them** is an ordinary request, not a keyword (decided 2026-11-22: the person sets every
+   reminder themselves, so a magic word that bypasses the model and wipes them all does not fit).
+   "Cancelá este", "cancelá el del alquiler", "cancelá todos los recordatorios" go through the model:
+   one `cancel_reminder` per reminder, all in one turn (so one batch, a line each, and one "deshacer"
+   restores them all). There is no BAJA command.
 5. **Undo**: `src/undo-reminders.ts`, modelled on `undo-facts.ts`. Undoing a set cancels the
-   reminder; undoing a cancel or BAJA restores it, with `next_due_at` recomputed from now.
+   reminder; undoing a cancel restores it, with `next_due_at` recomputed from now.
    `stale` if a one-off has already fired. `ledger.ts` batch rule gains "set or cancelled a
    reminder".
 6. **Sender** (`src/reminders/send.ts`), called from the existing 30 s tick.
@@ -121,8 +123,8 @@ spending; there is no global block, only an alert above 200 sends a day. Meta's 
      Today `process.ts` ignores statuses.
 7. **Template** `warren_reminder` (code names are English), UTILITY, `es_AR`. Submitted
    2026-11-22, id 987826090606776. Meta returned category UTILITY, status PENDING.
-   Body: "Recordatorio que pediste en Warren: {{1}}. Para dejar de recibir recordatorios,
-   respondé BAJA." A template must not start or end with a variable; `{{1}}` is `what`, one line.
+   Body: "Recordatorio que pediste en Warren: {{1}}. Si ya no lo necesitás, decime y lo cancelo."
+   A template must not start or end with a variable; `{{1}}` is `what`, one line.
    `pnpm template:status` prints its `category` and `status`. If Meta re-files it as MARKETING,
    stop and ask: the price more than doubles and marketing limits (131049) apply.
    Config: `REMINDER_TEMPLATE` (name). When it is unset, `set_reminder` still works (decided 2026-11-22, so the
@@ -152,12 +154,12 @@ From scratch today, this is still the shape: one table, one claim, one tick.
      on Feb 28; after downtime only the latest occurrence is sent.
    - Live: a script inserts a reminder for Ticiano 2 minutes out and it arrives as text;
      once approved, `pnpm reminder:try-template` sends it once to his number and it arrives.
-2. **Agent, BAJA, undo.** The three tools, guards, context, renderers, help line, prompt lines,
-   BAJA, undo.
+2. **Agent, undo.** The three tools, guards, context, renderers, help line, prompt lines,
+   undo.
    Proof:
    - `pnpm test`, plus new scenarios: one-off; monthly; weekly on two days; every 15 days; last day of the
      month; "el 10" means the next one; a past time is
-     refused; cancel by name; list; BAJA then deshacer; a secret in `what` is refused.
+     refused; cancel by name; list; cancel all then deshacer; a secret in `what` is refused.
    - `pnpm eval:scenarios` at its bars.
    - Live: "recordame en 2 minutos tomar agua" arrives.
 
@@ -261,3 +263,22 @@ What shipped (`set_reminder`, `cancel_reminder`, `list_reminders`, BAJA, undo, c
   a reminder outcome to its line and step; `batchReminders` and `reminderById` share their columns and mapping; a seeded scenario reminder with no occurrence at the first turn is an error.
 - **Test split**: `s187` and `s195` mirrored the prompt's examples and moved to dev; `s200` ("a fin de mes", a one-off on the last day) and `s201` (a payment habit as a statement) are the new test scenarios;
   `s202` (3 times, asked in the afternoon) and `s203` ("el 10" on the 10th) are dev. `s097` is a dev scenario, so its counter-example in the prompt does not touch the held-out split.
+
+## As built: BAJA removed (2026-11-22)
+
+Decided by Ticiano: no BAJA. Stopping reminders is an ordinary request to the model, with the usual guards and undo.
+
+- **Removed:** `bajaRequest` and its wiring in `process.ts`, the code action `cancel_all_reminders` (its outcome, `cancelAllReminders`, renderer, step, label and the claim list entry),
+  the BAJA line of the help, its tests and scenarios. The template body is now "Recordatorio que pediste en Warren: {{1}}. Si ya no lo necesitás, decime y lo cancelo." (changed at Meta by the owner).
+  The earlier "as built" sections above describe BAJA as it was shipped.
+- **"Cancelá todos los recordatorios"** is one `cancel_reminder` per reminder listed under "Recordatorios", all in the same turn. That already worked, with no new tool: every call is checked
+  against the ids shown, runs in the one message's batch under the account's reminders lock, and writes its own line ("⏰ Cancelé el recordatorio: …"), so the reply lists exactly what was cancelled;
+  one "deshacer" brings them all back (`undo-reminders.ts` already handled several cancelled rows in a batch). The prompt says it, with an example; a bare "baja" and "no quiero más recordatorios"
+  mean the same.
+- **Not visible to the model:** a reminder that has just been sent is not in the conversation window (the window is made of `inbound_message` rows, and a send is a `reminder_send` row), and a one-off that
+  fired is no longer live, so it is not listed under "Recordatorios" either. After "⏰ Recordatorio: pagar la Visa" arrives, "cancelá este" is understood only when the reminder still repeats and is the one
+  live (or its words are in the message). For a one-off there is nothing left to cancel. Not built: showing the model what was just sent (a small context line from `reminder_send`) is the follow-up if people
+  answer reminders with "cancelá este".
+- **MCP's undo refusal** for reminder batches is unchanged.
+- **Scenarios:** `s192` is "cancelá todos los recordatorios" then "deshacer" (dev, since its wording is in the prompt); `s204` ("no quiero más recordatorios") and `s205` ("cancelá este" with one live) are dev;
+  `s206` ("borrame todos los recordatorios que tengo") and `s207` (cancel one by name, keep the other) are test.

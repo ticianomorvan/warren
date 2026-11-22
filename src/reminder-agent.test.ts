@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { applyReminderCall } from './apply'
-import { ask, logOf, movement, replyCall, say, script, seed, WA } from './command-fixtures'
+import { logOf, movement, replyCall, say, script, WA } from './command-fixtures'
 import { insertReminder } from './reminders/db'
 import { MAX_REMINDERS } from './reminders/guard'
 import { ScheduleSchema } from './reminders/schedule'
@@ -12,21 +12,7 @@ import {
   REPLY_UNDO_NOTHING,
 } from './render'
 import type { ToolCall } from './test-harness'
-import {
-  fakeGraph,
-  fakeModel,
-  fakeTranscriber,
-  heard,
-  OGG,
-  post,
-  row,
-  setup,
-  sql,
-  TODAY,
-  until,
-  useDatabase,
-  voiceBody,
-} from './test-harness'
+import { fakeGraph, fakeModel, setup, sql, useDatabase } from './test-harness'
 
 // With PG_TEST_URL set (see AGENTS.md) this runs on a real Postgres, in a schema of its own.
 const url = process.env.PG_TEST_URL
@@ -34,7 +20,7 @@ useDatabase(url ? { url, max: 12, schema: 'reminder_agent_test' } : undefined)
 
 /**
  * The harness's messages are sent at 2025-10-09 05:53 in Argentina (a Thursday): "today" in these tests.
- * Reminders are set, listed, cancelled, stopped with BAJA and undone through the real pipeline with a scripted model.
+ * Reminders are set, listed, cancelled, cancelled (one or all) and undone through the real pipeline with a scripted model.
  */
 const NOW = new Date('2025-10-09T05:53:20-03:00')
 const sched = (s: Record<string, unknown>) => ({ time: '09:00', interval: 1, ...s })
@@ -363,86 +349,67 @@ describe('cancel_reminder and list_reminders', () => {
   })
 })
 
-describe('BAJA', () => {
-  it('cancels every live reminder in one batch, with no model call, and says how many and how to bring them back', async () => {
-    await seedReminder('pagar el alquiler', {
+describe('cancelling every reminder, through the model', () => {
+  const all = (...ids: number[]): ToolCall[] => ids.map(cancelRem)
+
+  it('several cancel_reminder calls in one turn are one batch, one line each, and nothing is invented', async () => {
+    const alquiler = await seedReminder('pagar el alquiler', {
       start: '2025-10-01',
       every: 'month',
       month_days: [5],
     })
-    await seedReminder('la pastilla', { start: '2025-10-10', every: 'week' })
-    const app = await setup({ model: script(replyCall('no debería llamarse')) })
-    const reply = await say(app, { text: 'BAJA' })
-    expect(reply).toBe(
-      '⏰ Cancelé tus 2 recordatorios. Si fue sin querer, escribí «deshacer» y vuelven.',
-    )
-    expect(app.model.n).toBe(0)
+    const pastilla = await seedReminder('la pastilla', { start: '2025-10-10', every: 'week' })
+    const app = await setup({ model: script(all(alquiler, pastilla)) })
+    const reply = await say(app, { text: 'cancelá todos los recordatorios' })
+    expect(reply.split('\n')).toEqual([
+      '⏰ Cancelé el recordatorio: pagar el alquiler (el 5 de cada mes a las 09:00)',
+      '⏰ Cancelé el recordatorio: la pastilla (todos los viernes a las 09:00)',
+    ])
+    expect(app.model.n).toBe(1)
     const [message] = await messages()
-    expect(message).toMatchObject({ action: 'remind', model_turns: 0 })
+    expect(message).toMatchObject({ action: 'multi', model_turns: 1 })
     const rows = await reminders()
     expect(rows.every((r) => r.cancelled && r.cancelled_by === message?.id)).toBe(true)
     app.close()
   })
 
-  it('says so when there is nothing to cancel, and one is "tu recordatorio"', async () => {
-    const app = await setup({ model: script(replyCall('x')) })
-    expect(await say(app, { text: 'baja' })).toBe('No tenés recordatorios para cancelar.')
-    await seedReminder('la pastilla', { start: '2025-10-10' })
-    expect(await say(app, { text: 'Baja.' })).toBe(
-      '⏰ Cancelé tu recordatorio. Si fue sin querer, escribí «deshacer» y vuelve.',
-    )
-    expect(app.model.n).toBe(0)
+  it('only the ids it was shown: an id it invented is refused and the model sends them again', async () => {
+    const mine = await seedReminder('la pastilla', { start: '2025-10-10' })
+    const app = await setup({ model: script(all(mine, mine + 50), all(mine)) })
+    const reply = await say(app, { text: 'cancelá todos los recordatorios' })
+    expect(reply).toBe('⏰ Cancelé el recordatorio: la pastilla (mañana a las 09:00)')
+    expect(app.model.n).toBe(2)
     app.close()
   })
 
-  it('works while a question is open: an opt-out does not wait for an answer', async () => {
-    await seedReminder('la pastilla', { start: '2025-10-10' })
-    const [a, b] = await seed([
-      { on: TODAY, amount: '3500', description: 'café' },
-      { on: TODAY, amount: '3500', description: 'café' },
+  it('an id sent twice is cancelled once and the second line says it is gone', async () => {
+    const id = await seedReminder('la pastilla', { start: '2025-10-10' })
+    const app = await setup({ model: script(all(id, id)) })
+    expect((await say(app, { text: 'cancelá este' })).split('\n')).toEqual([
+      '⏰ Cancelé el recordatorio: la pastilla (mañana a las 09:00)',
+      '⏰ Ese recordatorio ya no existe.',
     ])
-    const app = await setup({ model: script(ask([a as number, b as number])) })
-    expect(await say(app, { text: 'cambiá el café' })).toContain('¿Cuál?')
-    expect(await say(app, { text: 'BAJA' })).toContain('Cancelé tu recordatorio')
-    expect(app.model.n).toBe(1)
     app.close()
   })
 
-  it('is typed text only: by voice it goes to the model', async () => {
+  it('a bare "baja" is a message like any other: it goes to the model', async () => {
     await seedReminder('la pastilla', { start: '2025-10-10' })
-    const { transcriber } = fakeTranscriber(heard('baja'))
-    const app = await setup({
-      fake: fakeGraph({ media: { 'media.v': OGG } }),
-      transcriber,
-      model: script(replyCall('Para cancelar todos los recordatorios escribime «BAJA».')),
-    })
-    await post(app.base, voiceBody('wamid.VOICE1', 'media.v'))
-    await until(async () =>
-      ['done', 'failed'].includes(String((await row('wamid.VOICE1'))?.status)),
-    )
+    const app = await setup({ model: script(replyCall('¿Querés que cancele el de la pastilla?')) })
+    await say(app, { text: 'baja' })
     expect(app.model.n).toBe(1)
     expect(await liveWhats()).toEqual(['la pastilla'])
     app.close()
   })
 
-  it('"baja" with more in it is not BAJA', async () => {
-    await seedReminder('la pastilla', { start: '2025-10-10' })
-    const app = await setup({ model: script(replyCall('no sé')) })
-    await say(app, { text: 'baja el precio del café' })
-    expect(app.model.n).toBe(1)
-    expect(await liveWhats()).toEqual(['la pastilla'])
-    app.close()
-  })
-
-  it('"deshacer" brings them all back, as new rows, with their next date worked out from now', async () => {
+  it('"deshacer" brings them all back with one message, as new rows, with their next date worked out from now', async () => {
     const daily = await seedReminder('tomar agua', {
       start: '2025-10-01',
       time: '09:00',
       every: 'day',
     })
     const once = await seedReminder('llamar al médico', { start: '2025-10-09', time: '18:00' })
-    const app = await setup({ model: script(replyCall('x')) })
-    await say(app, { text: 'BAJA', at: later('05:53') })
+    const app = await setup({ model: script(all(daily, once)) })
+    await say(app, { text: 'cancelá todos los recordatorios', at: later('05:53') })
     expect(await liveWhats()).toEqual([])
     // Back at 10:00: today's 09:00 has passed, so the daily one is tomorrow's; the one-off at 18:00 is still ahead.
     const reply = await say(app, { text: 'deshacer', at: later('10:00') })
@@ -462,16 +429,16 @@ describe('BAJA', () => {
     ])
     expect(back[0]?.next_due_at).toEqual(new Date('2025-10-10T12:00:00Z'))
     expect(back[1]?.next_due_at).toEqual(new Date('2025-10-09T21:00:00Z'))
-    expect(app.model.n).toBe(0)
+    expect(app.model.n).toBe(1)
     // The old rows stay cancelled: history is never edited.
     expect(rows.filter((r) => r.cancelled)).toHaveLength(2)
     app.close()
   })
 
   it('refuses to bring back a one-off whose time has passed, and changes nothing', async () => {
-    await seedReminder('llamar al médico', { start: '2025-10-09', time: '18:00' })
-    const app = await setup({ model: script(replyCall('x')) })
-    await say(app, { text: 'BAJA', at: later('05:53') })
+    const id = await seedReminder('llamar al médico', { start: '2025-10-09', time: '18:00' })
+    const app = await setup({ model: script(cancelRem(id)) })
+    await say(app, { text: 'cancelá este', at: later('05:53') })
     const reply = await say(app, { text: 'deshacer', at: later('19:00') })
     expect(reply).toBe(
       'No deshice nada: ⏰ llamar al médico cambió después. Decime qué querés cambiar.',
@@ -482,9 +449,15 @@ describe('BAJA', () => {
   })
 
   it('does not exceed the cap when it brings them back', async () => {
-    for (let i = 0; i < MAX_REMINDERS; i++) await seedReminder(`r${i}`, { start: '2025-10-20' })
-    const app = await setup({ model: script(replyCall('x')) })
-    await say(app, { text: 'BAJA', at: later('05:53') })
+    const ids: number[] = []
+    for (let i = 0; i < MAX_REMINDERS; i++) {
+      ids.push(await seedReminder(`r${i}`, { start: '2025-10-20' }))
+    }
+    const app = await setup({ model: script(all(...ids)) })
+    // All twenty in one turn: one batch of twenty lines.
+    expect(
+      (await say(app, { text: 'cancelá todos', at: later('05:53') })).split('\n'),
+    ).toHaveLength(MAX_REMINDERS)
     // The person has 20 new ones by now: bringing back the 20 would make 40.
     for (let i = 0; i < MAX_REMINDERS; i++) await seedReminder(`n${i}`, { start: '2025-10-20' })
     expect(await say(app, { text: 'deshacer', at: later('06:10') })).toContain('No deshice nada')
@@ -551,16 +524,16 @@ describe('undo', () => {
     app.close()
   })
 
-  it('a set that BAJA cancelled and "deshacer" restored can still be undone as the set', async () => {
+  it('a set that a later message cancelled and "deshacer" restored can still be undone as the set', async () => {
     const app = await setup({
-      model: script(setRem('pagar la Visa', { start: '2025-10-10' }), replyCall('x')),
+      model: script(setRem('pagar la Visa', { start: '2025-10-10' }), cancelRem(1)),
     })
     await say(app, { text: 'recordame mañana pagar la visa' })
-    await say(app, { text: 'BAJA' })
+    await say(app, { text: 'cancelá el de la visa' })
     expect(await liveWhats()).toEqual([])
-    await say(app, { text: 'deshacer' }) // BAJA undone: the reminder is back as a new row
+    await say(app, { text: 'deshacer' }) // the cancel undone: the reminder is back as a new row
     expect(await liveWhats()).toEqual(['pagar la Visa'])
-    // The next "deshacer" reaches the set before it (BAJA's batch is undone) and cancels the row that stands now.
+    // The next "deshacer" reaches the set before it (the cancel's batch is undone) and cancels the row that stands now.
     expect(await say(app, { text: 'deshacer' })).toBe('↩︎ Deshice:\n• Quité ⏰ pagar la Visa')
     expect(await liveWhats()).toEqual([])
     app.close()
@@ -568,11 +541,12 @@ describe('undo', () => {
 })
 
 describe('the help text', () => {
-  it('tells how to set, list and stop reminders', async () => {
+  it('tells how to set, list and cancel reminders', async () => {
     const app = await setup({ model: script({ name: 'help', input: {} }) })
     const reply = await say(app, { text: 'ayuda' })
     expect(reply).toContain('recordame')
-    expect(reply).toContain('BAJA')
+    expect(reply).not.toContain('BAJA')
+    expect(reply).toContain('cancele')
     app.close()
   })
 })
@@ -619,15 +593,13 @@ describe('a stored reminder whose schedule no longer parses', () => {
     app.close()
   })
 
-  it('BAJA cancels it too, and counts it', async () => {
+  it('cancelling all of the others leaves it alone, and the message is answered', async () => {
     const bad = await seedReminder('roto', { start: '2025-10-10' })
-    await seedReminder('la pastilla', { start: '2025-10-10', every: 'week' })
+    const good = await seedReminder('la pastilla', { start: '2025-10-10', every: 'week' })
     await corrupt(bad)
-    const app = await setup({ model: script(replyCall('x')) })
-    expect(await say(app, { text: 'BAJA' })).toBe(
-      '⏰ Cancelé tus 2 recordatorios. Si fue sin querer, escribí «deshacer» y vuelven.',
-    )
-    expect((await reminders()).every((r) => r.cancelled)).toBe(true)
+    const app = await setup({ model: script(cancelRem(good)) })
+    expect(await say(app, { text: 'cancelá todos los recordatorios' })).toContain('la pastilla')
+    expect((await reminders()).filter((r) => !r.cancelled).map((r) => r.id)).toEqual([bad])
     app.close()
   })
 

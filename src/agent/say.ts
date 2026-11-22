@@ -88,7 +88,7 @@ export interface Applied {
   forgotten: boolean
   /** A reminder was set (`set_reminder`). */
   reminded?: boolean
-  /** A reminder, or all of them (BAJA), was cancelled. */
+  /** A reminder was cancelled. */
   unreminded?: boolean
 }
 
@@ -102,7 +102,6 @@ const KIND_OF_TOOL = {
   forget_all_confirmed: 'forgotten',
   set_reminder: 'reminded',
   cancel_reminder: 'unreminded',
-  cancel_all_reminders: 'unreminded',
 } as const
 
 /**
