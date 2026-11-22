@@ -1,9 +1,10 @@
 import type { Movement, RecentMovement } from './agent'
+import type { ReminderOutcome } from './apply'
 import type { FactRow } from './facts'
 import type { MovementRow } from './ledger'
 import { type ChangedField, changedFields } from './movement'
 import type { ReminderRow } from './reminders/db'
-import { describeSchedule, instantInWords } from './reminders/describe'
+import { describeReminder, describeSchedule } from './reminders/describe'
 import { addDays } from './time'
 import type { Undone } from './undo'
 import type { MediaProblem } from './whatsapp/graph'
@@ -327,7 +328,7 @@ export const REPLY_REMINDER_GONE = '⏰ Ese recordatorio ya no existe.'
 export const REPLY_REMINDERS_NONE = 'No tenés recordatorios.'
 /** The account holds the most reminders already: nothing was set. */
 export const renderRemindersFull = (max: number) =>
-  `Ya tenés ${max} recordatorios y no me entran más. Decime cuál cancelo y lo pongo.`
+  `Ya tenés ${max} recordatorios y no me entran más. Cancelá uno y pedime este de nuevo.`
 /** The line a text is ended with: no second full stop after the person's own punctuation. */
 const stop = (text: string) => (/[.!?…]$/.test(text) ? text : `${text}.`)
 
@@ -353,12 +354,34 @@ export const renderReminders = (rows: ReminderRow[], today: string) =>
     ? REPLY_REMINDERS_NONE
     : [
         '⏰ Tus recordatorios:',
-        ...rows.map((r) => {
-          const next = r.nextDueAt ? ` · próximo: ${instantInWords(r.nextDueAt, today)}` : ''
-          const once = r.schedule.every === undefined || r.schedule.count === 1
-          return `${BULLET}${r.what}${once ? next.replace(' · próximo:', ' ·') : ` (${r.nextDueAt ? describeSchedule(r.schedule, r.nextDueAt, today, { since: false }) : ''})${next}`}`
-        }),
+        ...rows.map((r) => `${BULLET}${r.what} — ${describeReminder(r, today)}`),
       ].join('\n')
+
+/** The line a reminder write comes to, and its outcome for the step list (`applied`, `gone`, `full`...): one place for all three. */
+export function reminderReply(
+  done: ReminderOutcome,
+  today: string,
+  max: number,
+): { line: string; outcome: string } {
+  switch (done.tool) {
+    case 'set_reminder':
+      if (done.kind === 'applied') {
+        return { line: renderReminderSet(done.reminder, today), outcome: 'applied' }
+      }
+      return {
+        line: done.kind === 'full' ? renderRemindersFull(max) : REPLY_REMINDER_PAST,
+        outcome: done.kind,
+      }
+    case 'cancel_reminder':
+      return done.kind === 'gone'
+        ? { line: REPLY_REMINDER_GONE, outcome: 'gone' }
+        : { line: renderReminderCancelled(done.reminder, today), outcome: 'applied' }
+    case 'cancel_all_reminders':
+      return done.cancelled.length === 0
+        ? { line: REPLY_BAJA_NONE, outcome: 'nothing' }
+        : { line: renderBaja(done.cancelled.length), outcome: 'applied' }
+  }
+}
 
 // ---- Memory (agent slice F). Every line about a fact is code's, from the stored row.
 

@@ -6,6 +6,7 @@ import { MAX_FOUND } from './schema'
 const TODAY = '2026-11-18'
 const guard = (o: Partial<Guard> = {}): Guard => ({
   today: TODAY,
+  now: NOW,
   seen: new Set(),
   logged: 0,
   ...o,
@@ -180,21 +181,35 @@ describe('set_reminder', () => {
     )
   })
 
-  it('refuses a secret or contact data in the text, and the person is told (not the model)', () => {
+  it('refuses a secret value or contact data in the text, and the person is told (not the model)', () => {
     for (const what of [
       'pagar con la clave 7788',
       'llamar al 11 5555 1234',
       'mandar a juan@mail.com',
+      'transferir a la cuenta 0170099220000012345678',
+      'el pin es 4455',
     ]) {
       const c = set(reminder({ what }), { message: what })
       expect(notice(c), what).not.toBeNull()
     }
-    expect(notice(set(reminder({ what: 'la clave del banco' })))).toBe(REPLY_FACT_SECRET)
+    expect(notice(set(reminder({ what: 'pagar con la clave 7788' })))).toBe(REPLY_FACT_SECRET)
     // The model drops the secret from the text, but the message held one: nothing is set.
     const clean = set(reminder({ what: 'pagar' }), {
       message: 'recordame mañana pagar con la clave 7788',
     })
     expect(notice(clean)).toBe(REPLY_FACT_SECRET)
+  })
+
+  it('lets through the words of a secret without a value: a password, a pin or a code to change are plain reminders', () => {
+    for (const what of [
+      'cambiar la contraseña del wifi',
+      'renovar el pin de la tarjeta',
+      'pasar el código postal',
+      'cambiar la clave del banco',
+    ]) {
+      const c = set(reminder({ what }), { message: `recordame ${what}` })
+      expect(c, what).toMatchObject({ kind: 'action', action: { tool: 'set_reminder' } })
+    }
   })
 
   it('refuses text that is empty or too long, and a number the person did not write, to the model', () => {
@@ -221,6 +236,47 @@ describe('set_reminder', () => {
     expect(
       notice(checkInput('set_reminder', reminder({}, { start: '2026-11-17' }), TODAY, NOW)),
     ).toBe(REPLY_REMINDER_PAST)
+  })
+})
+
+describe('set_reminder: a start that has passed is not drained', () => {
+  const NOW_2PM = new Date('2026-11-18T17:00:00Z') // 14:00, Wednesday
+  const run = (schedule: Record<string, unknown>) => set(reminder({}, schedule), { now: NOW_2PM })
+  const stored = (c: ReturnType<typeof set>) =>
+    c.kind === 'action' && c.action.tool === 'set_reminder' ? c.action.input.schedule : null
+
+  it('"3 veces a las 8" asked at 14:00 keeps three, from tomorrow', () => {
+    const c = run({ start: '2026-11-18', time: '08:00', every: 'day', count: 3 })
+    expect(stored(c)).toMatchObject({ start: '2026-11-19', count: 3 })
+  })
+
+  it('"el 10" asked on the 10th after its time is next month\'s, not refused as past', () => {
+    const c = set(
+      reminder({}, { start: '2026-11-10', every: 'month', month_days: [10], count: 1 }),
+      {
+        now: new Date('2026-11-10T18:00:00Z'),
+      },
+    )
+    expect(notice(c)).toBeNull()
+    expect(stored(c)).toMatchObject({ start: '2026-12-10', count: 1 })
+  })
+
+  it('"el viernes" asked on a Friday afternoon is next Friday', () => {
+    const c = set(
+      reminder(
+        {},
+        { start: '2026-11-20', time: '10:00', every: 'week', weekdays: ['fri'], count: 1 },
+      ),
+      { now: new Date('2026-11-20T18:00:00Z') },
+    )
+    expect(stored(c)).toMatchObject({ start: '2026-11-27' })
+  })
+
+  it('still refuses a one-off whose time has passed, and a schedule that has ended', () => {
+    expect(notice(run({ start: '2026-11-18', time: '08:00' }))).toBe(REPLY_REMINDER_PAST)
+    expect(notice(run({ start: '2026-11-01', every: 'day', until: '2026-11-17' }))).toBe(
+      REPLY_REMINDER_PAST,
+    )
   })
 })
 

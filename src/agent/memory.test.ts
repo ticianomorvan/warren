@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { checkCall, type Guard } from './calls'
 import {
   checkFact,
+  holdsSecretValue,
   looksContact,
   looksSecret,
   normalizeKey,
@@ -132,6 +133,7 @@ describe('checkFact', () => {
 describe('checkCall: memory tools', () => {
   const guard = (o: Partial<Guard> = {}): Guard => ({
     today: '2026-11-21',
+    now: new Date('2026-11-21T15:00:00Z'),
     seen: new Set(),
     seenFacts: new Set([7]),
     logged: 0,
@@ -333,5 +335,34 @@ describe('contact data', () => {
     expect(refused('tarjeta', '4509_9535_6623_3704', 'la tarjeta 4509_9535_6623_3704')).toBe(
       'secret',
     )
+  })
+})
+
+describe("holdsSecretValue: a secret's value, not its words", () => {
+  it('is true for a card, a CBU, a DNI, a password with a cue, and a credential word beside a number', () => {
+    for (const text of [
+      'la tarjeta 4509 9535 6623 3704',
+      'cbu 0170099220000012345678',
+      'mi dni 12345678',
+      'entro con Perro123',
+      'pagar con la clave 7788',
+      'el pin es 4455',
+      'el código del cajero es 1234',
+    ]) {
+      expect(holdsSecretValue(text), text).toBe(true)
+    }
+  })
+
+  it('is false for the plain words: a password, a pin or a postal code to change, a 4-digit year or amount alone', () => {
+    for (const text of [
+      'cambiar la contraseña del wifi',
+      'renovar el pin de la tarjeta',
+      'pasar el código postal',
+      'cambiar la clave del banco',
+      'pagar la visa el 10',
+      'pagar 3500 de la luz',
+    ]) {
+      expect(holdsSecretValue(text), text).toBe(false)
+    }
   })
 })

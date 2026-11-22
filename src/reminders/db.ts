@@ -30,19 +30,30 @@ interface RawRow {
   next_due_at: Date | null
 }
 
-const toRow = (r: RawRow): ReminderRow => ({
-  id: r.id,
-  what: r.what,
-  schedule: ScheduleSchema.parse(r.schedule),
-  nextDueAt: r.next_due_at,
-})
+/**
+ * A stored row as a `ReminderRow`, or null (logged) when its schedule no longer parses: one bad row must not fail every message
+ * of the person that reads their reminders, BAJA included (the sender does the same: `reminder_bad_schedule`).
+ */
+function toRow(r: RawRow): ReminderRow | null {
+  const schedule = ScheduleSchema.safeParse(r.schedule)
+  if (!schedule.success) {
+    log('reminder_bad_schedule', { reminder: r.id, error: schedule.error.message }, 'error')
+    return null
+  }
+  return { id: r.id, what: r.what, schedule: schedule.data, nextDueAt: r.next_due_at }
+}
+
+const present = <T>(x: T | null): x is T => x !== null
 
 /** Not cancelled: the only reminders that count. A finished one-off (`next_due_at` null) is not live either. */
 const LIVE = `cancelled_at IS NULL AND next_due_at IS NOT NULL`
 
 const columns = (sql: Sql) => sql`id::int AS id, what, schedule, next_due_at`
 
-/** One writer at a time per account over its reminders: the cap is checked after this. */
+/**
+ * One writer at a time per account over its reminders: the cap, a cancel and an undo are decided after this. Taken once, by the
+ * caller of each (`applyReminderCall`, `undoLast`); the functions below assume it is held.
+ */
 export async function lockReminders(sql: Sql, accountId: number): Promise<void> {
   await sql`SELECT pg_advisory_xact_lock(7203005, ${accountId}::int)`
 }
@@ -53,7 +64,7 @@ export async function liveReminders(sql: Sql, accountId: number): Promise<Remind
     SELECT ${columns(sql)} FROM reminder
     WHERE account_id = ${accountId} AND ${sql.unsafe(LIVE)}
     ORDER BY next_due_at, id`
-  return rows.map(toRow)
+  return rows.map(toRow).filter(present)
 }
 
 /** One live reminder of the account, locked, or null: only the account's own, and only while it is live. */
@@ -77,18 +88,17 @@ export async function cancelReminder(sql: Sql, id: number, inboundId: number): P
   return stamped.length > 0
 }
 
-/** Cancels every live reminder of the account ("BAJA"); returns them as they were. */
+/** Cancels every live reminder of the account ("BAJA"), whatever its schedule holds; returns what each said. */
 export async function cancelAllReminders(
   sql: Sql,
   accountId: number,
   inboundId: number,
-): Promise<ReminderRow[]> {
-  await lockReminders(sql, accountId)
-  const rows = await sql<RawRow[]>`
+): Promise<{ id: number; what: string }[]> {
+  const rows = await sql<{ id: number; what: string }[]>`
     UPDATE reminder SET cancelled_at = now(), cancelled_by = ${inboundId}
     WHERE account_id = ${accountId} AND ${sql.unsafe(LIVE)}
-    RETURNING ${columns(sql)}`
-  return rows.map(toRow).sort((a, b) => a.id - b.id)
+    RETURNING id::int AS id, what`
+  return rows.sort((a, b) => a.id - b.id)
 }
 
 export async function countLiveReminders(sql: Sql, accountId: number): Promise<number> {
@@ -118,12 +128,12 @@ export async function insertReminder(
     INSERT INTO reminder (account_id, what, schedule, next_due_at, inbound_message_id, restores)
     VALUES (${r.accountId}, ${tidyWhat(r.what)}, ${sql.json(r.schedule)}, ${nextDueAt}, ${r.inboundId ?? null}, ${r.restores ?? null})
     RETURNING ${columns(sql)}`
-  return toRow(row as RawRow)
+  return { id: Number(row?.id), what: tidyWhat(r.what), schedule: r.schedule, nextDueAt }
 }
 
 // ---- Undo. A write batch is the inbound message that made the changes (see undo.ts).
 
-/** A reminder row a batch inserted or cancelled, in any state. */
+/** A reminder row in any state, with who inserted and cancelled it. */
 export interface BatchReminder extends ReminderRow {
   /** The message that inserted the row. */
   inbound: number | null
@@ -131,24 +141,49 @@ export interface BatchReminder extends ReminderRow {
   cancelled: boolean
 }
 
-/** Every reminder row of the account the batch inserted (not as an undo's restore) or cancelled, oldest first. */
+type BatchRaw = RawRow & { inbound: number | null; cancelled_by: number | null }
+
+const batchColumns = (sql: Sql) =>
+  sql`${columns(sql)}, inbound_message_id::int AS inbound, cancelled_by::int AS cancelled_by`
+
+function toBatchRow(r: BatchRaw): BatchReminder | null {
+  const row = toRow(r)
+  return (
+    row && {
+      ...row,
+      inbound: r.inbound,
+      cancelledBy: r.cancelled_by,
+      cancelled: r.cancelled_by !== null,
+    }
+  )
+}
+
+/**
+ * Every reminder row of the account the batch inserted (not as an undo's restore) or cancelled, oldest first, locked: a sweep that
+ * is finishing one of them waits (or has finished: the row is read as it is then), so the undo never races it.
+ */
 export async function batchReminders(
   sql: Sql,
   accountId: number,
   batch: number,
 ): Promise<BatchReminder[]> {
-  const rows = await sql<(RawRow & { inbound: number | null; cancelled_by: number | null })[]>`
-    SELECT ${columns(sql)}, inbound_message_id::int AS inbound, cancelled_by::int AS cancelled_by
-    FROM reminder
+  const rows = await sql<BatchRaw[]>`
+    SELECT ${batchColumns(sql)} FROM reminder
     WHERE account_id = ${accountId}
       AND ((inbound_message_id = ${batch} AND restores IS NULL) OR cancelled_by = ${batch})
-    ORDER BY id`
-  return rows.map((r) => ({
-    ...toRow(r),
-    inbound: r.inbound,
-    cancelledBy: r.cancelled_by,
-    cancelled: r.cancelled_by !== null,
-  }))
+    ORDER BY id FOR UPDATE`
+  return rows.map(toBatchRow).filter(present)
+}
+
+/** One reminder row of the account in any state, locked (see `batchReminders`). */
+export async function reminderById(
+  sql: Sql,
+  accountId: number,
+  id: number,
+): Promise<BatchReminder | null> {
+  const [r] = await sql<BatchRaw[]>`
+    SELECT ${batchColumns(sql)} FROM reminder WHERE account_id = ${accountId} AND id = ${id} FOR UPDATE`
+  return r ? toBatchRow(r) : null
 }
 
 /**
@@ -181,23 +216,4 @@ export async function recordReminderStatus(
     )
     return true
   })
-}
-
-/** One reminder row of the account in any state, with who inserted and cancelled it. */
-export async function reminderById(
-  sql: Sql,
-  accountId: number,
-  id: number,
-): Promise<BatchReminder | null> {
-  const [r] = await sql<(RawRow & { inbound: number | null; cancelled_by: number | null })[]>`
-    SELECT ${columns(sql)}, inbound_message_id::int AS inbound, cancelled_by::int AS cancelled_by
-    FROM reminder WHERE account_id = ${accountId} AND id = ${id}`
-  return r
-    ? {
-        ...toRow(r),
-        inbound: r.inbound,
-        cancelledBy: r.cancelled_by,
-        cancelled: r.cancelled_by !== null,
-      }
-    : null
 }

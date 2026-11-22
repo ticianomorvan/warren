@@ -1,7 +1,7 @@
 import type { FactRow } from '../facts'
 import type { MovementRow } from '../ledger'
 import type { ReminderRow } from '../reminders/db'
-import { describeSchedule } from '../reminders/describe'
+import { describeReminder } from '../reminders/describe'
 import { addDays, weekdayName } from '../time'
 
 /**
@@ -516,7 +516,7 @@ export const factFact = (f: FactRow) => `${FACT_LABEL[f.kind]} ${clip(f.key)} ${
 
 /** A reminder as the model reads it: its id (what cancel_reminder takes), what it says and when, in local words. */
 export const reminderLine = (r: ReminderRow, today: string) =>
-  `id=${r.id} "${clip(r.what)}" — ${r.nextDueAt ? describeSchedule(r.schedule, r.nextDueAt, today, { since: false }) : ''}${r.nextDueAt && r.schedule.every !== undefined && r.schedule.count !== 1 ? ` (próximo: ${describeSchedule({ ...r.schedule, every: undefined, count: undefined, interval: 1 }, r.nextDueAt, today)})` : ''}`
+  `id=${r.id} "${clip(r.what)}" — ${describeReminder(r, today)}`
 
 /** A reminder as a source for the numbers check: the dates and times code would write about it, without its id. */
 export const reminderFact = (r: ReminderRow, today: string) =>

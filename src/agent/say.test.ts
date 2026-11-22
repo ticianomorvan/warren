@@ -376,9 +376,37 @@ describe('checkSay: a text cannot say a change happened that this message did no
     expect(say('No te aviso nada: no lo puse.')).toBe(true)
   })
 
+  it('lets the prompt’s own question and a plain reminder of a rule through', () => {
+    // "¿Cuál querés que cancele?" is how the model asks which reminder (accents are folded: it reads like "cancelé").
+    expect(say('¿Cuál querés que cancele?')).toBe(true)
+    expect(say('¿Cuál recordatorio querés que cancele?')).toBe(true)
+    expect(say('Te recuerdo que solo anoto gastos.')).toBe(true)
+    expect(say('Te lo recuerdo: mandame el monto.')).toBe(true)
+    // The claim itself still needs the cancel.
+    expect(say('Cancelé el recordatorio.')).toBe(false)
+  })
+
   it('leaves a denial alone: not doing something is not a claim', () => {
     expect(say('No borré nada: no encontré el súper.')).toBe(true)
     expect(say('No lo anoté porque falta el monto.')).toBe(true)
+  })
+})
+
+describe('composeReply: a reminder set', () => {
+  it('sends the ⏰ line and drops the model’s words beside it, which can only contradict it', () => {
+    const r = composeReply({
+      lines: ['⏰ Te aviso todos los lunes a las 09:00, desde el lunes 13/10: la pastilla.'],
+      says: [{ action: 0, text: 'Dale, te aviso todos los martes.' }],
+      steps: [{ tool: 'set_reminder', outcome: 'applied' }],
+      message: 'los lunes recordame la pastilla',
+      facts: ['los lunes recordame la pastilla'],
+      window: [],
+      fallback: 'x',
+    })
+    expect(r.reply).toBe(
+      '⏰ Te aviso todos los lunes a las 09:00, desde el lunes 13/10: la pastilla.',
+    )
+    expect(r.verdicts.get(0)).toMatchObject({ text: 'dropped' })
   })
 })
 

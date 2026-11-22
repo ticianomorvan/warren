@@ -47,7 +47,7 @@ export interface Guard {
   /** Ids of the reminders the model has been shown ("Recordatorios"): another id space again. */
   seenReminders?: ReadonlySet<number>
   /** The instant of the message (its own time, never the clock): a reminder's first occurrence must be after it. */
-  now?: Date
+  now: Date
   /** Movements already asked to be logged by earlier calls of this turn. */
   logged: number
   /** The kind and key of every fact earlier calls of this turn asked to remember: a key is said once per message. */
@@ -126,7 +126,7 @@ const logIssues = (movements: Movement[], today: string) => checkLog(movements, 
  * secret and fits. Nothing here knows of a conversation: no id was "shown", no earlier call of the message counts, and a fact
  * need not be words the person wrote. The refusal says why, in words for whoever sent it.
  */
-function valueGuards(p: Parsed, today: string, now?: Date, message?: string): Checked {
+function valueGuards(p: Parsed, today: string, now: Date, message?: string): Checked {
   const { tool } = p
   switch (tool) {
     case 'find_movements': {
@@ -202,9 +202,7 @@ function valueGuards(p: Parsed, today: string, now?: Date, message?: string): Ch
     }
     case 'set_reminder': {
       const r = p.data as ToolInput<'set_reminder'>
-      // With no clock given the day's start: a reminder for a time earlier today then passes, the commit point checks it again.
-      const at = now ?? new Date(`${today}T00:00:00-03:00`)
-      const checked = checkReminder(r, at, message)
+      const checked = checkReminder(r, now, message)
       if (checked.ok) {
         return {
           kind: 'action',
@@ -256,7 +254,12 @@ const refusedFact = (why: 'secret' | 'contact'): Checked => ({
  * The value guards alone, for a caller that is not a conversation (an MCP client): the input has the tool's shape and
  * every value is one the tables can hold. See `valueGuards`.
  */
-export function checkInput(name: string, input: unknown, today: string, now?: Date): Checked {
+export function checkInput(
+  name: string,
+  input: unknown,
+  today: string,
+  now: Date = new Date(),
+): Checked {
   const parsed = parseInput(name, input)
   return typeof parsed === 'string' ? rejected(parsed) : valueGuards(parsed, today, now)
 }
@@ -274,7 +277,7 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
 
   switch (tool) {
     case 'find_movements': {
-      const checked = valueGuards(parsed, guard.today)
+      const checked = valueGuards(parsed, guard.today, guard.now)
       return checked.kind === 'read'
         ? {
             kind: 'read',
@@ -294,7 +297,7 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
     }
     case 'correct_movement': {
       const unseen = checkIds([(data as ToolInput<'correct_movement'>).id], guard)
-      return unseen ? rejected(unseen) : valueGuards(parsed, guard.today)
+      return unseen ? rejected(unseen) : valueGuards(parsed, guard.today, guard.now)
     }
     case 'delete_movement': {
       const { id, text } = data as ToolInput<'delete_movement'>
@@ -318,7 +321,7 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
     case 'set_reminder':
       return valueGuards(parsed, guard.today, guard.now, guard.message ?? '')
     case 'cancel_reminder': {
-      const checked = valueGuards(parsed, guard.today)
+      const checked = valueGuards(parsed, guard.today, guard.now)
       const id = (data as ToolInput<'cancel_reminder'>).id
       if (checked.kind === 'action' && !guard.seenReminders?.has(id)) {
         return rejected(
@@ -328,7 +331,7 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       return checked
     }
     case 'forget_fact': {
-      const checked = valueGuards(parsed, guard.today)
+      const checked = valueGuards(parsed, guard.today, guard.now)
       const id = (data as ToolInput<'forget_fact'>).id
       // An id the model sends must have been shown to it.
       if (checked.kind === 'action' && id > 0 && !guard.seenFacts?.has(id)) {
@@ -339,7 +342,7 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       return checked
     }
     default: // summarize, reply, help, undo_last, forget_all_facts, list_facts, list_reminders
-      return valueGuards(parsed, guard.today)
+      return valueGuards(parsed, guard.today, guard.now)
   }
 }
 

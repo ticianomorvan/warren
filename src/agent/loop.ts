@@ -97,7 +97,7 @@ export interface AgentInput {
   /** Ids of the reminders the model is shown ("Recordatorios"): the only ones `cancel_reminder` may name. */
   seenReminders?: ReadonlySet<number>
   /** The instant of the message: a reminder's first occurrence must be after it. */
-  now?: Date
+  now: Date
   /** The only option of the pending question, when it has exactly one (see `Guard.sole`). */
   sole?: number
   /** Aborts the call and the SDK's retries: the message deadline and the shutdown. */
@@ -217,7 +217,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       unreminded: acts.some((a) => a.tool === 'cancel_reminder'),
     }
     return acts.flatMap((action) => {
-      if (!('text' in action.input)) return []
+      if (!('text' in action.input) || action.tool === 'set_reminder') return []
       const text = action.input.text ?? ''
       if (text.trim() === '' && action.tool !== 'reply') return []
       const check = checkSay(text, {

@@ -155,7 +155,7 @@ export function disconnectRequest(text: string): Action | null {
 }
 
 const BAJA =
-  /^(?:(?:por favor|porfa)\s+)?(?:(?:quiero\s+)?(?:la\s+)?baja|(?:dar(?:me)?|dame|darme)\s+de\s+baja)(?:\s+(?:por favor|porfa))?$/
+  /^(?:(?:por favor|porfa)\s+)?(?:quiero\s+)?(?:(?:la\s+)?baja|(?:dar(?:me)?|dame)\s+de\s+baja)(?:\s+(?:por favor|porfa))?$/
 
 /**
  * "BAJA" (also "baja", "dame de baja", "quiero la baja"): a typed message that is only that stops every reminder, done by code

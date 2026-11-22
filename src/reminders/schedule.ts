@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { argentinaToday } from '../time'
 
 /**
  * The schedule of a reminder: the useful subset of iCalendar's RRULE as typed fields (docs/reminders-spec.md,
@@ -17,7 +18,7 @@ const MAX_PERIODS = 20_000
 const isoDay = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
-  .refine((s) => fromDay(toDay(s)).iso === s, 'not a real date')
+  .refine((s) => Number.isFinite(toDay(s)) && fromDay(toDay(s)).iso === s, 'not a real date')
 
 const weekday = z.enum(WEEKDAYS)
 
@@ -187,4 +188,29 @@ export function nextOccurrence(schedule: Schedule, after: Date): Date | null {
     if (at > after) return at
   }
   return null
+}
+
+/**
+ * The schedule as it stands from `now` on, or null when it has no occurrence left. `start` is where a schedule says it begins, which
+ * may already be past (a model sends "today" for a time that has gone by): counting `count` from there would spend occurrences the
+ * person never saw, and "el 10" on the 10th after the time would be refused. So the fields that default to `start` (the weekday, the
+ * day of the month, the month) are made explicit first, the first occurrence after `now` is found with `count` left out, `start` moves
+ * to that day (it is an occurrence of the same series, so the weeks, months and years still count from the same place), and `count`
+ * then counts from there. `until` stays: a schedule that ends before `now` has nothing left.
+ */
+export function normalizeSchedule(schedule: Schedule, now: Date): Schedule | null {
+  if (schedule.every === undefined) return nextOccurrence(schedule, now) ? schedule : null
+  const [y = 0, m = 1, d = 1] = schedule.start.split('-').map(Number)
+  const explicit: Schedule = { ...schedule }
+  if (schedule.every === 'week' && !schedule.weekdays) {
+    explicit.weekdays = [WEEKDAYS[(new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7] as Weekday]
+  }
+  if ((schedule.every === 'month' && !schedule.nth) || schedule.every === 'year') {
+    explicit.month_days ??= [d]
+  }
+  if (schedule.every === 'year') explicit.month ??= m
+  const { count, ...open } = explicit
+  const first = nextOccurrence(open, now)
+  if (!first) return null
+  return { ...open, start: argentinaToday(first), ...(count === undefined ? {} : { count }) }
 }

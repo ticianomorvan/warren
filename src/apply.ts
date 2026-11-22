@@ -53,6 +53,8 @@ export interface ApplyContext {
   batchId: number
   /** The position of the first row this call inserts in its batch: a message may log, correct and log again. Default 0. */
   position?: number
+  /** The instant of the message (an undo brings reminders back from it). WhatsApp gives its own; an MCP request is now. */
+  now?: Date
 }
 
 /** What a write did, as data: the caller renders it (WhatsApp's reply from templates, MCP's structured result). */
@@ -123,7 +125,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
     case 'undo_last':
       return {
         tool: call.tool,
-        undo: await undoLast(tx, { accountId, inboundId: batchId }),
+        undo: await undoLast(tx, { accountId, inboundId: batchId, now: ctx.now ?? new Date() }),
         rows: 0,
       }
     case 'remember_fact': {
@@ -167,7 +169,7 @@ export type ReminderOutcome =
   | { tool: 'cancel_reminder'; kind: 'applied'; reminder: ReminderRow }
   /** Not the person's, or no longer live (sent, or cancelled by a message that ran meanwhile): nothing was written. */
   | { tool: 'cancel_reminder'; kind: 'gone'; id: number }
-  | { tool: 'cancel_all_reminders'; kind: 'applied'; cancelled: ReminderRow[] }
+  | { tool: 'cancel_all_reminders'; kind: 'applied'; cancelled: { id: number; what: string }[] }
 
 /**
  * Runs one reminder write inside the transaction that already holds the batch's row. The account's reminders lock is taken
@@ -180,10 +182,11 @@ export async function applyReminderCall(
   call: ReminderCall,
 ): Promise<ReminderOutcome> {
   const { accountId, batchId, now } = ctx
+  // The one lock of a reminder write: the cap, a cancel and BAJA are decided after it, one writer at a time.
+  await lockReminders(tx, accountId)
   switch (call.tool) {
     case 'set_reminder': {
       const { what, schedule } = call.input
-      await lockReminders(tx, accountId)
       if (!nextOccurrence(schedule, now)) return { tool: call.tool, kind: 'past' }
       if ((await countLiveReminders(tx, accountId)) >= MAX_REMINDERS) {
         return { tool: call.tool, kind: 'full' }
@@ -198,7 +201,6 @@ export async function applyReminderCall(
       return { tool: call.tool, kind: 'applied', reminder }
     }
     case 'cancel_reminder': {
-      await lockReminders(tx, accountId)
       const reminder = await lockLiveReminder(tx, accountId, call.input.id)
       if (!reminder || !(await cancelReminder(tx, reminder.id, batchId))) {
         return { tool: call.tool, kind: 'gone', id: call.input.id }

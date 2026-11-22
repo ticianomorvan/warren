@@ -185,6 +185,11 @@ async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<stri
   for (const r of s.reminders) {
     // Its next date is the first occurrence after the scenario's first turn, as if it had been set a day before.
     const due = nextOccurrence(r.schedule, new Date(epoch(s.turns[0]?.now ?? '')))
+    // A seed that is not live at the first turn would silently test nothing.
+    if (!due)
+      throw new Error(
+        `${s.id}: the seeded reminder "${r.what}" has no occurrence after the first turn`,
+      )
     await sql`INSERT INTO reminder (account_id, what, schedule, next_due_at, inbound_message_id)
       VALUES (${account?.id ?? 0}, ${r.what}, ${sql.json(r.schedule)}, ${due}, ${inbound?.id ?? 0})`
   }

@@ -81,6 +81,7 @@ const inputFor = (c: Anthropic) => ({
   window: [] as string[],
   message: '',
   today: '2026-11-21',
+  now: new Date('2026-11-21T15:00:00Z'),
   env: { find: async () => [] as MovementRow[] },
   seen: new Set([1, 2, 3]),
 })
@@ -104,6 +105,7 @@ const run = (
     window: o.window ?? [],
     message: o.message ?? '',
     today: '2026-11-21',
+    now: new Date('2026-11-21T15:00:00Z'),
     env: { find: async () => o.find?.(0) ?? [] },
     seen: new Set(o.seen ?? [1, 2, 3]),
     signal: o.signal,
@@ -573,6 +575,7 @@ describe('runAgent: a photo', () => {
       window: [],
       message: '',
       today: '2026-11-21',
+      now: new Date('2026-11-21T15:00:00Z'),
       env: { find: async () => [] },
       seen: new Set(),
     })

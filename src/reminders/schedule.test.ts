@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { argentinaTime, argentinaToday } from '../time'
-import { nextOccurrence, ScheduleSchema, WEEKDAYS, type Weekday } from './schedule'
+import {
+  nextOccurrence,
+  normalizeSchedule,
+  ScheduleSchema,
+  WEEKDAYS,
+  type Weekday,
+} from './schedule'
 
 type Input = Parameters<typeof ScheduleSchema.parse>[0]
 const make = (input: Input) => ScheduleSchema.parse(input)
@@ -33,6 +39,7 @@ describe('schedule parsing', () => {
 
   it.each([
     ['a date that does not exist', { start: '2026-02-30' }],
+    ['a start that is not a date at all', { start: 'nonsense' }],
     ['a bad time', { start: '2026-11-24', time: '24:00' }],
     ['an interval of 0', { start: '2026-11-24', every: 'day', interval: 0 }],
     ['an interval over 365', { start: '2026-11-24', every: 'day', interval: 366 }],
@@ -463,6 +470,150 @@ describe('nextOccurrence: properties', () => {
       expect(days.length, JSON.stringify(s)).toBeLessThanOrEqual(s.count ?? 0)
       expect(days, JSON.stringify(s)).toEqual([...days].sort((a, b) => a - b))
       expect(new Set(days).size, JSON.stringify(s)).toBe(days.length)
+    }
+  }, 60_000)
+})
+
+describe('normalizeSchedule: from now on, never drained by a start that has passed', () => {
+  const norm = (input: Input, now: string) => normalizeSchedule(make(input), at(now))
+  /** The next `n` occurrences of what normalizeSchedule gives, from `now`. */
+  const upcoming = (input: Input, now: string, n: number) => {
+    const s = norm(input, now)
+    if (!s) return null
+    const out: string[] = []
+    let after = at(now)
+    for (let i = 0; i < n; i++) {
+      const next = nextOccurrence(s, after)
+      if (!next) break
+      out.push(local(next))
+      after = next
+    }
+    return out
+  }
+
+  it('counts from the first occurrence after now, not from a time that already passed today', () => {
+    // 14:00; "3 veces a las 8, desde hoy": today's 08:00 is gone, and it is not one of the three.
+    const input = { start: '2026-11-21', time: '08:00', every: 'day', count: 3 } as const
+    expect(upcoming(input, '2026-11-21 14:00', 10)).toEqual([
+      '2026-11-22 08:00',
+      '2026-11-23 08:00',
+      '2026-11-24 08:00',
+    ])
+    // Before 08:00 the same input keeps today's.
+    expect(upcoming(input, '2026-11-21 07:00', 10)).toEqual([
+      '2026-11-21 08:00',
+      '2026-11-22 08:00',
+      '2026-11-23 08:00',
+    ])
+  })
+
+  it('a one-time monthly "el 10" on the 10th after its time is next month\'s', () => {
+    const input = { start: '2026-11-10', every: 'month', month_days: [10], count: 1 } as const
+    expect(upcoming(input, '2026-11-10 15:00', 5)).toEqual(['2026-12-10 09:00'])
+    expect(upcoming(input, '2026-11-10 08:00', 5)).toEqual(['2026-11-10 09:00'])
+  })
+
+  it('a one-time weekly "el viernes" on a Friday afternoon is next Friday', () => {
+    const input = {
+      start: '2026-11-20',
+      time: '10:00',
+      every: 'week',
+      weekdays: ['fri'],
+      count: 1,
+    } as const
+    expect(upcoming(input, '2026-11-20 15:00', 5)).toEqual(['2026-11-27 10:00'])
+  })
+
+  it('makes what defaults to start explicit first: a monthly with no day keeps the day of start, a weekly its weekday, a yearly its month and day', () => {
+    // start 31 Oct (a Saturday), asked on 5 Nov: the day of the month is 31 (clamped in short months), not the day it moved to.
+    expect(
+      upcoming({ start: '2026-10-31', every: 'month', count: 3 }, '2026-11-05 10:00', 5),
+    ).toEqual(['2026-11-30 09:00', '2026-12-31 09:00', '2027-01-31 09:00'])
+    expect(
+      upcoming({ start: '2026-11-14', every: 'week', count: 2 }, '2026-11-21 12:00', 5),
+    ).toEqual(['2026-11-28 09:00', '2026-12-05 09:00'])
+    expect(
+      upcoming({ start: '2026-04-03', every: 'year', count: 2 }, '2026-11-21 12:00', 5),
+    ).toEqual(['2027-04-03 09:00', '2028-04-03 09:00'])
+  })
+
+  it('keeps the series: an interval still counts from the same place', () => {
+    // Every 15 days from the 1st at 08:00; asked on the 17th at 14:00: the series is 1, 16, 31 (Dec)... the next is 1 Dec.
+    const input = {
+      start: '2026-11-01',
+      time: '08:00',
+      every: 'day',
+      interval: 15,
+      count: 2,
+    } as const
+    expect(upcoming(input, '2026-11-17 14:00', 5)).toEqual(['2026-12-01 08:00', '2026-12-16 08:00'])
+    // Every 2 weeks on Monday from 2 Nov; asked on Wed 11 Nov: the series is 2, 16, 30 Nov.
+    const weekly = {
+      start: '2026-11-02',
+      every: 'week',
+      interval: 2,
+      weekdays: ['mon'],
+      count: 2,
+    } as const
+    expect(upcoming(weekly, '2026-11-11 12:00', 5)).toEqual([
+      '2026-11-16 09:00',
+      '2026-11-30 09:00',
+    ])
+  })
+
+  it('moves start to the first occurrence and leaves everything else as it was', () => {
+    const s = norm(
+      { start: '2026-11-21', time: '08:00', every: 'day', count: 3, until: '2026-12-31' },
+      '2026-11-21 14:00',
+    )
+    expect(s).toMatchObject({
+      start: '2026-11-22',
+      time: '08:00',
+      every: 'day',
+      count: 3,
+      until: '2026-12-31',
+    })
+  })
+
+  it('is null when nothing is left: a one-off that passed, an end before now', () => {
+    expect(norm({ start: '2026-11-21', time: '08:00' }, '2026-11-21 14:00')).toBeNull()
+    expect(
+      norm({ start: '2026-11-01', every: 'day', until: '2026-11-20' }, '2026-11-21 14:00'),
+    ).toBeNull()
+  })
+
+  it('leaves a one-off alone', () => {
+    const one = make({ start: '2026-11-25', time: '10:00' })
+    expect(normalizeSchedule(one, at('2026-11-21 14:00'))).toEqual(one)
+  })
+
+  it('gives the same occurrences as the schedule did for every rule, from the first one on (a seeded loop)', () => {
+    const r = rng(99)
+    for (let i = 0; i < 150; i++) {
+      const input = randomSchedule(r)
+      const s = make(input)
+      const now = new Date(dayNum(s.start) * DAY_MS + r.int(0, 400) * DAY_MS + r.int(0, DAY_MS - 1))
+      const n = normalizeSchedule(s, now)
+      const open = { ...s, count: undefined }
+      const first = nextOccurrence(open, now)
+      if (!n) {
+        expect(first, JSON.stringify(input)).toBeNull()
+        continue
+      }
+      // The first occurrence is the same, and with count the series from there has count occurrences.
+      expect(nextOccurrence(n, now), JSON.stringify(input)).toEqual(first)
+      if (s.count !== undefined) {
+        let at = new Date(now)
+        let k = 0
+        for (;;) {
+          const next = nextOccurrence(n, at)
+          if (!next) break
+          k++
+          at = next
+        }
+        expect(k, JSON.stringify(input)).toBeLessThanOrEqual(s.count)
+        expect(k, JSON.stringify(input)).toBeGreaterThan(0)
+      }
     }
   }, 60_000)
 })

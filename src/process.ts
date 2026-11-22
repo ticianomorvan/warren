@@ -53,6 +53,12 @@ export interface ProcessorOptions {
   interimMs?: number
   /** Ms after `received_at` at which an uncommitted message fails. Default 30 s. */
   deadlineMs?: number
+  /**
+   * The clock. A reminder's time is judged against the later of the message's own time and this: a message that waited (an
+   * outage, a long deploy) must not set a reminder for a moment that has already gone by. Tests and the scenario eval give
+   * a fixed past one, since their messages carry made-up times.
+   */
+  clock?: () => Date
 }
 
 export const isAllowed = (allowed: string[], waId: string) =>
@@ -238,6 +244,10 @@ export function createProcessor(o: ProcessorOptions) {
 
     const typing = c.typingSent ? Promise.resolve(undefined) : showTyping(c)
     const today = argentinaToday(c.messageAt)
+    // "Now" for reminders: when the person wrote, or later if the message waited (see `ProcessorOptions.clock`).
+    const now = new Date(
+      Math.max(c.messageAt.getTime(), (o.clock ?? (() => new Date()))().getTime()),
+    )
     const isPhoto = c.kind === 'image'
     // The download starts with the first signal, beside the database reads, and is awaited only when
     // the model needs it. A photo that cannot be read is answered, not failed. A voice note's download
@@ -375,7 +385,7 @@ export function createProcessor(o: ProcessorOptions) {
         seen,
         seenFacts: new Set(memory.facts.map((f) => f.id)),
         seenReminders: new Set(reminders.map((r) => r.id)),
-        now: c.messageAt,
+        now,
         sole:
           conversation.question?.asked.length === 1
             ? conversation.question.asked[0]?.id
@@ -439,7 +449,7 @@ export function createProcessor(o: ProcessorOptions) {
               actions,
               audit,
               today,
-              now: c.messageAt,
+              now,
               message: text,
               facts,
               window,

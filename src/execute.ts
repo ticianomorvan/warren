@@ -12,20 +12,17 @@ import { scrubAudit } from './redact'
 import { liveReminders } from './reminders/db'
 import { MAX_REMINDERS } from './reminders/guard'
 import {
-  REPLY_BAJA_NONE,
   REPLY_DISCONNECT,
   REPLY_FACT_GONE,
   REPLY_FACT_SECRET,
   REPLY_GONE,
   REPLY_LINK,
-  REPLY_REMINDER_GONE,
-  REPLY_REMINDER_PAST,
   REPLY_SAY_FALLBACK,
   REPLY_UNDO_EXPIRED,
   REPLY_UNDO_NOTHING,
   type RenderOptions,
+  reminderReply,
   renderAsk,
-  renderBaja,
   renderCorrection,
   renderDeletion,
   renderFacts,
@@ -38,10 +35,7 @@ import {
   renderKnown,
   renderLog,
   renderRemembered,
-  renderReminderCancelled,
-  renderReminderSet,
   renderReminders,
-  renderRemindersFull,
   renderStale,
   renderUnchanged,
   renderUndo,
@@ -62,7 +56,7 @@ export interface ExecuteInput {
   /** The Argentine day of the message. */
   today: string
   /** The instant of the message (its own time): a reminder's first occurrence, and what an undo brings back, are counted from it. */
-  now?: Date
+  now: Date
   /**
    * What the model's own words may take numbers from, besides the lines this run renders: the person's
    * message, the context and the search results of this message (`contextFacts`).
@@ -135,7 +129,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         // The writes are `applyCall`'s, the one path under both channels; this composes the reply from what it did.
         const done = await applyCall(
           tx,
-          { accountId: i.accountId, batchId: i.inboundId, position },
+          { accountId: i.accountId, batchId: i.inboundId, position, now: i.now },
           action,
         )
         position += done.rows
@@ -170,7 +164,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
               lines.push(renderUndo(undone.items.map(undoLine), today))
             } else {
               lines.push(
-                undone.kind === 'nothing'
+                undone.kind === 'nothing' || undone.kind === 'whatsapp_only'
                   ? REPLY_UNDO_NOTHING
                   : undone.kind === 'expired'
                     ? REPLY_UNDO_EXPIRED
@@ -277,34 +271,14 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
       case 'cancel_all_reminders': {
         const done = await applyReminderCall(
           tx,
-          { accountId: i.accountId, batchId: i.inboundId, now: i.now ?? new Date() },
+          { accountId: i.accountId, batchId: i.inboundId, now: i.now },
           action,
         )
-        switch (done.tool) {
-          case 'set_reminder':
-            if (done.kind === 'applied') lines.push(renderReminderSet(done.reminder, today))
-            else if (done.kind === 'full') lines.push(renderRemindersFull(MAX_REMINDERS))
-            else lines.push(REPLY_REMINDER_PAST)
-            steps.push({ tool: done.tool, outcome: done.kind })
-            if (done.kind === 'applied') details.set(index, `reminder ${done.reminder.id}`)
-            break
-          case 'cancel_reminder':
-            lines.push(
-              done.kind === 'gone'
-                ? REPLY_REMINDER_GONE
-                : renderReminderCancelled(done.reminder, today),
-            )
-            steps.push({ tool: done.tool, outcome: done.kind })
-            break
-          case 'cancel_all_reminders':
-            lines.push(
-              done.cancelled.length === 0 ? REPLY_BAJA_NONE : renderBaja(done.cancelled.length),
-            )
-            steps.push({
-              tool: done.tool,
-              outcome: done.cancelled.length === 0 ? 'nothing' : 'applied',
-            })
-            break
+        const { line, outcome } = reminderReply(done, today, MAX_REMINDERS)
+        lines.push(line)
+        steps.push({ tool: done.tool, outcome })
+        if (done.tool === 'set_reminder' && done.kind === 'applied') {
+          details.set(index, `reminder ${done.reminder.id}`)
         }
         break
       }

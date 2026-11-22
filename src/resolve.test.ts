@@ -228,6 +228,10 @@ describe('bajaRequest', () => {
       'dar de baja',
       'quiero la baja',
       'por favor baja',
+      'quiero darme de baja',
+      'darme de baja',
+      'quiero la baja',
+      'quiero baja',
       'baja porfa',
     ]) {
       expect(bajaRequest(yes), yes).toEqual({ tool: 'cancel_all_reminders', input: {} })
@@ -235,6 +239,8 @@ describe('bajaRequest', () => {
     for (const no of [
       'baja el precio',
       'dar de baja la visa',
+      'quiero darme de baja de la visa',
+      'quiero baja de sueldo',
       'dar de baja el recordatorio del alquiler',
       'no baja',
       'cuanto baja el dolar',

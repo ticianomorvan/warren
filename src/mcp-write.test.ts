@@ -452,7 +452,7 @@ describe('undo spans both channels', () => {
     expect(await live(WA_A)).toHaveLength(0)
   })
 
-  it('warren_undo_last takes back a reminder a WhatsApp message set, and refuses when it has been sent', async () => {
+  it('warren_undo_last refuses a batch that set or cancelled reminders: they are undone from WhatsApp, and nothing changes', async () => {
     app.close()
     const setReminder = {
       name: 'set_reminder',
@@ -465,17 +465,17 @@ describe('undo spans both channels', () => {
     await boot(script(setReminder, setReminder))
     const [reply] = await whatsapp(app, WA_A, 'recordame mañana pagar la visa')
     expect(reply).toContain('⏰ Te aviso')
-    // A one-off that was sent has nothing to take back.
-    await sql`UPDATE reminder SET next_due_at = NULL`
-    expect(refusal(await tool(a.access_token, 'warren_undo_last', {}))).toContain('reminder')
-    await sql`UPDATE reminder SET next_due_at = '2025-10-10T12:00:00Z'`
-    const out = ok(await tool(a.access_token, 'warren_undo_last', {}), 'undone')
-    expect(out.items).toMatchObject([
-      { kind: 'reminder_removed', reminder: { what: 'pagar la Visa' } },
-    ])
-    expect(out.record).toBe('↩︎ Deshice:\n• Quité ⏰ pagar la Visa')
+    expect(refusal(await tool(a.access_token, 'warren_undo_last', {}))).toContain('WhatsApp')
     const [live] = await sql`SELECT count(*)::int AS n FROM reminder WHERE cancelled_at IS NULL`
-    expect(live?.n).toBe(0)
+    expect(live?.n).toBe(1)
+    // The batch is still there for the person: "deshacer" on WhatsApp takes it back.
+    const [undone] = await whatsapp(app, WA_A, 'deshacer')
+    expect(undone).toBe('↩︎ Deshice:\n• Quité ⏰ pagar la Visa')
+    // A batch before it (an MCP log) is undone from MCP as ever.
+    const out = ok(await tool(a.access_token, 'warren_log_movements', log(cafe)), 'log')
+    expect(ok(await tool(a.access_token, 'warren_undo_last', {}), 'undone').undone_batch).toBe(
+      out.batch,
+    )
   })
 
   it("never takes another person's batch", async () => {

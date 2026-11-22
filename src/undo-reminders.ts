@@ -5,7 +5,6 @@ import {
   cancelReminder,
   countLiveReminders,
   insertReminder,
-  lockReminders,
   type ReminderRow,
   reminderById,
 } from './reminders/db'
@@ -49,7 +48,7 @@ async function headOf(tx: Sql, accountId: number, row: BatchReminder): Promise<B
  *   a one-off that has already been sent is not: there is nothing left to take back;
  * - one the batch cancelled can be brought back: it still has an occurrence after `now` (a one-off whose time has passed
  *   cannot come back), and the account stays within `MAX_REMINDERS`.
- * A reminder the batch set and cancelled itself is a net of nothing and is left out. Takes the account's reminders lock first.
+ * A reminder the batch set and cancelled itself is a net of nothing and is left out. The caller holds the account's reminders lock; the rows are read locked, so a sweep that is ending a one-off waits and the undo sees it ended.
  */
 export async function planReminderUndo(
   tx: Sql,
@@ -57,7 +56,6 @@ export async function planReminderUndo(
   batch: number,
   now: Date,
 ): Promise<ReminderPlan> {
-  await lockReminders(tx, accountId)
   const plan: ReminderPlan = { made: [], cancelled: [], moved: [] }
   for (const row of await batchReminders(tx, accountId, batch)) {
     if (row.inbound === batch && row.cancelledBy === batch) continue

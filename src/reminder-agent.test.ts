@@ -190,7 +190,7 @@ describe('set_reminder', () => {
     const app = await setup({ model: script(setRem('uno más', { start: '2025-10-21' })) })
     const reply = await say(app, { text: 'recordame uno más' })
     expect(reply).toBe(
-      `Ya tenés ${MAX_REMINDERS} recordatorios y no me entran más. Decime cuál cancelo y lo pongo.`,
+      `Ya tenés ${MAX_REMINDERS} recordatorios y no me entran más. Cancelá uno y pedime este de nuevo.`,
     )
     expect(await reminders()).toHaveLength(MAX_REMINDERS)
     app.close()
@@ -349,8 +349,8 @@ describe('cancel_reminder and list_reminders', () => {
     expect(reply).toBe(
       [
         '⏰ Tus recordatorios:',
-        '• llamar al médico · hoy a las 18:00',
-        '• pagar el alquiler (el 5 de cada mes a las 09:00) · próximo: el miércoles 5/11 a las 09:00',
+        '• llamar al médico — hoy a las 18:00',
+        '• pagar el alquiler — el 5 de cada mes a las 09:00 (próximo: el miércoles 5/11 a las 09:00)',
       ].join('\n'),
     )
     app.close()
@@ -573,6 +573,94 @@ describe('the help text', () => {
     const reply = await say(app, { text: 'ayuda' })
     expect(reply).toContain('recordame')
     expect(reply).toContain('BAJA')
+    app.close()
+  })
+})
+
+describe('a time that has passed by the clock, not only by the message', () => {
+  it('refuses a reminder for a moment that went by while the message waited', async () => {
+    // Written at 05:53, asked for 06:00; the message was only processed at 06:10 (an outage, a deploy).
+    const app = await setup({
+      model: script(setRem('tomar agua', { start: '2025-10-09', time: '06:00' })),
+      clock: () => new Date('2025-10-09T06:10:00-03:00'),
+    })
+    expect(await say(app, { text: 'recordame en 7 minutos tomar agua' })).toBe(REPLY_REMINDER_PAST)
+    expect(await reminders()).toEqual([])
+    app.close()
+  })
+
+  it('and sets it when the clock has not got there', async () => {
+    const app = await setup({
+      model: script(setRem('tomar agua', { start: '2025-10-09', time: '06:00' })),
+      clock: () => new Date('2025-10-09T05:55:00-03:00'),
+    })
+    expect(await say(app, { text: 'recordame en 7 minutos tomar agua' })).toContain(
+      '⏰ Te aviso hoy a las 06:00',
+    )
+    app.close()
+  })
+})
+
+describe('a stored reminder whose schedule no longer parses', () => {
+  const corrupt = async (id: number) =>
+    sql`UPDATE reminder SET schedule = '{"start": "nonsense"}'::jsonb WHERE id = ${id}`
+
+  it('is left out of the context and the list; the others still work, and every message still gets answered', async () => {
+    const bad = await seedReminder('roto', { start: '2025-10-10' })
+    await seedReminder('la pastilla', { start: '2025-10-10', every: 'week' })
+    await corrupt(bad)
+    const app = await setup({ model: script(listRem, replyCall('ok')) })
+    const reply = await say(app, { text: 'qué recordatorios tengo?' })
+    expect(reply).toContain('la pastilla')
+    expect(reply).not.toContain('roto')
+    await say(app, { text: 'hola' })
+    expect(contextOf(app, 1)).toContain('la pastilla')
+    expect(contextOf(app, 1)).not.toContain('roto')
+    app.close()
+  })
+
+  it('BAJA cancels it too, and counts it', async () => {
+    const bad = await seedReminder('roto', { start: '2025-10-10' })
+    await seedReminder('la pastilla', { start: '2025-10-10', every: 'week' })
+    await corrupt(bad)
+    const app = await setup({ model: script(replyCall('x')) })
+    expect(await say(app, { text: 'BAJA' })).toBe(
+      '⏰ Cancelé tus 2 recordatorios. Si fue sin querer, escribí «deshacer» y vuelven.',
+    )
+    expect((await reminders()).every((r) => r.cancelled)).toBe(true)
+    app.close()
+  })
+
+  it('does not break an undo of the batch it sits in', async () => {
+    const bad = await seedReminder('roto', { start: '2025-10-10' })
+    const good = await seedReminder('la pastilla', { start: '2025-10-10', every: 'week' })
+    await corrupt(bad)
+    const app = await setup({ model: script(cancelRem(good)) })
+    await say(app, { text: 'cancelá la pastilla' })
+    expect(await say(app, { text: 'deshacer' })).toContain('Volvió ⏰ la pastilla')
+    app.close()
+  })
+})
+
+// A sweep that is finishing a one-off while an undo reads it: on a real Postgres only (the lock needs two connections).
+describe.skipIf(!url)('real Postgres: an undo and the sender', () => {
+  it('an undo that finds a one-off ended by a sweep in flight is refused as stale, not failed', async () => {
+    const app = await setup({
+      model: script(setRem('pagar la Visa', { start: '2025-10-09', time: '18:00' })),
+    })
+    await say(app, { text: 'recordame hoy a las 6 pagar la visa', at: later('05:53') })
+    // A sweep holds the row (claiming it) and ends the one-off, while "deshacer" is on its way.
+    const claiming = sql.begin(async (tx) => {
+      await tx`SELECT id FROM reminder FOR UPDATE`
+      await new Promise((r) => setTimeout(r, 600))
+      await tx`UPDATE reminder SET next_due_at = NULL`
+    })
+    await new Promise((r) => setTimeout(r, 150))
+    const undone = say(app, { text: 'deshacer', at: later('18:01') })
+    await claiming
+    expect(await undone).toBe(
+      'No deshice nada: ⏰ pagar la Visa cambió después. Decime qué querés cambiar.',
+    )
     app.close()
   })
 })

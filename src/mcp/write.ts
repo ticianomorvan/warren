@@ -256,11 +256,15 @@ async function presentOutcome(
           `The last change was made more than ${UNDO_WINDOW_HOURS} hours ago and is not undone from here. Correct or delete what you need with the other tools.`,
         )
       }
+      if (u.kind === 'whatsapp_only') {
+        return refuse(
+          'Nothing was undone: that batch set or cancelled reminders, which only the person undoes, from WhatsApp ("deshacer").',
+        )
+      }
       if (u.kind === 'stale') {
         const ids = [
           ...u.moved.map((m) => `movement ${m.id}`),
           ...u.facts.map((f) => `fact ${f.id}`),
-          ...u.reminders.map((r) => `reminder ${r.id}`),
         ]
         return refuse(
           `Nothing was undone: ${ids.join(', ')} changed after that batch (corrected or deleted since). Look at the current state and change it directly.`,
@@ -271,10 +275,8 @@ async function presentOutcome(
           return { kind: item.kind, movement: show(item.to), from: show(item.from) }
         }
         if ('movement' in item) return { kind: item.kind, movement: show(item.movement) }
-        // A reminder a WhatsApp message set or cancelled (slice 6): the client sees which, as a bare id and its text.
-        if ('reminder' in item) {
-          return { kind: item.kind, reminder: { id: item.reminder.id, what: item.reminder.what } }
-        }
+        // Reminders are undone from WhatsApp only (`whatsapp_only`), so no item of an MCP undo is one.
+        if ('reminder' in item) throw new Error('an MCP undo never holds a reminder')
         return {
           kind: item.kind,
           fact: fact(item.fact),

@@ -152,6 +152,7 @@ export async function runCase(
     window: windowReplies(context),
     message: c.text,
     today: c.today,
+    now: new Date(`${c.today}T15:00:00Z`),
     env: { find: async (f) => find(list, f) },
     seen: new Set([...list.map((m) => m.id), ...asked.map((a) => a.id)]),
   })

@@ -1,7 +1,7 @@
-import { looksContact, looksSecret, sensitive, tidy as tidyWords } from '../agent/memory'
+import { holdsSecretValue, looksContact, tidy as tidyWords } from '../agent/memory'
 import { hasForeignDigit, unwritten } from '../agent/say'
 import { tidyWhat } from './db'
-import { nextOccurrence, type Schedule } from './schedule'
+import { nextOccurrence, normalizeSchedule, type Schedule } from './schedule'
 
 /** The most live reminders one account holds. */
 export const MAX_REMINDERS = 20
@@ -36,7 +36,7 @@ export function checkReminder(
   const what = tidyWhat(tidyWords(input.what))
   if (looksContact(what) || /\+\d/.test(what)) return { ok: false, refused: 'contact' }
   // A message that holds a secret sets no reminder, whatever the model leaves of it in `what`: the person is told and it is wiped.
-  if (looksSecret(what) || (message !== undefined && sensitive(message))) {
+  if (holdsSecretValue(what) || (message !== undefined && holdsSecretValue(message))) {
     return { ok: false, refused: 'secret' }
   }
   if (what === '') return { ok: false, message: 'what is empty: it is what to remind them of' }
@@ -53,9 +53,11 @@ export function checkReminder(
       }
     }
   }
-  const first = nextOccurrence(input.schedule, now)
-  if (!first) return { ok: false, refused: 'past' }
+  // From `now` on (see `normalizeSchedule`): a start that has passed is moved to the first occurrence, never drained by `count`.
+  const schedule = normalizeSchedule(input.schedule, now)
+  const first = schedule && nextOccurrence(schedule, now)
+  if (!schedule || !first) return { ok: false, refused: 'past' }
   if (first.getTime() - now.getTime() > MAX_DAYS_AHEAD * DAY_MS)
     return { ok: false, refused: 'far' }
-  return { ok: true, what, schedule: input.schedule, first }
+  return { ok: true, what, schedule, first }
 }

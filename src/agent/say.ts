@@ -159,15 +159,14 @@ const CLAIMS: {
   },
   {
     // "Te aviso", "programé": only a reminder that code set makes that true ("¿me vas a avisar?" is a question, not this).
-    said: new RegExp(
-      `${NOT}\\b(?:programe|agende|te aviso|te voy a avisar|te recuerdo|te lo recuerdo)\\b`,
-    ),
+    said: new RegExp(`${NOT}\\b(?:programe|agende|te aviso|te voy a avisar)\\b`),
     kind: 'reminded',
     window: /⏰ te aviso/,
     what: 'a reminder set',
   },
   {
-    said: new RegExp(`${NOT}\\b(?:cancele)\\b`),
+    // "¿Cuál querés que cancele?" is a question, not a claim: accent-stripped it reads like "cancelé".
+    said: new RegExp(`${NOT}(?<!\\bque )\\bcancele\\b`),
     kind: 'unreminded',
     window: /⏰ cancele/,
     what: 'a reminder cancelled',
@@ -495,6 +494,12 @@ export function composeReply(i: {
   const notes: string[] = []
   for (const say of i.says) {
     const step = i.steps[say.action]
+    // A reminder set is what code's own ⏰ line says (what, and when, from the schedule): the model's words beside it can only
+    // contradict it ("todos los martes" for a schedule of mondays), so they are not sent.
+    if (step?.tool === 'set_reminder') {
+      verdicts.set(say.action, { text: 'dropped', textReason: 'the ⏰ line says what was set' })
+      continue
+    }
     if (step?.outcome !== 'applied') {
       verdicts.set(say.action, { text: 'dropped', textReason: `its action was ${step?.outcome}` })
       continue

@@ -1,4 +1,5 @@
 import { addDays, argentinaToday, dayParts, weekdayName } from '../time'
+import type { ReminderRow } from './db'
 import { type Schedule, WEEKDAYS, type Weekday } from './schedule'
 
 /**
@@ -138,4 +139,14 @@ export function describeSchedule(
   if (s.until) parts.push(`hasta el ${shortDate(s.until, today)}`)
   if (s.count) parts.push(`${s.count} veces`)
   return parts.join(', ')
+}
+
+/**
+ * A live reminder as one phrase, for the list and for the model's context: what it is, in words, and when it comes next
+ * ("el miércoles 10/12 a las 09:00"; "todos los lunes y jueves a las 08:00 (próximo: hoy a las 08:00)").
+ */
+export function describeReminder(r: ReminderRow, today: string): string {
+  if (!r.nextDueAt) return 'ya pasó'
+  if (isOnce(r.schedule)) return instantInWords(r.nextDueAt, today)
+  return `${describeSchedule(r.schedule, r.nextDueAt, today, { since: false })} (próximo: ${instantInWords(r.nextDueAt, today)})`
 }

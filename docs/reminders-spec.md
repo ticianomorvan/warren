@@ -238,3 +238,26 @@ What shipped (`set_reminder`, `cancel_reminder`, `list_reminders`, BAJA, undo, c
 - **Scenarios** `s183`–`s199` (tag `reminder`; seeds `reminders`, expectation `liveReminders`: the closed list of live reminders after a turn, graded by text, next date and stored fields; a wrong one under a reply that says it worked is a
   silent wrong change, and `⏰` counts as a success mark).
 - **Not done:** the MCP tools for reminders; a "snooze"; per-reminder undo of a single cancel by name (the undo is the last batch, like everything else).
+
+### Changes after review (slice 2)
+
+- **`count` is never drained.** `normalizeSchedule(schedule, now)` (`schedule.ts`) makes what defaults to `start` explicit (the weekday, the day of the month, the month), finds the first
+  occurrence after now with `count` left out, moves `start` to that day (the same series: intervals still count from the same place) and then applies `count`. `checkReminder` stores that
+  schedule and refuses only when nothing is left (the time of a one-off has passed, or `until` is before now). So "3 veces a las 8" asked at 14:00 is three from tomorrow, and "el 10" on the
+  10th after 09:00 is next month's. "Now" is the later of the message's own time and the processor's clock (`ProcessorOptions.clock`; tests and the scenario eval pass a fixed past one), so a
+  message that waited cannot set a reminder for a moment that went by.
+- **`checkSay`**: "¿Cuál querés que cancele?" is a question, not a claim of a cancel (`(?<!\bque )`), and "te recuerdo" / "te lo recuerdo" are no longer claims. When `set_reminder` ran, the model's own
+  words are dropped (code's ⏰ line is the truth; they could only contradict it) and not sent back for a repair.
+- **Secrets**: `holdsSecretValue` (memory.ts) is what a reminder refuses: a value, not the word. "Cambiar la contraseña del wifi", "renovar el pin de la tarjeta" and "el código postal" are reminders;
+  "pagar con la clave 7788" is not. (A message with the word still counts as sensitive for the stored text: `sensitive()` is unchanged.)
+- **One unparseable row** no longer breaks anything: `liveReminders` skips it (and logs `reminder_bad_schedule`), BAJA cancels it without parsing, undo skips it. The `start` check of the schedule no longer
+  throws on a string that is not a date (a refine that threw was what made `safeParse` throw).
+- **MCP**: `warren_undo_last` refuses a batch that set or cancelled reminders (`whatsapp_only`: nothing changed, "deshacer" on WhatsApp takes it back). This replaces the presenter change of the first
+  version: `src/mcp` now only gains that refusal.
+- **Undo reads its rows `FOR UPDATE`**, under the account's reminders lock taken once by `undoLast` (and once by `applyReminderCall` for a write), so a sweep that is ending a one-off waits and the undo
+  sees it ended (stale) instead of failing the commit. `undoLast` takes `now` from its caller (required), as do `ExecuteInput`, `Guard` and the agent loop.
+- **BAJA** also reads "quiero darme de baja", "quiero baja"; the full-cap reply no longer promises to set it after a cancel ("Cancelá uno y pedime este de nuevo.").
+- **Cleanups**: one `isOnce`; one phrase for a reminder in the list and in the context (`describeReminder`: "• pagar el alquiler — el 5 de cada mes a las 09:00 (próximo: …)"); `reminderReply` (render.ts) maps
+  a reminder outcome to its line and step; `batchReminders` and `reminderById` share their columns and mapping; a seeded scenario reminder with no occurrence at the first turn is an error.
+- **Test split**: `s187` and `s195` mirrored the prompt's examples and moved to dev; `s200` ("a fin de mes", a one-off on the last day) and `s201` (a payment habit as a statement) are the new test scenarios;
+  `s202` (3 times, asked in the afternoon) and `s203` ("el 10" on the 10th) are dev. `s097` is a dev scenario, so its counter-example in the prompt does not touch the held-out split.

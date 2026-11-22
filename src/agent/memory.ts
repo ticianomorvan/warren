@@ -92,6 +92,22 @@ export function looksSecret(text: string, stored = true): boolean {
   )
 }
 
+/**
+ * Whether a text holds a secret's VALUE: a card or CBU number, a DNI, a password said with a cue, or a credential word beside a number
+ * ("la clave 7788", "el pin es 4455"). The word alone is not: "cambiar la contraseña del wifi", "renovar el pin de la tarjeta" and
+ * "el código postal" are plain words a reminder may carry. A reminder leaves through Meta as written, so this is what it must not hold.
+ */
+export function holdsSecretValue(text: string): boolean {
+  const folded = fold(text)
+  return (
+    LONG_DIGITS.test(folded) ||
+    looksPassword(text, folded) ||
+    dniShaped(folded) ||
+    ((CREDENTIAL_WORDS.test(folded) || STORED_WORDS.test(folded) || ID_WORDS.test(folded)) &&
+      /\d{4}/.test(folded))
+  )
+}
+
 /** Whether a person's message holds something Warren must not keep, in the database or in the model's window. */
 export const sensitive = (message: string) => looksSecret(message, false)
 

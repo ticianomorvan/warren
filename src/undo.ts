@@ -14,7 +14,7 @@ import {
   settledBatches,
   softDelete,
 } from './ledger'
-import type { ReminderRow } from './reminders/db'
+import { lockReminders, type ReminderRow } from './reminders/db'
 import { applyFactUndo, type FactUndone, planFactUndo } from './undo-facts'
 import { applyReminderUndo, planReminderUndo, type ReminderUndone } from './undo-reminders'
 
@@ -40,6 +40,8 @@ export type UndoOutcome =
   | { kind: 'nothing' }
   /** Their last batch is older than the window. */
   | { kind: 'expired' }
+  /** The batch set or cancelled reminders and the asking message is not from WhatsApp: reminders are undone from there. Nothing was changed. */
+  | { kind: 'whatsapp_only' }
   /** A movement, a fact or a reminder of the batch is no longer as the batch left it: nothing was changed. `moved`, `facts` and `reminders` are those. */
   | { kind: 'stale'; moved: MovementRow[]; facts: FactRow[]; reminders: ReminderRow[] }
 
@@ -78,7 +80,7 @@ function effectsOf(rows: BatchRow[], batch: number): Effects {
  */
 export async function undoLast(
   tx: Sql,
-  o: { accountId: number; inboundId: number },
+  o: { accountId: number; inboundId: number; now: Date },
 ): Promise<UndoOutcome> {
   // Two undos of one sender cannot interleave: the second sees the first's mark and reaches the batch before.
   await tx`SELECT pg_advisory_xact_lock(7203002, ${o.accountId}::int)`
@@ -94,10 +96,16 @@ export async function undoLast(
   // What the batch did to facts (slice F): read and checked now, written below with the movements.
   const facts = await planFactUndo(tx, o.accountId, last.id)
   // And to reminders (slice 6), as of the asking message's own time: a restored reminder's next date is worked out from it.
-  const [asking] = await tx<{ at: Date }[]>`
-    SELECT COALESCE(meta_ts, received_at) AS at FROM inbound_message WHERE id = ${o.inboundId}`
-  const now = asking?.at ?? new Date()
+  const { now } = o
+  await lockReminders(tx, o.accountId)
   const reminders = await planReminderUndo(tx, o.accountId, last.id, now)
+  // An MCP client does not undo reminders (what they say goes to the person, who has "deshacer"): nothing is changed.
+  if (reminders.made.length + reminders.cancelled.length + reminders.moved.length > 0) {
+    const [asking] = await tx<
+      { channel: string }[]
+    >`SELECT channel FROM inbound_message WHERE id = ${o.inboundId}`
+    if (asking?.channel !== 'whatsapp') return { kind: 'whatsapp_only' }
+  }
   if (
     touched.length === 0 &&
     facts.made.length + facts.forgotten.length + facts.moved.length === 0 &&
@@ -178,7 +186,7 @@ export async function undoLast(
     items.push({ kind: 'deleted', movement: row })
   }
   items.push(...(await applyFactUndo(tx, o, facts)))
-  items.push(...(await applyReminderUndo(tx, { ...o, now }, reminders)))
+  items.push(...(await applyReminderUndo(tx, o, reminders)))
   await markUndone(tx, o.inboundId, last.id)
   return { kind: 'undone', batch: last.id, items }
 }
