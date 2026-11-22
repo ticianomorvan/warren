@@ -87,6 +87,20 @@ export const ask = (
     ...(o.after === 'correct' ? { changes: o.changes } : {}),
   },
 })
+/** The model stores a fact. */
+export const remember = (
+  kind: 'alias' | 'category' | 'note',
+  key: string,
+  value: string,
+  text: string | null = null,
+): ToolCall => ({ name: 'remember_fact', input: { kind, key, value, text } })
+/** The model forgets one fact, by an id it was shown or by its key. */
+export const forget = (o: { id?: number; key?: string }): ToolCall => ({
+  name: 'forget_fact',
+  input: { id: o.id ?? 0, key: o.key ?? '', text: null },
+})
+export const forgetAll: ToolCall = { name: 'forget_all_facts', input: { text: null } }
+export const listFacts: ToolCall = { name: 'list_facts', input: { text: null } }
 export { helpCall, replyCall }
 
 export type App = Awaited<ReturnType<typeof setup>>

@@ -142,7 +142,7 @@ export interface LastBatch {
 
 /**
  * The newest batch of the account before the message `inboundId` (the one asking to undo): a committed
- * message from the sender that inserted or deleted a movement of the account, that is not itself an undo
+ * message from the sender that inserted or deleted a movement of the account, or stored or forgot a fact, that is not itself an undo
  * and that no undo reverted. An undone batch is skipped, so a second "deshacer" reaches the one before.
  */
 export async function lastBatch(
@@ -157,7 +157,9 @@ export async function lastBatch(
     WHERE cur.id = ${o.inboundId}
       AND i.action IS NOT NULL AND i.reply_text IS NOT NULL AND i.undoes IS NULL
       AND (EXISTS (SELECT 1 FROM movement m WHERE m.inbound_message_id = i.id AND m.account_id = a.id)
-        OR EXISTS (SELECT 1 FROM movement m WHERE m.deleted_by = i.id AND m.account_id = a.id))
+        OR EXISTS (SELECT 1 FROM movement m WHERE m.deleted_by = i.id AND m.account_id = a.id)
+        OR EXISTS (SELECT 1 FROM fact f WHERE f.inbound_message_id = i.id AND f.account_id = a.id)
+        OR EXISTS (SELECT 1 FROM fact f WHERE f.forgotten_by = i.id AND f.account_id = a.id))
       AND NOT EXISTS (SELECT 1 FROM inbound_message u WHERE u.undoes = i.id)
     ORDER BY i.id DESC LIMIT 1`
   return row ?? null

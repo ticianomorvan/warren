@@ -1,5 +1,6 @@
 import type { AuditEntry, ConversationTurn, Pending } from './agent'
 import type { Sql } from './db'
+import { type FactRow, liveFacts } from './facts'
 import { type FindFilter, findMovements, type MovementRow, recentMovements } from './ledger'
 import type { PendingQuestion } from './resolve'
 import type { Timings } from './timings'
@@ -180,6 +181,11 @@ export function createStore(sql: Sql, o: StoreOptions) {
     /** The account's newest live movements (not replaced, not deleted), newest first. */
     recentMovements(accountId: number): Promise<MovementRow[]> {
       return recentMovements(sql, accountId)
+    },
+
+    /** The account's newest live facts, for the model's context, and how many live facts it has in all. */
+    facts(accountId: number): Promise<{ facts: FactRow[]; total: number }> {
+      return liveFacts(sql, accountId)
     },
 
     /** The account's live movements that match a `find_movements` call. */

@@ -140,6 +140,14 @@ const epoch = (now: string) => Date.parse(`${now}:00-03:00`)
 /** One fake sender per scenario, so scenarios can run side by side in one database. */
 export const waIdOf = (id: string) => `54911${id.slice(1).padStart(8, '0')}`
 
+/** How many live facts the sender has: a fact is live until it is replaced or forgotten. */
+async function liveFactsOf(sql: Sql, waId: string): Promise<number> {
+  const [row] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM fact f JOIN account a ON a.id = f.account_id
+    WHERE a.wa_id = ${waId} AND f.superseded_by IS NULL AND f.forgotten_at IS NULL`
+  return row?.n ?? 0
+}
+
 async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
   return sql<Row[]>`
     SELECT m.id::int AS id, m.amount::text AS amount, to_char(m.occurred_on, 'YYYY-MM-DD') AS date,
@@ -152,13 +160,17 @@ async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
 /** Puts the starting ledger in as if earlier messages had logged it, at the times the scenario gives. */
 async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<string, number>> {
   const refs = new Map<string, number>()
-  if (s.seed.length === 0) return refs
+  if (s.seed.length === 0 && s.facts.length === 0) return refs
   const [account] = await sql<{ id: number }[]>`
     INSERT INTO account (wa_id) VALUES (${waId})
     ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id RETURNING id::int AS id`
   const [inbound] = await sql<{ id: number }[]>`
     INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status)
     VALUES (${`seed.${waId}`}, ${waId}, 'text', 'seed', '{}'::jsonb, 'done') RETURNING id::int AS id`
+  for (const f of s.facts) {
+    await sql`INSERT INTO fact (account_id, kind, key, value, inbound_message_id)
+      VALUES (${account?.id ?? 0}, ${f.kind}, ${f.key}, ${f.value}, ${inbound?.id ?? 0})`
+  }
   for (const [position, m] of s.seed.entries()) {
     const loggedAt = new Date(epoch(`${m.loggedOn ?? m.on}T${m.at}`)).toISOString()
     const [row] = await sql<{ id: number }[]>`
@@ -269,6 +281,7 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         reply,
         failed,
         commandType: stored.command?.some((c) => c.tool === 'summarize') ? 'query' : stored.action,
+        liveFacts: await liveFactsOf(env.sql, waId),
       })
       refs.clear()
       for (const [ref, id] of grade.refs) refs.set(ref, id)

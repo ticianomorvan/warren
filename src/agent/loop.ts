@@ -5,11 +5,11 @@ import { type Checked, checkCall, type Guard } from './calls'
 import { MODELS, type ModelKey, type Usage } from './models'
 import { movementFact, movementLine, SYSTEM_PROMPT } from './prompt'
 import { type Applied, checkSay } from './say'
-import type { ModelAction } from './schema'
+import type { ModelAction, Notice } from './schema'
 import { TOOLS } from './tools'
 
 /** The amounts and dates an action carries: code renders them, so the model's text may repeat them. */
-const amountsOf = (action: ModelAction): string[] => {
+const amountsOf = (action: Run): string[] => {
   const of = (m: { amount?: string; date?: string }) => `${m.amount ?? ''} ${m.date ?? ''}`
   switch (action.tool) {
     case 'log_movements':
@@ -92,14 +92,19 @@ export interface AgentInput {
   env: AgentEnv
   /** Ids the model may act on. The loop adds what `find_movements` returns. */
   seen: Set<number>
+  /** Ids of the facts the model is shown (`ContextInput.memory`): the only ones `forget_fact` may name by id. */
+  seenFacts?: ReadonlySet<number>
   /** The only option of the pending question, when it has exactly one (see `Guard.sole`). */
   sole?: number
   /** Aborts the call and the SDK's retries: the message deadline and the shutdown. */
   signal?: AbortSignal
 }
 
+/** What a turn ends in: the model's terminal calls, and a notice code put in place of a refused secret. */
+type Run = ModelAction | Notice
+
 export interface AgentResult {
-  actions: ModelAction[]
+  actions: Run[]
   /** Every movement this message's `find_movements` calls returned: what the model may quote. */
   found: MovementRow[]
   audit: AuditEntry[]
@@ -192,7 +197,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
   const found = new Map<number, MovementRow>()
 
   /** The texts among `acts` that fail the numbers check (an echo of the person is not a flaw: it is just dropped). */
-  const textFlaws = (acts: ModelAction[]) => {
+  const textFlaws = (acts: Run[]) => {
     const rows = [...found.values()].map(movementFact)
     const given = acts.flatMap(amountsOf)
     const applied: Applied = {
@@ -200,6 +205,8 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       corrected: acts.some((a) => a.tool === 'correct_movement'),
       logged: acts.some((a) => a.tool === 'log_movements'),
       undone: acts.some((a) => a.tool === 'undo_last'),
+      remembered: acts.some((a) => a.tool === 'remember_fact'),
+      forgotten: acts.some((a) => a.tool === 'forget_fact'),
     }
     return acts.flatMap((action) => {
       if (!('text' in action.input)) return []
@@ -279,9 +286,11 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       logged: 0,
       sole: i.sole,
       message: i.message,
+      seenFacts: i.seenFacts,
+      remembered: new Set(),
     }
     const foundThisTurn: number[] = []
-    const actions: ModelAction[] = []
+    const actions: Run[] = []
     const checked: {
       call: (typeof calls)[number]
       result: Checked
@@ -374,7 +383,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     }
 
     messages.push({ role: 'assistant', content: response.content })
-    const answerFor = (action: ModelAction) => {
+    const answerFor = (action: Run) => {
       if (refused) return REFUSED
       if (searched) return HELD
       const flaw = flaws.find((f) => f.action === action)

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
-import { CATEGORIES } from '../../src/agent/schema'
+import { CATEGORIES, FACT_KINDS } from '../../src/agent/schema'
 
 /**
  * A scenario is a conversation: a seeded ledger, then user turns, each with the Argentine "now" it
@@ -30,6 +30,8 @@ export const TAGS = [
   'summary',
   /** A voice note: its latency includes the transcription, so it is kept apart from the other tags. */
   'voice',
+  /** What the person tells Warren about themselves, kept and used later (agent slice F): remembering, using, forgetting, listing. */
+  'memory',
 ] as const
 export type Tag = (typeof TAGS)[number]
 
@@ -59,6 +61,15 @@ export const SeedSchema = z.strictObject({
   currency: Currency.default('ARS'),
 })
 export type Seed = z.infer<typeof SeedSchema>
+
+/** A fact already stored when the scenario starts (agent slice F): what the person told Warren on an earlier day. */
+export const SeedFactSchema = z.strictObject({
+  kind: z.enum(FACT_KINDS),
+  /** Already normalized: lowercase, no accents. */
+  key: z.string().min(1),
+  value: z.string().min(1),
+})
+export type SeedFact = z.infer<typeof SeedFactSchema>
 
 /** What a new movement must look like. Unset fields are not checked, except `date` (the turn's day) and `direction`/`currency`/`payment` (out, ARS, null). */
 const NewMovement = z.strictObject({
@@ -124,6 +135,8 @@ export const TurnSchema = z
       .regex(/^[\w.-]+\.(ogg|m4a|mp3)$/, 'a file name in evals/scenarios/fixtures')
       .optional(),
     ops: z.array(OpSchema).default([]),
+    /** How many live facts the person has after this turn. Unset: not checked. */
+    liveFacts: z.number().int().min(0).optional(),
     /** True: the reply must be a question (starts with ¿). With `ops` on the turn it must not be one. */
     ask: z.boolean().default(false),
     /**
@@ -146,6 +159,8 @@ export const ScenarioSchema = z.strictObject({
   /** One line: what it checks. */
   note: z.string().min(1),
   seed: z.array(SeedSchema).default([]),
+  /** Facts the person told Warren before the scenario starts. */
+  facts: z.array(SeedFactSchema).default([]),
   turns: z.array(TurnSchema).min(1),
 })
 export type Scenario = z.infer<typeof ScenarioSchema>

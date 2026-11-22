@@ -1,8 +1,17 @@
 import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
 import { planSummary } from '../range'
+import { REPLY_FACT_SECRET } from '../render'
+import { checkFact, normalizeKey } from './memory'
 import { hasLongNumber, hasNumberWord } from './say'
-import { MAX_FOUND, type ModelAction, TOOL_INPUTS, type ToolInput, type ToolName } from './schema'
+import {
+  MAX_FOUND,
+  type ModelAction,
+  type Notice,
+  TOOL_INPUTS,
+  type ToolInput,
+  type ToolName,
+} from './schema'
 import {
   checkChanges,
   checkCount,
@@ -16,7 +25,7 @@ import {
 /** What a tool call comes to: a read to run, an action for the commit point, or a refusal the model is told. */
 export type Checked =
   | { kind: 'read'; filter: FindFilter }
-  | { kind: 'action'; action: ModelAction }
+  | { kind: 'action'; action: ModelAction | Notice }
   | { kind: 'rejected'; message: string }
 
 const rejected = (message: string): Checked => ({ kind: 'rejected', message })
@@ -26,8 +35,12 @@ export interface Guard {
   today: string
   /** Ids the model has been shown (the list, find results, a pending question). Only these may be acted on. */
   seen: ReadonlySet<number>
+  /** Ids of the facts the model has been shown ("Hechos"). A fact id is in another space than a movement id. */
+  seenFacts?: ReadonlySet<number>
   /** Movements already asked to be logged by earlier calls of this turn. */
   logged: number
+  /** The kind and key of every fact earlier calls of this turn asked to remember: a key is said once per message. */
+  remembered?: Set<string>
   /** The id of the pending question's only option, when it has exactly one: a change in this message is about it. */
   sole?: number
   /** The person's message: it tells whether they gave a new value at all. */
@@ -198,7 +211,38 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       const why = checkSummary(q, guard.today)
       return why ? rejected(why) : { kind: 'action', action: { tool, input: q } }
     }
-    default: // reply, help: any input of the right shape is fine
+    case 'remember_fact': {
+      const f = parsed.data as ToolInput<'remember_fact'>
+      const checked = checkFact(f, guard.message ?? '')
+      if ('secret' in checked) {
+        return { kind: 'action', action: { tool: 'notice', input: { text: REPLY_FACT_SECRET } } }
+      }
+      if (!checked.ok) return rejected(checked.message)
+      const at = `${checked.fact.kind}:${checked.fact.key}`
+      if (guard.remembered?.has(at)) {
+        return rejected(`"${checked.fact.key}" was already sent in this message: one value per key`)
+      }
+      guard.remembered?.add(at)
+      return { kind: 'action', action: { tool, input: { ...checked.fact, text: f.text } } }
+    }
+    case 'forget_fact': {
+      const { id, key, text } = parsed.data as ToolInput<'forget_fact'>
+      const words = normalizeKey(key)
+      if (id <= 0 && words === '') {
+        return rejected('send the id of a fact you were shown, or its key (the words)')
+      }
+      // An id the model sends must have been shown to it. When it sends both, the id decides: a key is only for a fact it cannot see.
+      if (id > 0 && !guard.seenFacts?.has(id)) {
+        return rejected(
+          `fact id ${id} was not shown to you. Use only ids from "Hechos", or send its key (the words)`,
+        )
+      }
+      return {
+        kind: 'action',
+        action: { tool, input: { id: Math.max(id, 0), key: id > 0 ? '' : words, text } },
+      }
+    }
+    default: // reply, help, forget_all_facts, list_facts: any input of the right shape is fine
       return { kind: 'action', action: { tool, input: parsed.data } as ModelAction }
   }
 }

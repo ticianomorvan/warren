@@ -238,9 +238,10 @@ export function createProcessor(o: ProcessorOptions) {
     const working = (async (): Promise<Worked> => {
       const readsAt = performance.now()
       const accountId = await store.upsertAccount(c.wa_id)
-      const [movements, conversation] = await Promise.all([
+      const [movements, conversation, memory] = await Promise.all([
         store.recentMovements(accountId),
         store.conversation(c),
+        store.facts(accountId),
       ])
       stages.reads_ms = Math.round(performance.now() - readsAt)
       const mediaAt = performance.now()
@@ -315,6 +316,8 @@ export function createProcessor(o: ProcessorOptions) {
         today,
         time: argentinaTime(c.messageAt),
         movements,
+        memory: memory.facts,
+        memoryTotal: memory.total,
         // Fewer than the list holds: it is everything they have, and a search could find nothing more.
         complete: movements.length > 0 && movements.length < RECENT_LIMIT,
         conversation: conversation.turns,
@@ -338,6 +341,7 @@ export function createProcessor(o: ProcessorOptions) {
         today,
         env: { find: (filter) => store.find(accountId, filter) },
         seen,
+        seenFacts: new Set(memory.facts.map((f) => f.id)),
         sole:
           conversation.question?.asked.length === 1
             ? conversation.question.asked[0]?.id

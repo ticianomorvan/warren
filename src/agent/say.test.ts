@@ -21,8 +21,22 @@ const sources = [
   'opción 1',
 ]
 
-const NOTHING = { deleted: false, corrected: false, logged: false, undone: false }
-const EVERYTHING = { deleted: true, corrected: true, logged: true, undone: true }
+const NOTHING = {
+  deleted: false,
+  corrected: false,
+  logged: false,
+  undone: false,
+  remembered: false,
+  forgotten: false,
+}
+const EVERYTHING = {
+  deleted: true,
+  corrected: true,
+  logged: true,
+  undone: true,
+  remembered: true,
+  forgotten: true,
+}
 /** Evidence where this message did every kind of change, so that only numbers and words are judged. */
 const evidence = (extra: string[] = [], o: Partial<Evidence> = {}): Evidence => ({
   numbers: [...sources, ...extra],
@@ -619,5 +633,51 @@ describe("undo in the model's own words", () => {
   it('a reply may lean on an earlier undo record in the conversation', () => {
     expect(say('Sí, lo deshice.', NOTHING, ['↩︎ Deshice: Café $3.500'])).toBe(true)
     expect(say('Sí, lo deshice.', NOTHING, ['✓ Café $3.500'])).toBe(false)
+  })
+})
+
+describe("what Warren remembers, in the model's own words", () => {
+  const facts = ['la visa es la del galicia']
+  const say = (text: string, applied = NOTHING, window?: string[]) =>
+    checkSay(text, { numbers: facts, words: facts, applied, ...(window ? { window } : {}) }).ok
+
+  it('cannot imitate the record of a fact', () => {
+    expect(say('🧠 Me acuerdo: la visa = galicia', { ...NOTHING, remembered: true })).toBe(false)
+  })
+
+  it('may say it remembered or forgot something only when this message did', () => {
+    expect(say('Me acuerdo de eso.')).toBe(false)
+    expect(say('Ya me acordé.')).toBe(false)
+    expect(say('Me olvidé de eso.')).toBe(false)
+    expect(say('Me acuerdo de eso.', { ...NOTHING, remembered: true })).toBe(true)
+    expect(say('Me olvidé de eso.', { ...NOTHING, forgotten: true })).toBe(true)
+    // a change of another kind does not prove it
+    expect(say('Me acuerdo de eso.', { ...NOTHING, logged: true, deleted: true })).toBe(false)
+    expect(say('Me olvidé de eso.', { ...NOTHING, remembered: true })).toBe(false)
+  })
+
+  it('"guardé" is proved by a log or by a fact', () => {
+    expect(say('Guardé eso.')).toBe(false)
+    expect(say('Guardé eso.', { ...NOTHING, remembered: true })).toBe(true)
+    expect(say('Guardé eso.', { ...NOTHING, logged: true })).toBe(true)
+  })
+
+  it('a reply may lean on an earlier record of a fact in the conversation', () => {
+    expect(say('Sí, me acuerdo.', NOTHING, ['🧠 Me acuerdo: la visa = galicia'])).toBe(true)
+    expect(say('Sí, me olvidé.', NOTHING, ['🧠 Me acuerdo: la visa = galicia'])).toBe(false)
+    expect(say('Sí, me olvidé.', NOTHING, ['🧠 Me olvidé: la visa = galicia'])).toBe(true)
+  })
+
+  it('composeReply counts a stored fact as a change a text may refer to', () => {
+    const r = composeReply({
+      lines: ['🧠 Me acuerdo: la visa = galicia'],
+      says: [{ action: 0, text: 'Listo, ya lo tengo en cuenta.' }],
+      steps: [{ tool: 'remember_fact', outcome: 'applied' }],
+      message: 'la visa es la del galicia',
+      facts,
+      window: [],
+      fallback: 'FALLBACK',
+    })
+    expect(r.verdicts.get(0)).toEqual({ text: 'sent' })
   })
 })
