@@ -637,7 +637,15 @@ function definition(name: Tool, entry: Entry) {
     if (node && typeof node === 'object') {
       return Object.fromEntries(
         Object.entries(node)
-          .filter(([key]) => key !== 'default')
+          // `z.int()` states the safe-integer range as its bounds: noise for the model, so only real bounds stay.
+          .filter(
+            ([key, value]) =>
+              key !== 'default' &&
+              !(
+                (key === 'minimum' || key === 'maximum') &&
+                Math.abs(Number(value)) === Number.MAX_SAFE_INTEGER
+              ),
+          )
           .map(([key, value]) => [key, strip(value)]),
       )
     }

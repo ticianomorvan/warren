@@ -108,8 +108,8 @@ export async function insertReminder(
   const nextDueAt = nextOccurrence(r.schedule, r.now)
   if (!nextDueAt) throw new Error('the schedule has no occurrence after now')
   const [row] = await sql<RawRow[]>`
-    INSERT INTO reminder (${r.entity ? sql`entity_id, logged_at,` : sql``} account_id, made_in, what, schedule, next_due_at)
-    VALUES (${r.entity ? sql`${r.entity.id}, ${r.entity.loggedAt},` : sql``} ${r.accountId}, ${r.turnId}, ${tidyWhat(r.what)}, ${sql.json(r.schedule)}, ${nextDueAt})
+    INSERT INTO reminder (${r.entity ? sql`entity_id,` : sql``} logged_at, account_id, made_in, what, schedule, next_due_at)
+    VALUES (${r.entity ? sql`${r.entity.id},` : sql``} ${r.entity?.loggedAt ?? r.now}, ${r.accountId}, ${r.turnId}, ${tidyWhat(r.what)}, ${sql.json(r.schedule)}, ${nextDueAt})
     RETURNING ${columns(sql)}`
   return toRow(row as RawRow) as ReminderRow
 }

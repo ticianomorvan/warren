@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { argentinaTime, argentinaToday } from '../../time'
 import {
+  type First,
   nextOccurrence,
   normalizeSchedule,
+  resolveFirst,
   ScheduleSchema,
   WEEKDAYS,
   type Weekday,
@@ -616,4 +618,157 @@ describe('normalizeSchedule: from now on, never drained by a start that has pass
       }
     }
   }, 60_000)
+})
+
+// ---- resolveFirst: what the person said about when, as a day and a clock time ----
+
+describe('resolveFirst', () => {
+  const first = (f: First, now: string) => resolveFirst(f, at(now))
+
+  it('"en 20 minutos" and "en 2 horas" are that long from now, to the minute', () => {
+    expect(first({ in: { n: 20, unit: 'minutes' } }, '2026-11-24 10:05')).toEqual({
+      start: '2026-11-24',
+      time: '10:25',
+    })
+    expect(first({ in: { n: 2, unit: 'hours' } }, '2026-11-24 23:30')).toEqual({
+      start: '2026-11-25',
+      time: '01:30',
+    })
+  })
+
+  it('"en 3 días", "en 2 semanas" and "en 1 mes" keep the clock of now', () => {
+    expect(first({ in: { n: 3, unit: 'days' } }, '2026-11-24 10:05')).toEqual({
+      start: '2026-11-27',
+      time: '10:05',
+    })
+    expect(first({ in: { n: 2, unit: 'weeks' } }, '2026-11-24 10:05')).toEqual({
+      start: '2026-12-08',
+      time: '10:05',
+    })
+    expect(first({ in: { n: 3, unit: 'months' } }, '2026-11-30 10:05')).toEqual({
+      start: '2027-02-28',
+      time: '10:05',
+    })
+  })
+
+  it('a named day is today, tomorrow or the day after, at the time said or 09:00', () => {
+    expect(first({ day: 'today' }, '2026-11-24 08:00')).toEqual({
+      start: '2026-11-24',
+      time: '09:00',
+    })
+    expect(first({ day: 'tomorrow', time: '18:30' }, '2026-11-24 08:00')).toEqual({
+      start: '2026-11-25',
+      time: '18:30',
+    })
+    expect(first({ day: 'day_after' }, '2026-12-31 08:00')).toEqual({
+      start: '2027-01-02',
+      time: '09:00',
+    })
+  })
+
+  it('a time of today that has gone by stays today: the guard says it is past, code never moves it', () => {
+    const r = first({ day: 'today', time: '09:00' }, '2026-11-24 14:00')
+    expect(r).toEqual({ start: '2026-11-24', time: '09:00' })
+    expect(nextOccurrence(make(r), at('2026-11-24 14:00'))).toBeNull()
+  })
+
+  it('a weekday is the first such day still ahead: a Monday morning says today, a Monday afternoon says next week', () => {
+    // 2026-11-23 is a Monday.
+    expect(first({ weekday: 'mon', time: '15:00' }, '2026-11-23 10:00')).toEqual({
+      start: '2026-11-23',
+      time: '15:00',
+    })
+    expect(first({ weekday: 'mon' }, '2026-11-23 10:00')).toEqual({
+      start: '2026-11-30',
+      time: '09:00',
+    })
+    expect(first({ weekday: 'fri' }, '2026-11-23 10:00')).toEqual({
+      start: '2026-11-27',
+      time: '09:00',
+    })
+  })
+
+  it('a day of the month is the next one whose time is ahead, skipping months without it', () => {
+    expect(first({ month_day: 10 }, '2026-11-24 10:00')).toEqual({
+      start: '2026-12-10',
+      time: '09:00',
+    })
+    expect(first({ month_day: 10 }, '2026-11-10 08:00')).toEqual({
+      start: '2026-11-10',
+      time: '09:00',
+    })
+    expect(first({ month_day: 10 }, '2026-11-10 10:00')).toEqual({
+      start: '2026-12-10',
+      time: '09:00',
+    })
+    expect(first({ month_day: 31 }, '2026-11-24 10:00')).toEqual({
+      start: '2026-12-31',
+      time: '09:00',
+    })
+    expect(first({ month_day: 30 }, '2027-01-31 10:00')).toEqual({
+      start: '2027-03-30',
+      time: '09:00',
+    })
+    expect(first({ month_day: 29, month: 2 }, '2026-11-24 10:00')).toEqual({
+      start: '2028-02-29',
+      time: '09:00',
+    })
+  })
+
+  it('a date is that date', () => {
+    expect(first({ date: '2027-03-05', time: '07:15' }, '2026-11-24 10:00')).toEqual({
+      start: '2027-03-05',
+      time: '07:15',
+    })
+  })
+
+  it('always lands ahead of now (relative forms), on the day it names (a seeded loop, failures collected)', () => {
+    const r = rng(7)
+    const failures: string[] = []
+    const days = ['today', 'tomorrow', 'day_after'] as const
+    const units = ['minutes', 'hours', 'days', 'weeks', 'months'] as const
+    for (let i = 0; i < 3000; i++) {
+      const now = new Date(
+        Date.UTC(2026, 0, 1) + r.int(0, 3 * 365 * 24 * 60) * 60_000 + r.int(0, 59_999),
+      )
+      const time = `${String(r.int(0, 23)).padStart(2, '0')}:${String(r.int(0, 59)).padStart(2, '0')}`
+      const kind = r.int(0, 3)
+      const f: First =
+        kind === 0
+          ? { in: { n: r.int(1, 90), unit: r.pick(units) } }
+          : kind === 1
+            ? { weekday: r.pick(WEEKDAYS), time }
+            : kind === 2
+              ? { month_day: r.int(1, 31), time }
+              : { day: r.pick(days), time }
+      const { start, time: t } = resolveFirst(f, now)
+      const label = `${now.toISOString()} ${JSON.stringify(f)} -> ${start} ${t}`
+      const instant = new Date(`${start}T${t}:00-03:00`)
+      if (Number.isNaN(instant.getTime())) failures.push(`not a moment: ${label}`)
+      if (!('day' in f) && !(instant > now)) failures.push(`not ahead: ${label}`)
+      if (
+        'in' in f &&
+        f.in.unit === 'minutes' &&
+        instant.getTime() - now.getTime() > f.in.n * 60_000 + 60_000
+      )
+        failures.push(`too far: ${label}`)
+      if ('weekday' in f) {
+        const wd = WEEKDAYS[(new Date(`${start}T00:00:00Z`).getUTCDay() + 6) % 7]
+        if (wd !== f.weekday) failures.push(`wrong weekday: ${label}`)
+        if (instant.getTime() - now.getTime() > 8 * DAY_MS)
+          failures.push(`more than a week: ${label}`)
+      }
+      if ('month_day' in f) {
+        if (Number(start.slice(8, 10)) !== f.month_day) failures.push(`wrong day: ${label}`)
+        if (instant.getTime() - now.getTime() > 63 * DAY_MS)
+          failures.push(`more than two months: ${label}`)
+      }
+      if (
+        'day' in f &&
+        start !== argentinaToday(new Date(now.getTime() + days.indexOf(f.day) * DAY_MS))
+      )
+        failures.push(`wrong day: ${label}`)
+    }
+    expect(failures.slice(0, 10)).toEqual([])
+  })
 })

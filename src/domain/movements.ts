@@ -56,6 +56,8 @@ export async function insertMovements(
   o: {
     accountId: number
     turnId: number
+    /** The instant of the message: when a new entity is first logged. */
+    now: Date
     movements: NewMovement[]
     /** Set for a new version of an entity: it keeps the entity's id and the time it was first logged. */
     version?: { entityId: number; loggedAt: Date }
@@ -64,7 +66,8 @@ export async function insertMovements(
   const rows = o.movements.map((x) => ({
     account_id: o.accountId,
     made_in: o.turnId,
-    ...(o.version ? { entity_id: o.version.entityId, logged_at: o.version.loggedAt } : {}),
+    ...(o.version ? { entity_id: o.version.entityId } : {}),
+    logged_at: o.version?.loggedAt ?? o.now,
     direction: x.direction,
     amount: x.amount,
     currency: x.currency,
@@ -112,12 +115,13 @@ export async function endVersion(sql: Sql, version: number, turnId: number): Pro
 /** The next version of an entity: the old one is ended in the turn and a new one with the same entity id takes its place. */
 export async function supersede(
   sql: Sql,
-  o: { accountId: number; turnId: number; old: MovementRow; next: ValuesOf },
+  o: { accountId: number; turnId: number; now: Date; old: MovementRow; next: ValuesOf },
 ): Promise<MovementRow> {
   await endVersion(sql, o.old.version, o.turnId)
   const [row] = await insertMovements(sql, {
     accountId: o.accountId,
     turnId: o.turnId,
+    now: o.now,
     movements: [{ ...o.next, confidence: 'high' }],
     version: { entityId: o.old.id, loggedAt: o.old.loggedAt },
   })

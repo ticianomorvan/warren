@@ -137,10 +137,11 @@ const movementAdapter: Adapter<MovementRow> = {
     return rows.map(({ madeIn, endedIn, live, ...row }) => ({ row, madeIn, endedIn, live }))
   },
   end: (tx, version, turn) => endVersion(tx, version, turn),
-  async restore(tx, { accountId, turn, from }) {
+  async restore(tx, { accountId, turn, from, now }) {
     const [row] = await insertMovements(tx, {
       accountId,
       turnId: turn,
+      now,
       movements: [from],
       version: { entityId: from.id, loggedAt: from.loggedAt },
     })
@@ -161,10 +162,11 @@ const factAdapter: Adapter<FactRow> = {
     return rows.map(({ madeIn, endedIn, live, ...row }) => ({ row, madeIn, endedIn, live }))
   },
   end: (tx, version, turn) => endFact(tx, version, turn),
-  restore: (tx, { accountId, turn, from }) =>
+  restore: (tx, { accountId, turn, from, now }) =>
     insertFact(tx, {
       accountId,
       turnId: turn,
+      now,
       kind: from.kind,
       key: from.key,
       value: from.value,

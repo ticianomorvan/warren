@@ -203,6 +203,8 @@ export async function insertFact(
   o: {
     accountId: number
     turnId: number
+    /** The instant of the message: when a new entity is first stored. */
+    now: Date
     kind: FactKind
     key: string
     value: string
@@ -210,8 +212,8 @@ export async function insertFact(
   },
 ): Promise<FactRow> {
   const [row] = await sql<FactRow[]>`
-    INSERT INTO fact (${o.entity ? sql`entity_id, logged_at,` : sql``} account_id, made_in, kind, key, value)
-    VALUES (${o.entity ? sql`${o.entity.id}, ${o.entity.loggedAt},` : sql``} ${o.accountId}, ${o.turnId}, ${o.kind}, ${o.key}, ${o.value})
+    INSERT INTO fact (${o.entity ? sql`entity_id,` : sql``} logged_at, account_id, made_in, kind, key, value)
+    VALUES (${o.entity ? sql`${o.entity.id},` : sql``} ${o.entity?.loggedAt ?? o.now}, ${o.accountId}, ${o.turnId}, ${o.kind}, ${o.key}, ${o.value})
     RETURNING ${columns(sql)}`
   return row as FactRow
 }
@@ -231,7 +233,7 @@ export type Remembered =
  */
 export async function rememberFact(
   sql: Sql,
-  o: { accountId: number; turnId: number; kind: FactKind; key: string; value: string },
+  o: { accountId: number; turnId: number; now: Date; kind: FactKind; key: string; value: string },
 ): Promise<Remembered> {
   const [current] = await findLive(sql, o.accountId, { kind: o.kind, key: o.key }, { lock: true })
   if (current) {

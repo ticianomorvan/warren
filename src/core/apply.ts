@@ -117,6 +117,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       const movements = await insertMovements(tx, {
         accountId,
         turnId,
+        now: ctx.now,
         movements: call.input.movements,
       })
       return { tool: call.tool, status: 'applied', effect: 'logged', movements }
@@ -127,7 +128,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       const values = applyChanges(old, call.input.changes)
       const changed = changedFields(old, values)
       if (changed.length === 0) return { tool: call.tool, status: 'unchanged', effect: null, old }
-      const next = await supersede(tx, { accountId, turnId, old, next: values })
+      const next = await supersede(tx, { accountId, turnId, now: ctx.now, old, next: values })
       return { tool: call.tool, status: 'applied', effect: 'corrected', old, next, changed }
     }
     case 'delete_movement': {
@@ -147,7 +148,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
     }
     case 'remember_fact': {
       const { kind, key, value } = call.input
-      const stored = await rememberFact(tx, { accountId, turnId, kind, key, value })
+      const stored = await rememberFact(tx, { accountId, turnId, now: ctx.now, kind, key, value })
       if (stored.kind === 'full') {
         return { tool: call.tool, status: 'full', effect: null, max: MAX_FACTS }
       }
