@@ -132,6 +132,7 @@ summarize answers any question about totals: you choose the days (range), how to
 # Your words (text and reply)
 
 - Account for EVERY part of the message: one action for each part you understood, and a text for each part you did not do or could not find. "borra el super y la nafta fue 4000" when there is no súper anywhere: correct_movement for the nafta, with text "No encontré el súper.". Never drop a part silently. A part that asks to change something without saying what ("cambiame el primero") is a part you did not do: write the text as a question about it ("¿Qué querés cambiar del súper?"), and still do the other parts.
+- A change that went as asked has "text": null ("Borré el café", "Anoté el súper" repeat the record). A summarize has "text": null too, unless a part of the message is left unanswered: never the person's question, rewritten or not.
 - "text" is null unless it adds something the record does not already say. Never repeat or rephrase the person's own message ("cuanto voy este mes" back to them). It is null unless the record does not already say it: a part you did not do, a short reason, a short answer. Never repeat what the record shows (what was logged, the amounts, "antes ..."): code shows it.
 - Questions about what you did ("borraste el super?", "qué cambiaste?", "lo anotaste?", "el taxi lo borraste, no?"): call reply and answer from "Conversación reciente": its (Warren) lines are exactly what you answered then. "✓ Borré: ..." means it was deleted, "✓ Corregido: ... (antes ...)" corrected, "✓ ..." logged. If the conversation does not show it and the list does not have it, say you have no record of it. The time at the end of a line ("· 10:12") is when that movement was logged, not when you acted. Do not call a write tool to answer a question.
 - COUNTS AND TOTALS ARE CODE'S. "cuántos cafés anoté hoy", "cuánto gasté en café", "cuántas veces": call summarize with its description filter (the words of the description, singular: "café") and let its line answer; never count, add or write a total yourself, not even in words ("cuatro"). To show which movements there are ("me cobraste dos veces el café?", "qué cafés anoté"), call find_movements and answer with reply listing them with their own amounts and times, without a count and without "dos veces"/"cuatro".
@@ -367,6 +368,11 @@ export interface ContextInput {
   photo?: boolean
   /** The message is the transcript of a voice note: it can have been misheard. */
   voice?: boolean
+  /**
+   * The list above holds every live movement the person has (fewer than the list's limit, and not none): there is
+   * nothing older to search for, so the model is told not to spend a turn on `find_movements`.
+   */
+  complete?: boolean
   /** The options of the question Warren just asked, if the person has not answered it. */
   pending: { asked: { number: number; id: number }[]; action: 'correct' | 'delete' | 'none' } | null
 }
@@ -407,6 +413,11 @@ export function renderContext(i: ContextInput): string {
     `Hoy es ${weekdayName(i.today)} ${i.today}, ${i.time} (America/Argentina/Buenos_Aires).`,
     `Calendario, del más reciente al más antiguo:\n${calendar.join('\n')}`,
     `Últimos movimientos de la persona, el más reciente primero:\n${list}`,
+    ...(i.complete
+      ? [
+          'Esa lista es toda la historia de la persona (son pocos movimientos): no hay ninguno más antiguo, así que find_movements no encontraría nada nuevo. No lo llames: si nada de la lista encaja con lo que pide, es como si ya hubieras buscado y no hubiera resultados. Entonces "el X fue N" / "X era N" es un gasto nuevo: anotalo con log_movements, sin preguntar. Un borrado o un cambio sin coincidencia ("borrá lo del X", "cambiame lo del X a N") se pregunta con ask_user.',
+        ]
+      : []),
     ...(conversation.length > 0 ? [`Conversación reciente:\n${conversation.join('\n')}`] : []),
     ...pending,
     ...(i.pending?.asked.length === 1

@@ -5,6 +5,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { estimateCostUsd, type ModelKey, type Usage } from '../../src/agent'
 import type { Sql } from '../../src/db'
 import { fakeGraph, messageBody, photoBody, post, setup, voiceBody } from '../../src/test-harness'
+import type { Timings } from '../../src/timings'
 import type { Transcriber } from '../../src/transcribe'
 import { gradeTurn, type Row, type TurnGrade, withoutHeard } from './grade'
 import type { Scenario } from './schema'
@@ -70,6 +71,7 @@ export function meteredClient(
         outputTokens: response.usage.output_tokens,
         cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
         cacheWriteTokens: response.usage.cache_creation_input_tokens ?? 0,
+        cacheWrite1hTokens: response.usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
       }
       cost = estimateCostUsd(model, usage)
       calls.push({ usage, costUsd: cost })
@@ -97,6 +99,14 @@ export interface TurnResult {
   action: Action
   /** What the model asked for (`parsed`), for the failure list. */
   parsed: unknown
+  /** The turn used more model calls than its scenario said it should (`maxModelTurns`). Not a failure. */
+  overTurnCap: boolean
+  /** The turn had a `maxModelTurns`. */
+  capped: boolean
+  /** Output tokens the model wrote this turn, over all its calls (null: no model call). */
+  outputTokens: number | null
+  /** What each call of the loop came to: turn, tool, status, and the refusal reason. Why a second model call happened. */
+  audit: { turn: number; tool: string; status: string; detail?: string }[]
   /** Why the message failed (the failure notice's reason), if it did. */
   error: string | null
   costUsd: number
@@ -272,6 +282,18 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         modelTurns: stored.model_turns,
         action: actionOf(stored.action, reply),
         parsed: stored.parsed,
+        capped: turn.maxModelTurns !== undefined,
+        overTurnCap:
+          turn.maxModelTurns !== undefined && (stored.model_turns ?? 0) > turn.maxModelTurns,
+        outputTokens: stored.timings?.turns?.length
+          ? stored.timings.turns.reduce((n, t) => n + t.output, 0)
+          : null,
+        audit: (stored.tool_calls ?? []).map(({ turn, tool, status, detail }) => ({
+          turn,
+          tool,
+          status,
+          ...(detail ? { detail: detail.slice(0, 160) } : {}),
+        })),
         error: stored.error,
         costUsd: calls.slice(callsBefore).reduce((sum, c) => sum + c.costUsd, 0),
       })
@@ -299,6 +321,8 @@ interface Stored {
   error: string | null
   model_ms: number | null
   model_turns: number | null
+  timings: Timings | null
+  tool_calls: { turn: number; tool: string; status: string; detail?: string }[] | null
 }
 
 /** Waits until the message has left the processor: replied, failed or given up. */
@@ -306,7 +330,8 @@ async function waitFor(sql: Sql, wamid: string, timeoutMs = 60_000): Promise<Sto
   const end = Date.now() + timeoutMs
   for (;;) {
     const [row] = await sql<Stored[]>`
-      SELECT id::int AS id, status, reply_text, action, command, parsed, error, model_ms, model_turns
+      SELECT id::int AS id, status, reply_text, action, command, parsed, error, model_ms, model_turns,
+        timings, tool_calls
       FROM inbound_message WHERE wamid = ${wamid}`
     if (row && ['done', 'failed', 'unknown', 'ignored'].includes(row.status)) return row
     if (Date.now() > end) throw new Error(`timed out waiting for ${wamid}`)

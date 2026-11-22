@@ -2,6 +2,7 @@ import type { AuditEntry, ConversationTurn, Pending } from './agent'
 import type { Sql } from './db'
 import { type FindFilter, findMovements, type MovementRow, recentMovements } from './ledger'
 import type { PendingQuestion } from './resolve'
+import type { Timings } from './timings'
 
 /** What a worker holds after claiming a row. Every later write checks `id` and `attempts`. */
 export interface Claim {
@@ -167,8 +168,12 @@ export function createStore(sql: Sql, o: StoreOptions) {
 
     /** The account for a WhatsApp id, created on the first allowed message. */
     async upsertAccount(waId: string): Promise<number> {
-      await sql`INSERT INTO account (wa_id) VALUES (${waId}) ON CONFLICT (wa_id) DO NOTHING`
-      const [row] = await sql<{ id: number }[]>`SELECT id FROM account WHERE wa_id = ${waId}`
+      // The account exists after the first message: one read in the common case, not an insert and a read.
+      const [found] = await sql<{ id: number }[]>`SELECT id FROM account WHERE wa_id = ${waId}`
+      if (found) return Number(found.id)
+      const [row] = await sql<{ id: number }[]>`
+        INSERT INTO account (wa_id) VALUES (${waId})
+        ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id RETURNING id`
       return Number(row?.id)
     },
 
@@ -323,7 +328,11 @@ export function createStore(sql: Sql, o: StoreOptions) {
      * Stores the outbound wamid and finishes the row. It also accepts `unknown`: a reply that was in
      * flight when the sweep gave up on it is now known to be sent. Returns ms since received.
      */
-    async recordReplySent(c: Claim, outboundWamid: string): Promise<number | null> {
+    async recordReplySent(
+      c: Claim,
+      outboundWamid: string,
+      timings?: Timings,
+    ): Promise<number | null> {
       return sql.begin(async (tx) => {
         await tx`
           INSERT INTO reply (outbound_wamid, inbound_id, sent_at)
@@ -332,7 +341,8 @@ export function createStore(sql: Sql, o: StoreOptions) {
             SET inbound_id = EXCLUDED.inbound_id, sent_at = EXCLUDED.sent_at`
         const [row] = await tx<{ ms: number }[]>`
           UPDATE inbound_message
-          SET status = 'done', reply_sent_at = now(), error = NULL, updated_at = now()
+          SET status = 'done', reply_sent_at = now(), error = NULL, updated_at = now(),
+            timings = COALESCE(timings, '{}'::jsonb) || COALESCE(${timings ? tx.json(timings as never) : null}::jsonb, '{}'::jsonb)
           WHERE id = ${c.id} AND attempts = ${c.attempts} AND status IN ('processing', 'unknown')
           RETURNING extract(epoch FROM now() - received_at) * 1000 AS ms`
         return row ? Number(row.ms) : null

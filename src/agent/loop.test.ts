@@ -133,6 +133,7 @@ describe('runAgent', () => {
       outputTokens: 7,
       cacheReadTokens: 100,
       cacheWriteTokens: 0,
+      cacheWrite1hTokens: 0,
     })
     const [req] = requests
     expect(req?.model).toBe('claude-haiku-5-5')
@@ -140,7 +141,7 @@ describe('runAgent', () => {
     expect(req?.output_config).toEqual({ effort: 'low' })
     expect(req?.tools).toEqual(TOOLS)
     expect(req?.system).toEqual([
-      { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral', ttl: '1h' } },
     ])
     expect(req?.messages).toEqual([{ role: 'user', content: 'ctx' }])
     expect(result.audit.map((e) => [e.tool, e.status, e.action])).toEqual([
@@ -602,7 +603,7 @@ describe('warmUp', () => {
     const [req] = requests
     expect(req?.tools).toEqual(TOOLS)
     expect(req?.system).toEqual([
-      { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral', ttl: '1h' } },
     ])
     expect(req?.max_tokens).toBe(16)
   })
