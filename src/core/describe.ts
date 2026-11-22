@@ -199,6 +199,22 @@ function blockedLine(blocking: Affected, why: string[], today: string): string {
   return `No deshice nada: ${what.join(' · ')} ${reason} y no se puede deshacer, así que tampoco lo anterior. Si querés cambiar algo más viejo, decime qué, por ejemplo "corregí el café".`
 }
 
+function undoText(o: Extract<Outcome, { tool: 'undo_last' }>, today: string): string {
+  switch (o.status) {
+    case 'applied':
+      return undoneLine(o.items, today)
+    case 'nothing':
+    case 'restricted':
+      return REPLY.undoNothing
+    case 'expired':
+      return REPLY.undoExpired
+    case 'stale':
+      return staleLine(o.moved, today)
+    case 'blocked':
+      return blockedLine(o.blocking, o.why, today)
+  }
+}
+
 // ---- The outcomes
 
 /**
@@ -219,20 +235,7 @@ export function describe(o: Outcome, v: View): string {
       if (o.status === 'gone') return REPLY.gone
       return `✓ Borré: ${movementText(o.old)}${when(o.old.date, today)}${logged(o.old.time, o.old.id === newest)}`
     case 'undo_last':
-      switch (o.status) {
-        case 'applied':
-          return undoneLine(o.items, today)
-        case 'nothing':
-        case 'restricted':
-          return REPLY.undoNothing
-        case 'expired':
-          return REPLY.undoExpired
-        case 'stale':
-          return staleLine(o.moved, today)
-        case 'blocked':
-          return blockedLine(o.blocking, o.why, today)
-      }
-    // biome-ignore lint/suspicious/noFallthroughSwitchClause: every status above returns
+      return undoText(o, today)
     case 'remember_fact':
       if (o.status === 'full') {
         return `Ya tengo ${MAX_FACTS} cosas anotadas de vos y no me entran más. Decime de cuál me olvido y lo guardo.`

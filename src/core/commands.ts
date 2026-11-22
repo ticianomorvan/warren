@@ -1,3 +1,4 @@
+// biome-ignore-all lint/suspicious/noThenProperty: `then` is the name of ask_user's field (the action that follows the person's answer), fixed by the spec
 import { z } from 'zod'
 import { FirstSchema, RepeatSchema } from '../domain/reminders/schedule'
 
