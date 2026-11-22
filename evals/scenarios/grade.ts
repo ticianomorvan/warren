@@ -1,5 +1,5 @@
+import { money as formatMoney } from '../../src/core/es'
 import { canonical } from '../../src/core/numbers'
-import { formatMoney } from '../../src/render'
 import type { NewMovementExpect, ReminderExpect, Turn } from './schema'
 
 /** One movement row of the account in any state, as read from the database after a turn. */

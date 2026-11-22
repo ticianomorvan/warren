@@ -1,10 +1,13 @@
 import type Anthropic from '@anthropic-ai/sdk'
 
-export type ModelKey = 'haiku' | 'sonnet'
+/** The agent's model. Haiku 5.5 only: the `sonnet` key is gone (it was eval-only and needed its own thinking mode). */
+export type ModelKey = 'haiku'
 
 export type ModelConfig = {
   id: string
+  /** Thinking can be turned off only at effort `high` or below. */
   thinking: Anthropic.ThinkingConfigParam
+  effort: 'low'
   /** US$ per million tokens (claude-api skill price table, cached 2026-11-03). */
   price: {
     input: number
@@ -18,18 +21,11 @@ export type ModelConfig = {
 }
 
 export const MODELS: Record<ModelKey, ModelConfig> = {
-  // Thinking can be turned off only at effort `high` or below (the request sets `low`).
   haiku: {
     id: 'claude-haiku-5-5',
     thinking: { type: 'disabled' },
+    effort: 'low',
     price: { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, cacheWrite1h: 0.2 },
-  },
-  // Thinking differs per model on purpose: Haiku 5.5 accepts `disabled`; Sonnet 5.5 answers it with
-  // a 400, and `between_tools` is its way of not thinking up front.
-  sonnet: {
-    id: 'claude-sonnet-5-5',
-    thinking: { type: 'between_tools' },
-    price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, cacheWrite1h: 4 },
   },
 }
 

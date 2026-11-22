@@ -4,8 +4,8 @@
  *   node --env-file=.env --import tsx evals/agent-smoke.ts [message...]
  */
 import Anthropic from '@anthropic-ai/sdk'
-import { estimateCostUsd } from '../src/agent/next/models'
-import { understand } from '../src/agent/next/understand'
+import { estimateCostUsd } from '../src/agent/models'
+import { understand } from '../src/agent/understand'
 import { schemaDir } from '../src/core/db'
 import { commit } from '../src/core/turn'
 import { cafe, log, NOW, newAccount, turn } from '../test/core'

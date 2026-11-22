@@ -10,7 +10,7 @@ describe('the test kit', () => {
     const [tables] = await sql`SELECT count(*)::int AS n FROM schema_migration`
     expect(tables?.n).toBeGreaterThan(0)
     expect((await sql`SELECT 1 FROM movement`).length).toBe(0)
-    await sql`INSERT INTO account (wa_id) VALUES ('5491100000099')`
+    await sql`INSERT INTO account DEFAULT VALUES`
   })
 
   it('truncates between tests', async () => {

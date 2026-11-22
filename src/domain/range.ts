@@ -1,6 +1,17 @@
-import { isTimeGroup, NAMED_PERIODS, type RangeInput, type ToolInput } from '../agent/schema'
 import type { Input, Range } from '../core/commands'
 import { addDays, type DateRange, dayParts as parts } from '../time'
+
+/** A range as the resolution core reads it: the fields a period does not use are their empty value (`sentinel` makes it from a typed `Range`). */
+export interface RangeInput {
+  period: Range['period']
+  month: number
+  year: number
+  from: string
+  to: string
+}
+
+const TIME_GROUPS = ['day', 'week', 'month'] as const
+export const isTimeGroup = (by: string): boolean => (TIME_GROUPS as readonly string[]).includes(by)
 
 /**
  * Which kind of span a range is, which decides what "the one before" means: a month goes back to the
@@ -281,46 +292,6 @@ export function resolveRange(spec: RangeInput, today: string): Resolution {
   }
 }
 
-const empty = (period: RangeInput['period']): RangeInput => ({
-  period,
-  month: 0,
-  year: 0,
-  from: '',
-  to: '',
-})
-
-/**
- * The second range of a comparison, as the model wrote it: a named period, `month:10`, `month:10:2025`, `year:2025`
- * or `dates:11-01..11-15`. A text that is none of these is returned as the reason the model reads.
- */
-export function parseOther(text: string): RangeInput | string {
-  const t = text.trim().toLowerCase()
-  const named = NAMED_PERIODS.find((p) => p === t)
-  if (named) return empty(named)
-  const forms = 'a named period, "month:10", "month:10:2025", "year:2025" or "dates:11-01..11-15"'
-  const [kind = '', rest = ''] = [
-    t.slice(0, Math.max(t.indexOf(':'), 0)),
-    t.slice(t.indexOf(':') + 1),
-  ]
-  const numbers = rest.split(':')
-  const integer = (n: string | undefined) =>
-    n !== undefined && /^\d{1,4}$/.test(n) ? Number(n) : null
-  if (kind === 'month' && numbers.length <= 2) {
-    const month = integer(numbers[0])
-    const year = numbers[1] === undefined ? 0 : integer(numbers[1])
-    if (month !== null && year !== null) return { ...empty('month'), month, year }
-  }
-  if (kind === 'year' && numbers.length === 1) {
-    const year = integer(numbers[0])
-    if (year !== null) return { ...empty('year'), year }
-  }
-  if (kind === 'dates') {
-    const [from = '', to = '', ...more] = rest.split('..')
-    if (from !== '' && more.length === 0) return { ...empty('dates'), from, to }
-  }
-  return `other "${text}" is not understood: use ${forms}`
-}
-
 /**
  * The range to compare with: a day goes to the day before, a week to the previous Monday-to-Sunday, a weekend to the
  * one before, a month to the previous calendar month, a year to the previous year, and a custom range to the same
@@ -363,32 +334,6 @@ export function previousRange(r: Resolved): Resolved {
 export interface SummaryPlan {
   asked: Resolved
   before: Resolved | null
-}
-
-/**
- * Every rule of a summary's days in one place, for `checkCall` (which tells the model why not) and for `execute` (which
- * runs it): the range, the second range's text, "previous", and what cannot be compared. A string is the reason it cannot run.
- */
-export function planSummary(
-  q: Pick<ToolInput<'summarize'>, 'range' | 'group_by' | 'compare_to' | 'other'>,
-  today: string,
-): SummaryPlan | string {
-  const asked = resolveRange(q.range, today)
-  if (!asked.ok) return `range: ${asked.reason}`
-  if (q.compare_to !== 'range' && q.other.trim() !== '') {
-    return `other is only for compare_to "range" (this one is "${q.compare_to}"): send "" or set compare_to "range"`
-  }
-  if (q.compare_to === 'none') return { asked: asked.range, before: null }
-  if (isTimeGroup(q.group_by)) {
-    return `a comparison cannot be grouped by ${q.group_by}: use group_by none, category or payment, or drop the comparison`
-  }
-  if (q.compare_to === 'previous') return { asked: asked.range, before: previousRange(asked.range) }
-  if (q.other.trim() === '')
-    return 'compare_to "range" needs other: the second range to compare with'
-  const spec = parseOther(q.other)
-  if (typeof spec === 'string') return spec
-  const second = resolveRange(spec, today)
-  return second.ok ? { asked: asked.range, before: second.range } : `other: ${second.reason}`
 }
 
 // ---- The typed range of the registry's `summarize` (docs/rebuild/council-agent.md): a discriminated union, no sentinels, no

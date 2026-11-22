@@ -20,8 +20,8 @@ export interface TestDatabase {
  * A migrated database of its own. On PGlite (default) an in-process server behind a socket. With
  * PG_TEST_URL set, a fresh schema on that Postgres (dropped on close), so test files running in
  * parallel never see each other's rows. `max` is the connection pool: PGlite shares one session
- * between connections, so only a real Postgres gets more than one. `migrations` picks the folder (v1's by default,
- * `schemaDir` for the new schema) or `false` for an empty database.
+ * between connections, so only a real Postgres gets more than one. `migrations` picks the folder (`schemaDir` by default)
+ * or `false` for an empty database.
  */
 export async function createTestDatabase(
   o: { max?: number; migrations?: URL | false } = {},
@@ -79,14 +79,12 @@ export function useDatabase(o: { max?: number; migrations?: URL } = {}): void {
     await db?.close()
   })
   beforeEach(async () => {
-    if (o.migrations === schemaDir) {
-      await sql`TRUNCATE mcp_request, reminder_send, reminder, fact, movement, reply, wa_message, turn,
-        account_address, account RESTART IDENTITY CASCADE`
-      return
-    }
+    // Only a database with the schema has tables to empty; `useDatabase({ migrations })` of another folder empties nothing.
+    if (o.migrations !== undefined && o.migrations !== schemaDir) return
     await sql`TRUNCATE link_request, auth_oauth_access_token, auth_oauth_refresh_token, auth_oauth_consent,
       auth_oauth_client_resource, auth_oauth_client_assertion, auth_oauth_resource, auth_oauth_client, auth_session,
       auth_account, auth_verification, auth_jwks, auth_user,
-      reminder_send, reminder, fact, movement, reply, inbound_message, account RESTART IDENTITY CASCADE`
+      mcp_request, reminder_send, reminder, fact, movement, reply, wa_message, turn, account_address, account
+      RESTART IDENTITY CASCADE`
   })
 }

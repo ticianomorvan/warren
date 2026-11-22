@@ -99,10 +99,8 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
   const waNumber = o.displayNumber.replace(/\D/g, '')
 
   const mcp = createMcpEndpoint({
-    sql,
     door: createDoor({ auth, sql, publicUrl, allowed: o.allowed }),
     origins: [new URL(publicUrl).origin, 'https://claude.ai', 'https://claude.com'],
-    ...(o.now ? { now: o.now } : {}),
   })
 
   async function verified(query: string): Promise<URLSearchParams | null> {
@@ -205,7 +203,8 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
     } catch {}
     // Who the sign-in is for, so a person whose code was hijacked sees a number that is not theirs.
     const [account] = await sql<{ wa_id: string }[]>`
-      SELECT wa_id FROM account WHERE id = ${Number((session.user as { warrenAccountId?: unknown }).warrenAccountId)}`
+      SELECT address AS wa_id FROM account_address
+      WHERE channel = 'whatsapp' AND account_id = ${Number((session.user as { warrenAccountId?: unknown }).warrenAccountId)}`
     sendHtml(
       res,
       200,

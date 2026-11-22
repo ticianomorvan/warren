@@ -1,5 +1,5 @@
 import type Anthropic from '@anthropic-ai/sdk'
-import type { Movement } from '../src/agent'
+import type { Movement } from '../src/core/commands'
 import { argentinaToday } from '../src/time'
 import type { Segment, Transcriber, Transcript } from '../src/transcribe'
 import {
@@ -171,7 +171,7 @@ export const cafeMovement: Movement = {
 export type ToolCall = { name: string; input: unknown }
 export const logCall = (...movements: Movement[]): ToolCall => ({
   name: 'log_movements',
-  input: { movements, text: null },
+  input: { movements },
 })
 /** The model answers in its own words. */
 export const replyCall = (text: string): ToolCall => ({ name: 'reply', input: { text } })

@@ -1,7 +1,7 @@
 import type { Input } from '../core/commands'
 import type { Sql } from '../core/db'
-import { renderSummary, type Side } from '../render-summary'
 import { planRange, type Resolved } from './range'
+import { renderSummary, type Side } from './render-summary'
 import { summaryRows } from './totals'
 
 /** What a summary found: the range asked about, the range it is compared with (if any), and the reply code renders from them. */

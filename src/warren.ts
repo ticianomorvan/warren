@@ -7,11 +7,10 @@ import { type AuthRoutes, createAuthRoutes } from './auth/routes'
 import type { Config } from './config'
 import type { Sql } from './core/db'
 import { log } from './log'
-import { createProcessor, type Processor } from './process'
-import { createReminderSender } from './reminders/send'
-import { createStore, type Store } from './store'
 import type { Transcriber } from './transcribe'
 import type { Graph } from './whatsapp/graph'
+import { createIngest, type Ingest } from './whatsapp/ingest'
+import { createWorker, type Worker } from './whatsapp/worker'
 
 /** What Warren needs from outside. The server gives real ones; tests and the scenario eval give doubles. */
 export interface WarrenDeps {
@@ -29,39 +28,35 @@ export interface WarrenDeps {
   transcriber?: Transcriber | undefined
   /** Ready-made OAuth routes (tests late-bind them to the server's own origin); else built from `config.auth`. */
   authRoutes?: AuthRoutes
-  /** Turns on "vincular <code>" in the processor. Default: whether the OAuth server is on. */
+  /** Turns on "vincular <code>" in the worker. Default: whether the OAuth server is on. */
   signIn?: boolean
   maxAttempts?: number
   staleMs?: number
   interimMs?: number
   deadlineMs?: number
   clock?: () => Date
-  /** A test's view of the store the processor sees; the app keeps the real one. */
-  wrapStore?: (store: Store) => Store
 }
 
 export interface Warren {
-  store: Store
-  processor: Processor
-  reminders: ReturnType<typeof createReminderSender>
+  ingest: Ingest
+  worker: Worker
   server: Server
-  /** Another processor over the same pieces, for tests that swap the model or the store mid-run. */
-  makeProcessor: (store: Store, client?: Anthropic) => Processor
-  /** One pass of everything that runs on a timer: messages left pending and reminders due. */
+  /** Another worker over the same pieces, for tests that swap the model mid-run (an old instance beside a new one). */
+  makeWorker: (client?: Anthropic) => Worker
+  /** One pass of everything that runs on a timer: the messages left pending. */
   sweep: () => Promise<void>
   /** Stops taking work and lets what is in flight finish (a deploy, or the end of a test). */
   stop: (graceMs?: number) => Promise<void>
 }
 
 /**
- * The one place the pieces are wired together: the store, the processor, the reminder sender, the OAuth
- * server and the HTTP app. `src/server.ts`, the tests and the scenario eval all start Warren here, so
+ * The one place the pieces are wired together: the ingest, the worker, the OAuth server and the HTTP app. `src/server.ts`, the tests and the scenario eval all start Warren here, so
  * what they run is what production runs. It listens to nothing and starts no timer.
  */
 export function createWarren(deps: WarrenDeps): Warren {
   const { sql, config } = deps
   const maxAttempts = deps.maxAttempts ?? 5
-  const store = createStore(sql, { staleMs: deps.staleMs ?? 120_000, maxAttempts })
+  const ingest = createIngest(sql, { allowed: config.ALLOWED_WA_IDS })
   // The sign-in and OAuth server for MCP exist only when PUBLIC_URL is set (the config then requires the rest).
   const auth =
     deps.authRoutes ??
@@ -85,13 +80,14 @@ export function createWarren(deps: WarrenDeps): Warren {
           })
         })()
       : undefined)
-  const makeProcessor = (s: Store, client: Anthropic = deps.client) =>
-    createProcessor({
-      store: s,
+  const makeWorker = (client: Anthropic = deps.client) =>
+    createWorker({
+      sql,
       signIn: deps.signIn ?? auth !== undefined,
       graph: deps.graph,
       allowed: config.ALLOWED_WA_IDS,
       maxAttempts,
+      staleMs: deps.staleMs ?? 120_000,
       client,
       helpContact: config.HELP_CONTACT,
       transcriber: deps.transcriber,
@@ -99,30 +95,18 @@ export function createWarren(deps: WarrenDeps): Warren {
       ...(deps.interimMs !== undefined ? { interimMs: deps.interimMs } : {}),
       ...(deps.deadlineMs !== undefined ? { deadlineMs: deps.deadlineMs } : {}),
     })
-  const processor = makeProcessor(deps.wrapStore?.(store) ?? store)
-  const reminders = createReminderSender({
-    sql,
-    graph: deps.graph,
-    allowed: config.ALLOWED_WA_IDS,
-    template: config.REMINDER_TEMPLATE,
-  })
-  const server = createApp({ store, config, processor, auth })
+  const worker = makeWorker()
+  const server = createApp({ ingest, config, worker, auth })
   return {
-    store,
-    processor,
-    reminders,
+    ingest,
+    worker,
     server,
-    makeProcessor,
+    makeWorker,
     sweep: async () => {
-      await Promise.all([
-        processor.sweep().catch((err) => log('sweep_error', { error: String(err) }, 'error')),
-        reminders
-          .sweep()
-          .catch((err) => log('reminder_sweep_error', { error: String(err) }, 'error')),
-      ])
+      await worker.sweep().catch((err) => log('sweep_error', { error: String(err) }, 'error'))
     },
     stop: async (graceMs = 10_000) => {
-      await Promise.all([processor.stop(graceMs), reminders.stop()])
+      await worker.stop(graceMs)
     },
   }
 }

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
-import { CATEGORIES, FACT_KINDS } from '../../src/agent/schema'
+import { CATEGORIES, FACT_KINDS } from '../../src/core/commands'
 import { ScheduleSchema } from '../../src/domain/reminders/schedule'
 
 /**

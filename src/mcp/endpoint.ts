@@ -2,11 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { sendWeb } from '../auth/http'
-import type { Sql } from '../core/db'
 import { log } from '../log'
 import type { Door } from './door'
-import { registerReadTools } from './tools'
-import { registerWriteTools } from './write-tools'
 
 const INSTRUCTIONS =
   "Warren keeps a person's personal-finance ledger for Argentina: spending and income logged from WhatsApp, in ARS and USD. " +
@@ -23,13 +20,10 @@ const errorName = (error: unknown) => (error instanceof Error ? error.name : 'un
  * tools can only reach the account the door named. A failure anywhere answers 500 and is logged by name; none reaches the process.
  */
 export function createMcpEndpoint(o: {
-  sql: Sql
   door: Door
   /** The origins a browser page may call from (an `Origin` header, when there is one): ours, and the clients'. */
   origins: string[]
-  now?: () => Date
 }) {
-  const now = o.now ?? (() => new Date())
   const handler = createMcpHandler(
     (ctx) => {
       const info = ctx.authInfo
@@ -42,9 +36,7 @@ export function createMcpEndpoint(o: {
         { name: 'warren', version: '0.1.0' },
         { instructions: INSTRUCTIONS },
       )
-      const context = { sql: o.sql, accountId, waId, now }
-      registerReadTools(server, context)
-      registerWriteTools(server, context)
+      // The tools come from the registry in R6 (reminders included); until then the door and the protocol are what this serves.
       return server
     },
     {

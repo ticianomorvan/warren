@@ -2,17 +2,17 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AuthRoutes } from './auth/routes'
 import type { Config } from './config'
 import { log } from './log'
-import type { Processor } from './process'
-import type { Store } from './store'
+import type { Ingest } from './whatsapp/ingest'
 import { parseWebhook } from './whatsapp/payload'
 import { safeEqual, validSignature } from './whatsapp/signature'
+import type { Worker } from './whatsapp/worker'
 
 const MAX_BODY = 1_000_000
 
 export interface AppOptions {
-  store: Store
+  ingest: Ingest
   config: Pick<Config, 'WHATSAPP_VERIFY_TOKEN' | 'META_APP_SECRET'>
-  processor: Processor
+  worker: Worker
   /** The OAuth server's routes for MCP (docs/mcp-spec.md); without them none of its paths exist. */
   auth?: AuthRoutes
 }
@@ -33,11 +33,9 @@ function send(res: ServerResponse, status: number, body = ''): void {
   res.end(body)
 }
 
-const seconds = (n: number | undefined) => (n === undefined ? null : new Date(n * 1000))
-
 /** Plain node:http: a few routes do not need a framework. */
 export function createApp(o: AppOptions): Server {
-  const { store, config, processor } = o
+  const { ingest, config, worker } = o
 
   function verify(url: URL, res: ServerResponse) {
     const mode = url.searchParams.get('hub.mode')
@@ -64,43 +62,21 @@ export function createApp(o: AppOptions): Server {
       return send(res, 400)
     }
     const { messages, statuses } = parseWebhook(body)
-    const wamids = messages.map((m) => m.id)
+    const senders = [...new Set(messages.map((m) => m.from))]
 
-    // Persist before answering: after the 200 Meta will not send this again. Every message goes in
-    // as `pending`; the processor decides whether it is answered. If the batch fails halfway, the
-    // rows already stored are still processed now, and Meta's retry brings the rest.
+    // Persist before answering: after the 200 Meta will not send this again. Every message goes in as `pending`; the worker decides
+    // whether it is answered. If the batch fails halfway, the rows already stored are still processed now, and Meta's retry brings the rest.
     try {
-      for (const m of messages) {
-        const inserted = await store.recordInbound({
-          wamid: m.id,
-          wa_id: m.from,
-          kind: m.type,
-          body: m.text?.body ?? m.image?.caption ?? null,
-          raw: m.raw,
-          metaTs: seconds(m.timestamp),
-        })
-        if (inserted) log('message_received', { wamid: m.id, kind: m.type })
-      }
-      for (const s of statuses) {
-        const e = s.errors?.[0]
-        await store.recordStatus({
-          wamid: s.id,
-          status: s.status,
-          at: seconds(s.timestamp) ?? new Date(),
-          code: e?.code,
-        })
-        if (s.status === 'failed') {
-          log('status_failed', { outbound: s.id, code: e?.code, title: e?.title }, 'error')
-        }
-      }
+      for (const m of messages) await ingest.message(m)
+      for (const s of statuses) await ingest.status(s)
     } catch (err) {
-      void processor.kick(wamids)
+      void worker.kick(senders)
       throw err
     }
 
     send(res, 200)
-    // A retried batch has rows that are already stored but still pending: claim them too.
-    void processor.kick(wamids)
+    // A retried batch has rows that are already stored but still pending: the lanes claim them too.
+    void worker.kick(senders)
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse) {

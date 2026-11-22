@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { getMigrations } from 'better-auth/db/migration'
 import { describe, expect, it } from 'vitest'
+import { remember, turn } from '../test/core'
 import { ipKey } from './auth/ip'
 import { cleanName, maskNumber } from './auth/routes'
 import {
@@ -24,25 +25,27 @@ import {
   whatsapp,
   withClaude,
 } from './auth-test-kit'
-import { forgetAll, replyCall, script } from './command-fixtures'
 import { loadConfig } from './config'
-import { REPLY_LINK } from './render'
 import {
+  accountOfWa,
   bodies,
   cafe,
   DISPLAY_NUMBER,
-  fakeModel,
+  forgetAll,
   gate,
   messageBody,
   movements,
   post,
+  replyCall,
   row,
+  script,
   settle,
   setup,
   sql,
   useDatabase,
   VERIFY,
 } from './test-harness'
+import { REPLY_LINK } from './whatsapp/replies'
 
 /**
  * The authorization server of slice 5.1 end to end: a fake claude.ai (its client metadata document, PKCE, a
@@ -93,7 +96,7 @@ describe('the whole flow', () => {
     const consent = new URL(((await done.json()) as { url: string }).url, app.base)
     expect(consent.pathname).toBe('/oauth/consent')
     const [user] =
-      await sql`SELECT u.email, a.wa_id FROM auth_user u JOIN account a ON a.id = u.warren_account_id`
+      await sql`SELECT u.email, ad.address AS wa_id FROM auth_user u JOIN account_address ad ON ad.account_id = u.warren_account_id`
     expect(user).toMatchObject({
       email: expect.stringMatching(/^a\d+@users\.invalid$/),
       wa_id: WA_A,
@@ -214,8 +217,8 @@ describe('the whole flow', () => {
     const { app } = await withClaude()
     await connect(app, browser(app.base), { challenge: pkce().challenge, from: WA_A })
     await connect(app, browser(app.base), { challenge: pkce().challenge, from: WA_B })
-    const users = await sql`SELECT a.wa_id FROM auth_user u
-      JOIN account a ON a.id = u.warren_account_id ORDER BY a.wa_id`
+    const users = await sql`SELECT ad.address AS wa_id FROM auth_user u
+      JOIN account_address ad ON ad.account_id = u.warren_account_id ORDER BY ad.address`
     expect(users.map((u) => u.wa_id)).toEqual([WA_A, WA_B])
     app.close()
   })
@@ -290,8 +293,8 @@ describe('the sign-in refuses', () => {
     const { code } = await openSignIn(b, app.base, pkce().challenge)
     expect(await whatsapp(app, WA_B, `vincular ${code}`)).toEqual([])
     expect(await whatsapp(app, WA_B, 'sí')).toEqual([])
-    expect(await sql`SELECT 1 FROM inbound_message WHERE status = 'ignored'`).toHaveLength(2)
-    expect(await sql`SELECT 1 FROM account WHERE wa_id = ${WA_B}`).toHaveLength(0)
+    expect(await sql`SELECT 1 FROM wa_message WHERE status = 'ignored'`).toHaveLength(2)
+    expect(await sql`SELECT 1 FROM account_address WHERE address = ${WA_B}`).toHaveLength(0)
     expect(await sql`SELECT 1 FROM link_request WHERE account_id IS NOT NULL`).toHaveLength(0)
     expect(await status(b)).toBe('waiting')
     app.close()
@@ -388,9 +391,7 @@ describe('the question of a sign-in belongs to the very next answer', () => {
     await asked(app)
     expect(await whatsapp(app, WA_A, 'deshacer')).toEqual(['Decime qué querés cambiar.'])
     expect(await movements()).toHaveLength(1)
-    expect(
-      await sql`SELECT 1 FROM movement WHERE deleted_at IS NULL AND superseded_by IS NULL`,
-    ).toHaveLength(1)
+    expect(await sql`SELECT 1 FROM movement WHERE ended_at IS NULL`).toHaveLength(1)
     app.close()
   })
 
@@ -421,11 +422,12 @@ describe('the question of a sign-in belongs to the very next answer', () => {
     const { code } = await openSignIn(browser(app.base), app.base, pkce().challenge)
     await whatsapp(app, WA_A, `vincular ${code}`)
     const [row] = await sql`SELECT id::int AS id FROM link_request`
-    const [b] = await sql`INSERT INTO account (wa_id) VALUES (${WA_B}) RETURNING id::int AS id`
-    // B's own question carries A's sign-in id (a forged pending): the guard is the account, not the id alone.
-    await sql`INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status, reply_text, pending)
-      VALUES ('forged', ${WA_B}, 'text', 'x', '{}'::jsonb, 'done', '¿Conectar?', ${sql.json({ action: 'link', link_id: row?.id })})`
-    expect(b?.id).toBeGreaterThan(0)
+    const b = await accountOfWa(WA_B)
+    // B's own question carries A's sign-in id (a forged question): the guard is the account, not the id alone.
+    await sql`INSERT INTO turn (account_id, channel, created_at, label, reply, question)
+      VALUES (${b}, 'whatsapp', to_timestamp(1760000000 - 60), 'link_ask', '¿Conectar?',
+        ${sql.json({ options: [], then: { do: 'link', link_id: row?.id } })})`
+    expect(b).toBeGreaterThan(0)
     expect((await whatsapp(app, WA_B, 'sí'))[0]).toBe(REPLY_LINK.refused)
     expect(await confirmed()).toBe(0)
     app.close()
@@ -435,24 +437,23 @@ describe('the question of a sign-in belongs to the very next answer', () => {
     const entered = gate()
     const hold = gate()
     let armed = false
-    const { app } = await withClaude({
-      processorStore: (store) => ({
-        ...store,
-        conversation: async (c) => {
-          if (armed) {
-            entered.open()
-            await hold.promise
-          }
-          return store.conversation(c)
-        },
-      }),
+    // The message reads the conversation first: hold that read, as a worker that is slow to start its parse.
+    const slow = new Proxy(sql, {
+      apply(target, thisArg, args) {
+        const query = Reflect.apply(target, thisArg, args)
+        const text = Array.isArray(args[0]) ? args[0].join('?') : ''
+        if (!armed || !text.includes('FROM turn t LEFT JOIN wa_message m')) return query
+        entered.open()
+        return hold.promise.then(() => query)
+      },
     })
+    const { app } = await withClaude({ sql: slow })
     const { b } = await asked(app)
     const sent = app.calls.sent.length
     armed = true
     await post(app.base, messageBody('wamid.SI', WA_A, { text: { body: 'sí' } }))
     await entered.promise
-    await app.processor.stop(2000)
+    await app.worker.stop(2000)
     // Handed back with nothing done: not confirmed, no reply, no bare "sí" sent to the agent.
     expect(await row('wamid.SI')).toMatchObject({ status: 'pending', failure_sent_at: null })
     expect(await status(b)).toBe('asked')
@@ -461,7 +462,7 @@ describe('the question of a sign-in belongs to the very next answer', () => {
     expect(app.model.n).toBe(0)
 
     armed = false
-    const successor = app.makeProcessor(app.store, app.model && fakeModel().client)
+    const successor = app.makeWorker()
     await successor.sweep()
     expect(bodies(app.calls).slice(sent)).toEqual([REPLY_LINK.done(CLIENT)])
     expect(await status(b)).toBe('confirmed')
@@ -475,24 +476,16 @@ describe('the question of a sign-in belongs to the very next answer', () => {
 
 describe('"sí" and the newest question', () => {
   const seedFacts = async (n: number) => {
-    const [account] = await sql`
-      INSERT INTO account (wa_id) VALUES (${WA_A})
-      ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id RETURNING id`
-    const [inbound] = await sql`
-      INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status)
-      VALUES ('seed.facts', ${WA_A}, 'text', 'seed', '{}'::jsonb, 'done') RETURNING id`
-    await sql`INSERT INTO fact ${sql(
-      Array.from({ length: n }, (_, k) => ({
-        account_id: account?.id,
-        kind: 'note',
-        key: `cosa ${k + 1}`,
-        value: `valor ${k + 1}`,
-        inbound_message_id: inbound?.id,
-      })),
-    )}`
+    const account = await accountOfWa(WA_A)
+    await turn(
+      sql,
+      account,
+      Array.from({ length: n }, (_, k) => remember(`cosa ${k + 1}`, `valor ${k + 1}`)),
+      { at: new Date(1759999000 * 1000) },
+    )
   }
   const liveFacts = async () =>
-    Number((await sql`SELECT count(*) AS n FROM fact WHERE forgotten_at IS NULL`)[0]?.n)
+    Number((await sql`SELECT count(*) AS n FROM fact WHERE ended_at IS NULL`)[0]?.n)
 
   it('the sign-in code arrives after a forget-all question: the sign-in owns the next "sí"', async () => {
     await seedFacts(2)

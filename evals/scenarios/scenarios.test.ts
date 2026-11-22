@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { SYSTEM_PROMPT } from '../../src/agent'
-import { logOf, movement } from '../../src/command-fixtures'
+import { SYSTEM_PROMPT } from '../../src/agent/prompt'
 import { nextOccurrence } from '../../src/domain/reminders/schedule'
-import { createTestDatabase, fakeModel } from '../../src/test-harness'
+import { createTestDatabase, fakeModel, logCall } from '../../src/test-harness'
 import { Meter, runScenario } from './drive'
 import { isLive } from './grade'
 import { summarize } from './report'
@@ -134,7 +133,7 @@ describe('the driver, with a scripted model', () => {
         .split('\n')
         .find((l) => l.startsWith(`${position}. id=`))
       const id = Number(/id=(\d+)/.exec(line ?? '')?.[1])
-      return [{ name: 'correct_movement', input: { id, changes: { amount }, text: null } }]
+      return [{ name: 'correct_movement', input: { id, changes: { amount } } }]
     })
 
   it('passes a right correction and counts its cost and time', async () => {
@@ -193,13 +192,13 @@ describe('the driver, with a scripted model', () => {
     })
     expect(r.status).toBe('budget')
     expect(model.calls.n).toBe(0)
-    const rows =
-      await db.sql`SELECT superseded_by FROM movement m JOIN account a ON a.id = m.account_id WHERE a.wa_id LIKE '%903'`
-    expect(rows.every((x) => x.superseded_by === null)).toBe(true)
+    const rows = await db.sql`SELECT m.ended_at FROM movement m
+      JOIN account_address a ON a.account_id = m.account_id WHERE a.address LIKE '%903'`
+    expect(rows.every((x) => x.ended_at === null)).toBe(true)
     expect(summarize([r]).passedGate).toBe(false)
   })
 
-  it('stamps new movements with the turn clock and ages the exchange between turns', async () => {
+  it('stamps new movements with the turn clock', async () => {
     const s = ScenarioSchema.parse({
       id: 's904',
       split: 'dev',
@@ -219,7 +218,17 @@ describe('the driver, with a scripted model', () => {
         },
       ],
     })
-    const cafe = [logOf(movement({ date: '2026-11-21', payment: null }))]
+    const cafe = [
+      logCall({
+        direction: 'out',
+        amount: '3500',
+        currency: 'ARS',
+        date: '2026-11-21',
+        description: 'café',
+        category: 'restaurantes',
+        confidence: 'high',
+      }),
+    ]
     const model = fakeModel(() => cafe)
     const r = await runScenario(s, {
       sql: db.sql,
@@ -229,8 +238,8 @@ describe('the driver, with a scripted model', () => {
     })
     expect(r.status).toBe('pass')
     const rows = await db.sql<{ time: string }[]>`
-      SELECT to_char(m.created_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI') AS time
-      FROM movement m JOIN account a ON a.id = m.account_id WHERE a.wa_id LIKE '%904' ORDER BY m.id`
+      SELECT to_char(m.logged_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI') AS time
+      FROM movement m JOIN account_address a ON a.account_id = m.account_id WHERE a.address LIKE '%904' ORDER BY m.id`
     expect(rows.map((x) => x.time)).toEqual(['10:10', '10:40'])
     expect(
       isLive({

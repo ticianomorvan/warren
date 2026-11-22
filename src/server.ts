@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { warmUp } from './agent'
+import { warmUp } from './agent/loop'
 import { loadConfig } from './config'
-import { connect, migrate } from './core/db'
+import { connect, migrate, schemaDir } from './core/db'
 import { keepAliveFetch } from './http'
 import { log } from './log'
 import { createTranscriber } from './transcribe'
@@ -11,7 +11,7 @@ import { createGraph } from './whatsapp/graph'
 const MAX_ATTEMPTS = 5
 const config = loadConfig()
 const sql = connect(config.DATABASE_URL)
-await migrate(sql)
+await migrate(sql, schemaDir)
 
 const graph = createGraph({
   version: config.GRAPH_API_VERSION,
@@ -39,8 +39,8 @@ warmUp(client, 'haiku').then(
   (err) => log('agent_warm_failed', { error: String(err) }, 'error'),
 )
 
-// Startup sweep, then every 30 s. One process only: the claim keeps two sweeps from double-sending,
-// but only one replica is supported.
+// Startup sweep, then every 30 s. Two processes (a deploy's overlap) are safe: the claim takes a sender's oldest due row only when no older
+// one is held, so the new instance never overtakes the old one's.
 const tick = sweep
 void tick()
 const timer = setInterval(tick, 30_000)

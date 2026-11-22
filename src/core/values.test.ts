@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Movement } from '../agent/schema'
+import type { Movement } from './commands'
 import { checkChanges, checkCount, checkLog, hasChanges, issueText } from './values'
 
 const today = '2026-11-20'
@@ -10,7 +10,6 @@ const movement: Movement = {
   date: today,
   description: 'café',
   category: 'restaurantes',
-  payment: null,
   confidence: 'high',
 }
 

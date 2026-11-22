@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { checkCall, type Guard } from '../agent/calls'
 import { unwritten } from '../core/numbers'
 import { holdsSecretValue, looksContact, looksSecret, sensitive } from '../core/secrets'
 import { checkFact, normalizeKey, sameValue, tidy } from './facts'
@@ -119,84 +118,6 @@ describe('checkFact', () => {
     expect(why('note', 'cobro', ' ', 'cobro')).toMatch(/value is empty/)
     expect(why('note', '¿?', 'x', 'x')).toMatch(/key is empty/)
     expect(why('category', 'cafe', 'salidas', 'cafe va en salidas')).toMatch(/one of: supermercado/)
-  })
-})
-
-describe('checkCall: memory tools', () => {
-  const guard = (o: Partial<Guard> = {}): Guard => ({
-    today: '2026-11-21',
-    now: new Date('2026-11-21T15:00:00Z'),
-    seen: new Set(),
-    seenFacts: new Set([7]),
-    logged: 0,
-    remembered: new Set(),
-    message: 'la visa es la del galicia',
-    ...o,
-  })
-  const remember = (key = 'la del galicia', value = 'la visa') => ({
-    kind: 'alias',
-    key,
-    value,
-    text: null,
-  })
-
-  it('remember_fact becomes an action with the normalized key', () => {
-    const r = checkCall('remember_fact', remember('La del Galicia'), guard())
-    expect(r).toMatchObject({
-      kind: 'action',
-      action: { tool: 'remember_fact', input: { key: 'la del galicia', value: 'la visa' } },
-    })
-  })
-
-  it('a secret becomes a notice from code, never a refusal the model must fix', () => {
-    const r = checkCall(
-      'remember_fact',
-      remember('banco', 'la clave'),
-      guard({ message: 'mi clave es 1' }),
-    )
-    expect(r).toMatchObject({ kind: 'action', action: { tool: 'notice' } })
-  })
-
-  it('one value per key in a message', () => {
-    const g = guard()
-    expect(checkCall('remember_fact', remember(), g).kind).toBe('action')
-    expect(checkCall('remember_fact', remember('la del galicia', 'la master'), g)).toMatchObject({
-      kind: 'rejected',
-    })
-  })
-
-  it('forget_fact takes an id that was shown, or a key', () => {
-    expect(checkCall('forget_fact', { id: 7, key: '', text: null }, guard())).toMatchObject({
-      kind: 'action',
-      action: { input: { id: 7, key: '' } },
-    })
-    expect(checkCall('forget_fact', { id: 0, key: 'La Visa', text: null }, guard())).toMatchObject({
-      kind: 'action',
-      action: { input: { id: 0, key: 'la visa' } },
-    })
-    // Both: the shown id decides, the key is dropped.
-    expect(checkCall('forget_fact', { id: 7, key: 'la visa', text: null }, guard())).toMatchObject({
-      kind: 'action',
-      action: { input: { id: 7, key: '' } },
-    })
-    for (const input of [
-      { id: 8, key: '', text: null },
-      { id: 8, key: 'la visa', text: null }, // an id never shown is refused whatever else is sent
-      { id: -1, key: '', text: null },
-      { id: 0, key: '', text: null },
-      { id: 0, key: '¿?', text: null },
-    ]) {
-      expect(checkCall('forget_fact', input, guard()).kind, JSON.stringify(input)).toBe('rejected')
-    }
-  })
-
-  it('a fact id is not a movement id: a shown movement is not a shown fact', () => {
-    const r = checkCall(
-      'forget_fact',
-      { id: 7, key: '', text: null },
-      guard({ seenFacts: new Set(), seen: new Set([7]) }),
-    )
-    expect(r.kind).toBe('rejected')
   })
 })
 

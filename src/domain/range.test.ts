@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { PERIODS, type RangeInput } from '../agent/schema'
+import { NAMED_PERIODS } from '../core/commands'
 import { argentinaToday } from '../time'
 import {
   MAX_RANGE_DAYS,
-  parseOther,
   previousRange,
+  type RangeInput,
   type Resolved,
   rangeDays,
   resolveRange,
@@ -13,6 +13,8 @@ import {
 /** A range as the model sends it: unused fields at their empty values. */
 const r = (period: string, o: Partial<RangeInput> = {}): RangeInput =>
   ({ period, month: 0, year: 0, from: '', to: '', ...o }) as RangeInput
+
+const PERIODS = [...NAMED_PERIODS, 'month', 'year', 'dates']
 
 const show = (x: Resolved) => `${x.from}..${x.to}${x.partial ? ' (en curso)' : ''} ${x.kind}`
 const ok = (spec: RangeInput, today: string) => {
@@ -340,50 +342,6 @@ describe('previousRange', () => {
     )
     expect(prior(r('dates', { from: '2028-03-02', to: '2028-03-03' }), '2028-03-10')).toBe(
       '2028-02-29..2028-03-01 custom',
-    )
-  })
-})
-
-describe('parseOther: the second range of a comparison, written as a short text', () => {
-  const parsed = (text: string) => {
-    const spec = parseOther(text)
-    return typeof spec === 'string' ? spec : ok(spec, NOW)
-  }
-
-  it('a named period, a month with or without its year, a year, and days', () => {
-    expect(parsed('last_month')).toBe('2026-10-01..2026-10-31 month')
-    expect(parsed(' This_Week ')).toBe('2026-11-16..2026-11-21 (en curso) week')
-    expect(parsed('month:10')).toBe('2026-10-01..2026-10-31 month')
-    expect(parsed('month:2:2024')).toBe('2024-02-01..2024-02-29 month')
-    expect(parsed('year:2025')).toBe('2025-01-01..2025-12-31 year')
-    expect(parsed('dates:11-01..11-15')).toBe('2026-11-01..2026-11-15 custom')
-    expect(parsed('dates:5')).toBe('2026-11-05..2026-11-05 day')
-    expect(parsed('dates:2026-10-17..2026-10-31')).toBe('2026-10-17..2026-10-31 custom')
-  })
-
-  it('anything else comes back as the reason, with the forms that are allowed', () => {
-    for (const bad of [
-      '',
-      'octubre',
-      'month:',
-      'month:ten',
-      'month:10:2025:1',
-      'year:',
-      'year:2025:1',
-      'dates:',
-      'dates:1..2..3',
-      'forever',
-      'month10',
-    ]) {
-      expect(parseOther(bad), bad).toEqual(expect.stringContaining('is not understood'))
-    }
-  })
-
-  it('a form that parses but is not a real range is refused when it is resolved', () => {
-    expect(why(parseOther('month:13') as RangeInput, NOW)).toContain('1 to 12')
-    expect(why(parseOther('month:12:2026') as RangeInput, NOW)).toContain('has not started')
-    expect(why(parseOther('dates:2026-11-10..2026-11-02') as RangeInput, NOW)).toContain(
-      'is reversed',
     )
   })
 })

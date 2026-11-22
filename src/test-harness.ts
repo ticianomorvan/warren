@@ -1,16 +1,17 @@
 import { createHmac } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { createTestDatabase, sql, useDatabase } from '../test/db'
-import { cafeMovement, fakeGraph, fakeModel } from '../test/fakes'
+import { cafeMovement, fakeGraph, fakeModel, type ToolCall } from '../test/fakes'
 import { until } from '../test/until'
-import type { Movement } from './agent'
 import { type Auth, createAuth } from './auth/config'
 import { createLinks } from './auth/link'
 import { type AuthRoutes, createAuthRoutes } from './auth/routes'
+import type { Movement } from './core/commands'
 import type { Sql } from './core/db'
-import type { Store } from './store'
+import { commit } from './core/turn'
 import type { Transcriber } from './transcribe'
 import { createWarren } from './warren'
+import { accountFor } from './whatsapp/ingest'
 
 /**
  * v1's harness: what the old tests import. The pieces live in `test/` now (db, fakes, until); this file
@@ -37,15 +38,11 @@ export async function setup(
     deadlineMs?: number
     helpContact?: string
     transcriber?: Transcriber
-    /** The store the processor sees; the app keeps the real one. */
-    processorStore?: (store: Store) => Store
     /** A database other than the one `useDatabase` set (the scenario eval owns its own). */
     sql?: Sql
     /** Turns on the OAuth server and the sign-in, on the test server's own origin (`auth.test.ts`). */
     auth?: { fetchClient?: Parameters<typeof createAuth>[0]['fetchClientMetadataResource'] }
-    /** The clock the MCP tools read "today" from. */
-    now?: () => Date
-    /** The processor's clock (see `ProcessorOptions.clock`): a fixed past one by default, so a message's own time is "now". */
+    /** The worker's clock (see `WorkerOptions.clock`): a fixed past one by default, so a message's own time is "now". */
     clock?: () => Date
   } = {},
 ) {
@@ -54,7 +51,7 @@ export async function setup(
   const links = opts.auth ? createLinks(opts.sql ?? sql) : undefined
   // The OAuth server's issuer is the server's own origin, which is known only once it listens.
   let routes: AuthRoutes | undefined
-  const { store, processor, makeProcessor, server } = createWarren({
+  const { ingest, worker, makeWorker, server } = createWarren({
     sql: opts.sql ?? sql,
     config: {
       WHATSAPP_VERIFY_TOKEN: VERIFY,
@@ -73,7 +70,6 @@ export async function setup(
     clock: opts.clock ?? (() => new Date(1760000000 * 1000)),
     interimMs: opts.interimMs ?? 60_000,
     deadlineMs: opts.deadlineMs ?? 120_000,
-    ...(opts.processorStore ? { wrapStore: opts.processorStore } : {}),
     ...(opts.auth
       ? { authRoutes: (req, res, url) => routes?.(req, res, url) ?? Promise.resolve(false) }
       : {}),
@@ -98,7 +94,6 @@ export async function setup(
       publicUrl: base,
       displayNumber: DISPLAY_NUMBER,
       allowed: opts.allowed ?? ['*'],
-      ...(opts.now ? { now: opts.now } : {}),
     })
   }
   return {
@@ -106,9 +101,9 @@ export async function setup(
     links,
     base,
     port,
-    store,
-    processor,
-    makeProcessor,
+    ingest,
+    worker,
+    makeWorker,
     calls: fake.calls,
     model: model.calls,
     requests: model.requests,
@@ -191,27 +186,30 @@ export async function settle(): Promise<void> {
   const end = Date.now() + 2000
   while (Date.now() < end) {
     const busy = await sql`
-      SELECT 1 FROM inbound_message WHERE status = 'processing' AND claimed_at > now() - interval '5 seconds' LIMIT 1`
+      SELECT 1 FROM wa_message WHERE status = 'processing' AND claimed_at > now() - interval '5 seconds' LIMIT 1`
     if (busy.length === 0) return
     await new Promise((r) => setTimeout(r, 25))
   }
 }
-export const count = async (table: 'inbound_message' | 'reply' | 'account') =>
+export const count = async (table: 'wa_message' | 'reply' | 'account' | 'turn' | 'movement') =>
   Number((await sql.unsafe(`SELECT count(*) AS n FROM ${table}`))[0]?.n)
-export const seed = (wamid: string, cols = "status = 'pending'") =>
-  sql.unsafe(`INSERT INTO inbound_message (wamid, wa_id, kind, body, payload)
-    VALUES ('${wamid}', '5491100000000', 'text', 'x', '{}'::jsonb);
-    UPDATE inbound_message SET ${cols} WHERE wamid = '${wamid}'`)
+/** A message row as the webhook leaves it (`pending` unless `cols` says otherwise), for a sender (default the test's usual one). */
+export const seed = (wamid: string, cols = "status = 'pending'", from = '5491100000000') =>
+  sql.unsafe(
+    `INSERT INTO wa_message (wamid, wa_id, kind, text) VALUES ('${wamid}', '${from}', 'text', 'x');
+    UPDATE wa_message SET ${cols} WHERE wamid = '${wamid}'`,
+  )
 export const row = async (wamid: string) =>
-  (await sql`SELECT * FROM inbound_message WHERE wamid = ${wamid}`)[0]
+  (await sql`SELECT * FROM wa_message WHERE wamid = ${wamid}`)[0]
 
 export { until }
 export const doneCount = async (n: number) =>
-  Number((await sql`SELECT count(*) AS n FROM inbound_message WHERE status = 'done'`)[0]?.n) === n
+  Number((await sql`SELECT count(*) AS n FROM wa_message WHERE status = 'done'`)[0]?.n) === n
 export const bodies = (calls: { sent: { body: string }[] }) => calls.sent.map((s) => s.body)
+/** The live movements, oldest first, as plain values. */
 export const movements = () =>
   sql`SELECT direction, amount::text AS amount, currency, occurred_on::text AS on, description,
-    category, payment, confidence, position FROM movement ORDER BY inbound_message_id, position`
+    category, payment, confidence FROM movement WHERE ended_at IS NULL ORDER BY id`
 export const gate = () => {
   let open = () => {}
   const promise = new Promise<void>((r) => {
@@ -220,3 +218,79 @@ export const gate = () => {
   return { promise, open }
 }
 export const movement = (o: Partial<Movement> = {}): Movement => ({ ...cafeMovement, ...o })
+
+// ---- Fixtures of the channel tests: scripted models, seeded movements, one message in and its reply out.
+
+/** The usual sender. */
+export const WA = '5491100000000'
+/** The model forgets everything the person told Warren (code asks "¿Seguro?"). */
+export const forgetAll: ToolCall = { name: 'forget_all_facts', input: {} }
+
+export type App = Awaited<ReturnType<typeof setup>>
+
+let n = 0
+export let lastWamid = ''
+/** One message in, waits until its reply is out and recorded. Returns that reply. */
+export async function say(
+  app: App,
+  o: { at?: string; text?: string; from?: string } = {},
+): Promise<string> {
+  const wamid = `wamid.CMD${++n}`
+  lastWamid = wamid
+  const before = app.calls.sent.length
+  const extra = {
+    ...(o.at ? { timestamp: String(Math.floor(Date.parse(o.at) / 1000)) } : {}),
+    ...(o.text ? { text: { body: o.text } } : {}),
+  }
+  await post(app.base, messageBody(wamid, o.from ?? WA, extra))
+  await until(async () => (await row(wamid))?.status === 'done')
+  return bodies(app.calls)[before] ?? ''
+}
+
+/** A model that answers each call with the next turn: a list of tool calls. A bare call is a turn of one. */
+export const script = (...turns: (ToolCall | ToolCall[])[]) => {
+  let i = 0
+  return fakeModel(() => [turns[i++] ?? []].flat())
+}
+
+/** The account of a WhatsApp id, made the way the webhook makes it. */
+export const accountOfWa = (waId: string, db: Sql = sql) => accountFor(db, waId)
+
+export type SeedRow = {
+  on: string
+  amount: string
+  currency?: Movement['currency']
+  direction?: Movement['direction']
+  category?: Movement['category']
+  payment?: string
+  description?: string
+}
+/**
+ * Stores movements as if earlier messages of `from` had logged them (one committed turn, at the message time of the tests). Returns
+ * their ids (the `entity_id` the model sees), in order.
+ */
+export async function seedMovements(rows: SeedRow[], from = WA): Promise<number[]> {
+  const accountId = await accountFor(sql, from)
+  const movements = rows.map(
+    (r): Movement => ({
+      direction: r.direction ?? 'out',
+      amount: r.amount,
+      currency: r.currency ?? 'ARS',
+      date: r.on,
+      description: r.description ?? 'algo',
+      category: r.category ?? 'otros',
+      ...(r.payment ? { payment: r.payment } : {}),
+      confidence: 'high',
+    }),
+  )
+  await commit(sql, {
+    accountId,
+    channel: 'whatsapp',
+    now: new Date(1759999000 * 1000),
+    calls: [{ tool: 'log_movements', input: { movements } }],
+    compose: () => ({ reply: 'seed' }),
+  })
+  const ids = await sql<{ id: number }[]>`
+    SELECT entity_id::int AS id FROM movement WHERE account_id = ${accountId} ORDER BY id DESC LIMIT ${rows.length}`
+  return ids.map((r) => r.id).reverse()
+}

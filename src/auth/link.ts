@@ -95,8 +95,8 @@ export function createLinks(sql: Sql): Links {
           WHEN l.asked_at IS NOT NULL THEN 'asked'
           ELSE 'waiting' END AS state,
           CASE WHEN l.confirmed_at IS NOT NULL AND l.used_at IS NULL AND l.expires_at > now()
-            THEN a.wa_id END AS wa_id
-        FROM link_request l LEFT JOIN account a ON a.id = l.account_id
+            THEN (SELECT address FROM account_address WHERE account_id = l.account_id AND channel = 'whatsapp') END AS wa_id
+        FROM link_request l
         WHERE l.secret_hash = ${hashSecret(secret)}`
       return row
         ? { state: row.state, ...(row.wa_id ? { waId: row.wa_id } : {}) }

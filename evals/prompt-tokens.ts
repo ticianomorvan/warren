@@ -6,8 +6,8 @@
  */
 import { readFileSync } from 'node:fs'
 import Anthropic from '@anthropic-ai/sdk'
-import { warmUp } from '../src/agent/next/loop'
-import { SYSTEM_PROMPT } from '../src/agent/next/prompt'
+import { warmUp } from '../src/agent/loop'
+import { SYSTEM_PROMPT } from '../src/agent/prompt'
 import { TOOLS } from '../src/core/commands'
 
 const client = new Anthropic()

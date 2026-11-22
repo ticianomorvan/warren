@@ -4,10 +4,10 @@ import { createResourceServerChallenge } from '@better-auth/oauth-provider'
 import type { AuthInfo } from '@modelcontextprotocol/server'
 import { APIError } from 'better-auth/api'
 import { fromNodeHeaders } from 'better-auth/node'
+import { isAllowed } from '../access'
 import { type Auth, mcpUrl, SCOPES } from '../auth/config'
 import type { Sql } from '../core/db'
 import { log } from '../log'
-import { isAllowed } from '../process'
 
 /** What the door says about a request: who it is, or the answer to send instead. */
 export type Admitted =
@@ -99,8 +99,10 @@ export function createDoor(o: DoorOptions): Door {
     let person: { id: string; wa_id: string; revoked: number | null } | undefined
     try {
       ;[person] = await o.sql<{ id: string; wa_id: string; revoked: number | null }[]>`
-        SELECT a.id, a.wa_id, extract(epoch FROM a.mcp_revoked_at)::float8 AS revoked
-        FROM auth_user u JOIN account a ON a.id = u.warren_account_id
+        SELECT a.id, ad.address AS wa_id, extract(epoch FROM a.mcp_revoked_at)::float8 AS revoked
+        FROM auth_user u
+        JOIN account a ON a.id = u.warren_account_id
+        JOIN account_address ad ON ad.account_id = a.id AND ad.channel = 'whatsapp'
         WHERE u.id = ${sub}::uuid`
     } catch (error) {
       // The database is down, which is not the client's fault: it must not be sent to sign in.
