@@ -234,6 +234,7 @@ describe('what looks like a secret, both ways', () => {
     'el cvv',
     'el código del cajero es 1234',
     'cajero',
+    'el código de acceso', // "código" with no "cajero"
     'número de tarjeta',
     // a password said with a cue and no keyword
     'en el galicia uso Perro123',

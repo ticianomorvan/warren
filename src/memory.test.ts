@@ -1090,21 +1090,39 @@ describe('the facts the message names, beyond the newest 30', () => {
     app.close()
   })
 
-  it('never another person’s, and at most 20 of them', async () => {
-    await seedFacts(OTHER, 1, 'brasil')
-    await sql`UPDATE fact SET kind = 'alias', key = 'la del brasil', value = 'la visa'`
+  it('at most 20 of them, never twice, and never another person’s', async () => {
     await seedFacts(WA, 30, 'viejo')
     await seedFacts(WA, 30, 'cosa')
+    // The other person's is the newest of all: it would come first if it were looked at.
+    await seedFacts(OTHER, 1, 'brasil')
+    await sql`UPDATE fact SET kind = 'alias', key = 'la del brasil', value = 'la visa' WHERE key = 'brasil 1'`
     const app = await setup({ model: script(replyCall('Hola.')) })
     await send(
       app,
-      `${Array.from({ length: 30 }, (_, k) => `viejo ${k + 1}`).join(' ')} la del brasil`,
+      `${Array.from({ length: 30 }, (_, k) => `viejo ${k + 1}`).join(' ')} cosa 60 la del brasil`,
     )
     const context = contextOf(app, 0)
     expect(context).not.toContain('alias "la del brasil"')
-    // The 30 newest ("cosa"), and 20 of the 30 older ones, all of whose keys the message says.
+    // The 30 newest ("cosa": the message names one of them), and 20 of the 30 older ones, all of whose keys the message says.
     expect(context.match(/^id=\d+ dato "cosa/gm)).toHaveLength(30)
     expect(context.match(/^id=\d+ dato "viejo/gm)).toHaveLength(20)
+    const ids = context.match(/^id=\d+/gm) ?? []
+    expect(new Set(ids).size).toBe(ids.length)
+    app.close()
+  })
+
+  it('also when the message is a voice note: what was heard names them', async () => {
+    await seedFacts(WA, 1, 'brasil')
+    await sql`UPDATE fact SET kind = 'alias', key = 'la del brasil', value = 'la visa'`
+    await seedFacts(WA, 35, 'cosa')
+    const app = await setup({
+      fake: fakeGraph({ media: { a1: OGG } }),
+      transcriber: fakeTranscriber(heard('café 3000 con la del brasil')).transcriber,
+      model: script(replyCall('Hola.')),
+    })
+    await post(app.base, voiceBody('wamid.MEMV2', 'a1', WA))
+    await until(async () => (await row('wamid.MEMV2'))?.status === 'done')
+    expect(contextOf(app, 0)).toContain('alias "la del brasil" = "la visa"')
     app.close()
   })
 })

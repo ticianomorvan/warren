@@ -282,6 +282,19 @@ describe.skipIf(!url)('real Postgres: concurrency', () => {
       expect(await live()).toEqual([])
     })
 
+    it('forgetting everything waits for the remember that is still committing, and forgets that too', async () => {
+      await sql`INSERT INTO account (wa_id) VALUES (${WA})`
+      const [stored, forgot] = await Promise.all([
+        commitMessage(store(), 'fact.r', remember('la visa', 'galicia'), { hold: 400 }),
+        commitMessage(store(), 'fact.all', [{ tool: 'forget_all_confirmed', input: {} }], {
+          start: 150,
+        }),
+      ])
+      expect(stored).toBe('🧠 Me acuerdo: la visa = galicia')
+      expect(forgot).toBe('🧠 Me olvidé de todo lo que sabía de vos (1).')
+      expect(await live()).toEqual([])
+    })
+
     describe('an undo racing a forget of the same fact', () => {
       const arrange = async () => {
         await sql`INSERT INTO account (wa_id) VALUES (${WA})`
