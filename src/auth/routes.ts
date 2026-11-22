@@ -52,6 +52,22 @@ function cookie(req: IncomingMessage, name: string): string | undefined {
   }
 }
 
+/**
+ * The client's address: Railway's `X-Real-IP` (written by its edge, a client's own copy replaced), else the socket's. See
+ * the note in `config.ts` on why not `X-Forwarded-For`.
+ */
+function clientIp(req: IncomingMessage): string {
+  const real = req.headers['x-real-ip']
+  return (typeof real === 'string' && real.trim()) || req.socket.remoteAddress || 'unknown'
+}
+
+/** `+54 9 ····5678`: enough for a person to know whose account it is, never the number. */
+export function maskNumber(waId: string): string {
+  const digits = waId.replace(/\D/g, '')
+  const prefix = digits.startsWith('549') ? '+54 9' : `+${digits.slice(0, 2)}`
+  return `${prefix} ····${digits.slice(-4)}`
+}
+
 function sendHtml(res: ServerResponse, status: number, html: string, nonce: string, extra = {}) {
   res.writeHead(status, { ...PAGE_HEADERS, 'content-security-policy': csp(nonce), ...extra })
   res.end(html)
@@ -113,9 +129,12 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
     try {
       host = new URL(clientId).hostname
     } catch {}
-    const [row] = await sql<{ name: string | null }[]>`
-      SELECT name FROM auth_oauth_client WHERE "clientId" = ${clientId}`
-    const name = cleanName(row?.name ?? '') || host
+    // Read through better-auth's own adapter, so a change of its table or columns cannot silently break this.
+    const found = await (await auth.$context).adapter.findOne<{ name?: string | null }>({
+      model: 'oauthClient',
+      where: [{ field: 'clientId', value: clientId }],
+    })
+    const name = cleanName(found?.name ?? '') || host
     return host && name !== host ? `${name} (${host})` : name
   }
 
@@ -133,7 +152,8 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
     }
     const client = await clientLabel(clientId)
     const secret = cookie(req, LINK_COOKIE)
-    const link = (secret && (await links.current(secret, client))) || (await links.open(client))
+    const link =
+      (secret && (await links.current(secret, client))) || (await links.open(client, clientIp(req)))
     if (!link) {
       return sendHtml(
         res,
@@ -182,12 +202,16 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
     try {
       redirectHost = new URL(params.get('redirect_uri') ?? '').host
     } catch {}
+    // Who the sign-in is for, so a person whose code was hijacked sees a number that is not theirs.
+    const [account] = await sql<{ wa_id: string }[]>`
+      SELECT wa_id FROM account WHERE id = ${Number((session.user as { warrenAccountId?: unknown }).warrenAccountId)}`
     sendHtml(
       res,
       200,
       consentPage({
         nonce,
         client: await clientLabel(clientId),
+        account: account ? maskNumber(account.wa_id) : '',
         redirectHost,
         scopes: (params.get('scope') ?? '').split(' ').filter(Boolean),
       }),

@@ -65,6 +65,14 @@ export interface PendingQuestion {
  */
 export function answerAction(text: string, question: PendingQuestion | null): Action | null {
   if (!question) return null
+  // "¿Conectar …?" over a sign-in: only a bare "sí" confirms and only a bare "no" declines. Anything else is not an answer
+  // to it: the sign-in stays as it is and the message goes on to the agent.
+  if (question.pending?.action === 'link') {
+    const { link_id } = question.pending
+    const norm = normalizeText(text)
+    if (LINK_YES.test(norm)) return { tool: 'link_confirm', input: { link_id } }
+    return NO.test(norm) ? { tool: 'link_decline', input: { link_id } } : null
+  }
   // "¿Seguro?" over forgetting everything: only a yes is an answer (never "1", "ese" or "el primero"), and nothing else is read as one.
   if (question.pending?.action === 'forget_all') {
     return YES.test(normalizeText(text)) ? { tool: 'forget_all_confirmed', input: {} } : null
@@ -119,6 +127,8 @@ export function undoRequest(text: string): Action | null {
 }
 
 const LINK_REQUEST = /^vincul(?:ar|a)\s+([a-z0-9]{6})[.!]?$/
+/** Only a plain "sí" connects an agent: not "ok", "dale" or "bueno", which a stray answer to something else may be. */
+const LINK_YES = /^si[.!]?$/
 
 /**
  * "vincular K7M2QX": a typed message that is only that is the code a browser showed (the `wa.me` link
@@ -128,9 +138,3 @@ export function linkCode(text: string): string | null {
   const code = LINK_REQUEST.exec(normalizeText(text).replace(/\s+/g, ' '))?.[1]
   return code ? code.toUpperCase() : null
 }
-
-/** A bare "sí" / "dale" / "ok": the person agrees. Whether to what is not this function's business. */
-export const isYes = (text: string) => YES.test(normalizeText(text))
-
-/** A bare "no": the person refuses. */
-export const isNo = (text: string) => NO.test(normalizeText(text))

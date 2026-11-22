@@ -238,7 +238,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
       return {
         turns: turns.reverse(),
         question:
-          previous?.pending?.action === 'forget_all'
+          previous?.pending?.action === 'forget_all' || previous?.pending?.action === 'link'
             ? { asked: [], pending: previous.pending }
             : previous?.askedNumbers && previous.askedIds
               ? {

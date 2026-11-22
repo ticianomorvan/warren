@@ -166,3 +166,9 @@ Decided while building, changing the text above:
 - Senders that are not allowed are ignored like any message (no reply), not refused: AGENTS.md says an empty or unmatched allow-list answers nobody.
 - The `@modelcontextprotocol/*` packages come with slice 2, the first to use them.
 - The browser secret is spent when the session is made; a reload of the sign-in page keeps its code while the request is open.
+
+## Slice 1 after review (2026-11-22)
+
+- The "¿Conectar …?" question is the reply's own `pending: {action: 'link', link_id}` (like forget-all), so only the very next message can answer it, and only a bare
+  "sí" confirms: this replaces "the next sí within the expiry". The link steps run in `execute()` inside the commit transaction (`link_ask`, `link_confirm`, `link_decline`).
+- `/sign-in` is limited per address (Railway's `X-Real-IP`) and the consent page shows the linked number, masked.

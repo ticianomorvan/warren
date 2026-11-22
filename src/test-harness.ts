@@ -272,7 +272,7 @@ export async function setup(
   const makeProcessor = (s: Store, client: Anthropic = model.client) =>
     createProcessor({
       store: s,
-      links,
+      signIn: opts.auth !== undefined,
       graph: fake.graph,
       allowed: opts.allowed ?? ['*'],
       maxAttempts: 3,

@@ -2,6 +2,7 @@ import type { Action } from './agent'
 import type { AuditEntry } from './agent/loop'
 import { MAX_FACTS } from './agent/memory'
 import { composeReply, type Say, type Step } from './agent/say'
+import { askLink, confirmLink, declineLink } from './auth/link'
 import type { Sql } from './db'
 import {
   allLiveFacts,
@@ -28,6 +29,7 @@ import {
   REPLY_FACT_GONE,
   REPLY_FACT_SECRET,
   REPLY_GONE,
+  REPLY_LINK,
   REPLY_SAY_FALLBACK,
   REPLY_UNDO_EXPIRED,
   REPLY_UNDO_NOTHING,
@@ -104,6 +106,9 @@ export function actionLabel(actions: Action[]): string {
     forget_fact: 'forget',
     forget_all_facts: 'forget',
     forget_all_confirmed: 'forget',
+    link_ask: 'link',
+    link_confirm: 'link',
+    link_decline: 'link',
     list_facts: 'reply',
     summarize: 'summarize',
     ask_user: 'ask',
@@ -280,6 +285,32 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         const gone = await forgetAll(tx, i.accountId, i.inboundId)
         lines.push(gone.length > 0 ? renderForgotAll(gone.length) : renderFacts([]))
         steps.push({ tool: action.tool, outcome: gone.length > 0 ? 'applied' : 'nothing' })
+        break
+      }
+      case 'link_ask': {
+        // Connecting an agent (docs/mcp-spec.md, Design 3). Code asks; the question is the one this message's reply
+        // carries, so only the very next "sí" or "no" can answer it.
+        const asked = await askLink(tx, action.input.code, i.accountId)
+        if (!asked) {
+          lines.push(REPLY_LINK.refused)
+          steps.push({ tool: action.tool, outcome: 'refused' })
+          break
+        }
+        lines.push(REPLY_LINK.ask(asked.client))
+        steps.push({ tool: action.tool, outcome: 'asked' })
+        out.pending = { action: 'link', link_id: asked.id }
+        break
+      }
+      case 'link_confirm': {
+        const client = await confirmLink(tx, action.input.link_id, i.accountId)
+        lines.push(client ? REPLY_LINK.done(client) : REPLY_LINK.refused)
+        steps.push({ tool: action.tool, outcome: client ? 'applied' : 'gone' })
+        break
+      }
+      case 'link_decline': {
+        const closed = await declineLink(tx, action.input.link_id, i.accountId)
+        lines.push(REPLY_LINK.declined)
+        steps.push({ tool: action.tool, outcome: closed ? 'applied' : 'gone' })
         break
       }
       case 'list_facts':

@@ -210,6 +210,7 @@ CREATE UNIQUE INDEX "auth_oauth_client_resource_clientId_resourceId_uidx" ON "au
 --   code          what the person sends to Warren ("vincular K7M2QX"); 6 characters, no look-alikes (0/O, 1/I/L).
 --   secret_hash   sha256 of the secret in the browser's httpOnly cookie: only that browser can finish the sign-in.
 --   client_name   what the confirmation question names ("Claude (claude.ai)").
+--   ip_hash       sha256 of the address that opened the page: one address may open only a few at a time.
 --   expires_at    10 minutes after the page was opened.
 --   account_id, asked_at   set when an allowed sender sent the code: Warren then asked "¿Conectar ...?".
 --   confirmed_at  the sender's "sí". Without it the browser is never signed in.
@@ -219,6 +220,7 @@ CREATE TABLE link_request (
   code          text        NOT NULL UNIQUE CHECK (code ~ '^[A-Z0-9]{6}$'),
   secret_hash   text        NOT NULL UNIQUE,
   client_name   text        NOT NULL,
+  ip_hash       text        NOT NULL,
   created_at    timestamptz NOT NULL DEFAULT now(),
   expires_at    timestamptz NOT NULL,
   account_id    bigint      REFERENCES account (id),
@@ -229,5 +231,5 @@ CREATE TABLE link_request (
   CONSTRAINT link_request_confirmed CHECK (confirmed_at IS NULL OR asked_at IS NOT NULL)
 );
 
--- "Is there a question open for this sender?" is read on every message of a person who has one.
-CREATE INDEX link_request_open_idx ON link_request (account_id) WHERE used_at IS NULL AND confirmed_at IS NULL;
+-- The per-address limit counts the rows an address opened lately.
+CREATE INDEX link_request_ip_idx ON link_request (ip_hash, created_at);

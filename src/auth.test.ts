@@ -1,17 +1,20 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, randomInt } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { getMigrations } from 'better-auth/db/migration'
 import { describe, expect, it } from 'vitest'
-import { cleanName } from './auth/routes'
+import { cleanName, maskNumber } from './auth/routes'
 import { forgetAll, replyCall, script } from './command-fixtures'
 import { loadConfig } from './config'
 import { REPLY_LINK } from './render'
 import {
   bodies,
   DISPLAY_NUMBER,
+  fakeModel,
+  gate,
   messageBody,
   post,
   row,
+  settle,
   setup,
   sql,
   until,
@@ -63,8 +66,10 @@ const pkce = () => {
   return { verifier, challenge: b64url(createHash('sha256').update(verifier).digest()) }
 }
 
-/** A browser: a cookie jar, and no redirects followed (each hop is asserted). */
-function browser(base: string) {
+/** A browser: a cookie jar, and no redirects followed (each hop is asserted). `ip` is what Railway's edge would write in X-Real-IP. */
+function browser(base: string, ip = `10.${randomInt(256)}.${randomInt(256)}.${randomInt(256)}`) {
+  // Every browser has an address of its own unless a test says otherwise, as people do behind the edge.
+  const edge = { 'x-real-ip': ip }
   const jar = new Map<string, string>()
   const take = (res: Response) => {
     for (const c of res.headers.getSetCookie()) {
@@ -87,6 +92,7 @@ function browser(base: string) {
           headers: {
             accept: 'text/html',
             'sec-fetch-mode': 'navigate',
+            ...edge,
             ...(cookie() ? { cookie: cookie() } : {}),
           },
         },
@@ -117,7 +123,12 @@ function browser(base: string) {
           await fetch(path.startsWith('http') ? path : base + path, {
             redirect: 'manual',
             ...init,
-            headers: { origin: base, ...(cookie() ? { cookie: cookie() } : {}), ...init.headers },
+            headers: {
+              origin: base,
+              ...edge,
+              ...(cookie() ? { cookie: cookie() } : {}),
+              ...init.headers,
+            },
           }),
         )
       : navigate(path)
@@ -267,6 +278,9 @@ describe('the whole flow', () => {
     expect(consentPage.status).toBe(200)
     expect(consentHtml).toContain(`${CLIENT} quiere acceder a tu Warren`)
     expect(consentHtml).toContain('Después te lleva a</dt><dd>claude.ai')
+    // Whose account this connects, masked: never the whole number.
+    expect(consentHtml).toContain('+54 9 ····0001')
+    expect(consentHtml).not.toContain(WA_A)
     expect(consentHtml).toContain('Ver tus movimientos')
     expect(consentHtml).toContain('Anotar, corregir y borrar movimientos')
     expect(consentHtml).toContain('Permitir')
@@ -328,6 +342,8 @@ describe('the whole flow', () => {
     const reused = await refresh(tokens.refresh_token)
     expect(reused.status).toBe(400)
     expect(((await reused.json()) as { error: string }).error).toBe('invalid_grant')
+    // The reuse is a replay: the family is revoked, the rotated token with it.
+    expect((await refresh(next.refresh_token)).status).toBe(400)
     // The authorization code works once.
     expect((await token(b, exchange)).status).toBe(400)
     app.close()
@@ -453,14 +469,14 @@ describe('the sign-in refuses', () => {
   })
 
   it('a "no" closes it', async () => {
-    const { app } = await withClaude({ model: script(replyCall('Ok')) })
+    const { app } = await withClaude({ model: script(replyCall('Bien.')) })
     const b = browser(app.base)
     const { code } = await openSignIn(b, app.base, pkce().challenge)
     await whatsapp(app, WA_A, `vincular ${code}`)
     expect(await whatsapp(app, WA_A, 'no')).toEqual([REPLY_LINK.declined])
     expect(await status(b)).toBe('closed')
     // And a later "sí" confirms nothing: it goes to the model.
-    expect(await whatsapp(app, WA_A, 'sí')).toEqual(['Ok'])
+    expect(await whatsapp(app, WA_A, 'sí')).toEqual(['Bien.'])
     expect(await sql`SELECT 1 FROM link_request WHERE confirmed_at IS NOT NULL`).toHaveLength(0)
     app.close()
   })
@@ -490,6 +506,126 @@ describe('the sign-in refuses', () => {
   it('the consent page without a session', async () => {
     const { app } = await withClaude()
     expect((await browser(app.base).go('/oauth/consent?client_id=x')).status).toBe(401)
+    app.close()
+  })
+})
+
+describe('the question of a sign-in belongs to the very next answer', () => {
+  /** The browser, its code, and the question Warren asked about it. */
+  async function asked(app: App, from = WA_A) {
+    const b = browser(app.base)
+    const { code, search } = await openSignIn(b, app.base, pkce().challenge)
+    expect((await whatsapp(app, from, `vincular ${code}`))[0]).toBe(REPLY_LINK.ask(CLIENT))
+    return { b, code, search }
+  }
+  const confirmed = async () =>
+    Number((await sql`SELECT count(*) AS n FROM link_request WHERE confirmed_at IS NOT NULL`)[0]?.n)
+
+  it('a "sí" to something else the agent asked afterwards confirms nothing', async () => {
+    const { app } = await withClaude({
+      model: script(replyCall('¿Querés que te arme un resumen?'), replyCall('Dale, lo armo.')),
+    })
+    const { b } = await asked(app)
+    expect(await whatsapp(app, WA_A, 'hola')).toEqual(['¿Querés que te arme un resumen?'])
+    expect(await whatsapp(app, WA_A, 'sí')).toEqual(['Dale, lo armo.'])
+    expect(app.model.n).toBe(2) // both went to the agent
+    expect(await status(b)).toBe('asked')
+    expect(await confirmed()).toBe(0)
+    app.close()
+  })
+
+  it.each(['ok', 'dale', 'bueno'])(
+    'only a plain "sí" confirms: "%s" goes to the agent, and then nothing is left to answer',
+    async (word) => {
+      const { app } = await withClaude({
+        model: script(replyCall('Seguimos entonces.'), replyCall('Bien.')),
+      })
+      const { b } = await asked(app)
+      expect(await whatsapp(app, WA_A, word)).toEqual(['Seguimos entonces.'])
+      expect(await status(b)).toBe('asked')
+      // The question was the previous reply's: after the agent's answer, a "sí" is the agent's too.
+      expect(await whatsapp(app, WA_A, 'sí')).toEqual(['Bien.'])
+      expect(await status(b)).toBe('asked')
+      expect(await confirmed()).toBe(0)
+      app.close()
+    },
+  )
+
+  it('a "no" declines it, and the browser is closed', async () => {
+    const { app } = await withClaude()
+    const { b } = await asked(app)
+    expect(await whatsapp(app, WA_A, 'no')).toEqual([REPLY_LINK.declined])
+    expect(await status(b)).toBe('closed')
+    expect(await confirmed()).toBe(0)
+    app.close()
+  })
+
+  it('a second code replaces the first: only the newest question can be confirmed, and the first is closed', async () => {
+    const { app } = await withClaude()
+    const first = await asked(app)
+    const second = await asked(app)
+    expect(await status(first.b)).toBe('closed')
+    expect(await whatsapp(app, WA_A, 'sí')).toEqual([REPLY_LINK.done(CLIENT)])
+    expect(await status(second.b)).toBe('confirmed')
+    expect(await status(first.b)).toBe('closed')
+    expect((await complete(first.b, first.search)).status).toBe(403)
+    expect(await confirmed()).toBe(1)
+    app.close()
+  })
+
+  it('a code of someone else\'s account cannot be confirmed by a "sí" from this one', async () => {
+    const { app } = await withClaude()
+    const { code } = await openSignIn(browser(app.base), app.base, pkce().challenge)
+    await whatsapp(app, WA_A, `vincular ${code}`)
+    const [row] = await sql`SELECT id::int AS id FROM link_request`
+    const [b] = await sql`INSERT INTO account (wa_id) VALUES (${WA_B}) RETURNING id::int AS id`
+    // B's own question carries A's sign-in id (a forged pending): the guard is the account, not the id alone.
+    await sql`INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status, reply_text, pending)
+      VALUES ('forged', ${WA_B}, 'text', 'x', '{}'::jsonb, 'done', '¿Conectar?', ${sql.json({ action: 'link', link_id: row?.id })})`
+    expect(b?.id).toBeGreaterThan(0)
+    expect((await whatsapp(app, WA_B, 'sí'))[0]).toBe(REPLY_LINK.refused)
+    expect(await confirmed()).toBe(0)
+    app.close()
+  })
+
+  it('a message processed again after a shutdown confirms once and answers once, and nothing changes before the commit', async () => {
+    const entered = gate()
+    const hold = gate()
+    let armed = false
+    const { app } = await withClaude({
+      processorStore: (store) => ({
+        ...store,
+        conversation: async (c) => {
+          if (armed) {
+            entered.open()
+            await hold.promise
+          }
+          return store.conversation(c)
+        },
+      }),
+    })
+    const { b } = await asked(app)
+    const sent = app.calls.sent.length
+    armed = true
+    await post(app.base, messageBody('wamid.SI', WA_A, { text: { body: 'sí' } }))
+    await entered.promise
+    await app.processor.stop(2000)
+    // Handed back with nothing done: not confirmed, no reply, no bare "sí" sent to the agent.
+    expect(await row('wamid.SI')).toMatchObject({ status: 'pending', failure_sent_at: null })
+    expect(await status(b)).toBe('asked')
+    expect(await confirmed()).toBe(0)
+    expect(app.calls.sent).toHaveLength(sent)
+    expect(app.model.n).toBe(0)
+
+    armed = false
+    const successor = app.makeProcessor(app.store, app.model && fakeModel().client)
+    await successor.sweep()
+    expect(bodies(app.calls).slice(sent)).toEqual([REPLY_LINK.done(CLIENT)])
+    expect(await status(b)).toBe('confirmed')
+    hold.open() // the old process's read finally returns: nothing more happens
+    await settle()
+    expect(bodies(app.calls).slice(sent)).toHaveLength(1)
+    expect(await confirmed()).toBe(1)
     app.close()
   })
 })
@@ -635,6 +771,68 @@ describe('what is served, and where', () => {
   })
 })
 
+describe('abuse limits and the origin check', () => {
+  it('refuses a cross-origin POST to finish a sign-in, even with the right cookie', async () => {
+    const { app } = await withClaude()
+    const b = browser(app.base)
+    const { code, search } = await openSignIn(b, app.base, pkce().challenge)
+    await whatsapp(app, WA_A, `vincular ${code}`)
+    await whatsapp(app, WA_A, 'sí')
+    const evil = await b.go('/api/auth/warren/link/complete', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+      body: JSON.stringify({ oauth_query: search.slice(1) }),
+    })
+    expect(evil.status).toBe(403)
+    expect(await sql`SELECT 1 FROM auth_session`).toHaveLength(0)
+    expect(await status(b)).toBe('confirmed') // not spent by the refused call
+    expect((await complete(b, search)).status).toBe(200)
+    app.close()
+  })
+
+  it('one address may open only so many sign-in pages; its reloads and other addresses are not counted', async () => {
+    const { app } = await withClaude()
+    const ip = '203.0.113.7'
+    const mine = browser(app.base, ip)
+    const first = await openSignIn(mine, app.base, pkce().challenge)
+    for (let k = 0; k < 15; k++) await mine.go(`/sign-in${first.search}`) // reloads keep the one row
+    expect(await sql`SELECT 1 FROM link_request`).toHaveLength(1)
+    // Nine more, each a browser with no cookie, fill the allowance; the next is refused.
+    for (let k = 0; k < 9; k++) {
+      expect(
+        (await openSignIn(browser(app.base, ip), app.base, pkce().challenge)).page.status,
+      ).toBe(200)
+    }
+    const blocked = await openSignIn(browser(app.base, ip), app.base, pkce().challenge)
+    expect(blocked.page.status).toBe(429)
+    expect(blocked.code).toBe('')
+    expect(await sql`SELECT 1 FROM link_request`).toHaveLength(10)
+    // Another address is not held back by it, and the first one's browser still reaches its own page.
+    expect(
+      (await openSignIn(browser(app.base, '203.0.113.8'), app.base, pkce().challenge)).page.status,
+    ).toBe(200)
+    expect((await mine.go(`/sign-in${first.search}`)).status).toBe(200)
+    // The address is stored as a hash.
+    expect(JSON.stringify(await sql`SELECT * FROM link_request`)).not.toContain(ip)
+    app.close()
+  })
+
+  it('better-auth limits finishing a sign-in per address, under the address Railway writes', async () => {
+    const { app } = await withClaude()
+    const b = browser(app.base, '198.51.100.9')
+    const { search } = await openSignIn(b, app.base, pkce().challenge)
+    const statuses: number[] = []
+    for (let k = 0; k < 12; k++) statuses.push((await complete(b, search)).status)
+    expect(statuses.slice(0, 10)).toEqual(Array(10).fill(403)) // not confirmed, but allowed to try
+    expect(statuses.slice(10)).toEqual([429, 429])
+    // Another address is not held back by it.
+    const other = browser(app.base, '198.51.100.10')
+    const open = await openSignIn(other, app.base, pkce().challenge)
+    expect((await complete(other, open.search)).status).toBe(403)
+    app.close()
+  })
+})
+
 describe('the schema', () => {
   it('012_auth.sql has everything better-auth wants: no table or column is missing', async () => {
     const { app } = await withClaude()
@@ -650,6 +848,13 @@ describe('the schema', () => {
       sql`INSERT INTO auth_user (name, email, "emailVerified", warren_account_id)
         VALUES ('x', 'x@users.invalid', true, 999)`,
     ).rejects.toThrow()
+  })
+})
+
+describe('what the pages show', () => {
+  it('masks the number, never showing it whole', () => {
+    expect(maskNumber('5491155550000')).toBe('+54 9 ····0000')
+    expect(maskNumber('5215512345678')).toBe('+52 ····5678')
   })
 })
 
@@ -680,14 +885,16 @@ describe('config', () => {
     WHATSAPP_DISPLAY_NUMBER: '+54 9 11 5555-0000',
   }
   it('starts without the auth variables, and asks for all three once PUBLIC_URL is set', () => {
-    expect(loadConfig(env).PUBLIC_URL).toBeUndefined()
+    expect(loadConfig(env).auth).toBeUndefined()
     const { BETTER_AUTH_SECRET: _a, WHATSAPP_DISPLAY_NUMBER: _b, ...half } = on
     expect(() => loadConfig(half)).toThrow(
       'Invalid environment: BETTER_AUTH_SECRET, WHATSAPP_DISPLAY_NUMBER',
     )
-    expect(loadConfig({ ...on, PUBLIC_URL: 'https://heywarren.app/' }).PUBLIC_URL).toBe(
-      'https://heywarren.app',
-    )
+    expect(loadConfig({ ...on, PUBLIC_URL: 'https://heywarren.app/' }).auth).toEqual({
+      publicUrl: 'https://heywarren.app',
+      secret: 'x'.repeat(32),
+      displayNumber: '+54 9 11 5555-0000',
+    })
     expect(() => loadConfig({ ...on, PUBLIC_URL: 'http://heywarren.app' })).toThrow('PUBLIC_URL')
     expect(() => loadConfig({ ...on, BETTER_AUTH_SECRET: 'short' })).toThrow('BETTER_AUTH_SECRET')
   })

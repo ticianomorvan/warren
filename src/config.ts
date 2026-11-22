@@ -60,13 +60,26 @@ const fields = z.object({
     ),
 })
 
-const schema = fields.superRefine((c, ctx) => {
-  if (!c.PUBLIC_URL) return
-  for (const name of ['BETTER_AUTH_SECRET', 'WHATSAPP_DISPLAY_NUMBER'] as const) {
-    if (!c[name])
-      ctx.addIssue({ code: 'custom', path: [name], message: 'required with PUBLIC_URL' })
-  }
-})
+const schema = fields
+  .superRefine((c, ctx) => {
+    if (!c.PUBLIC_URL) return
+    for (const name of ['BETTER_AUTH_SECRET', 'WHATSAPP_DISPLAY_NUMBER'] as const) {
+      if (!c[name])
+        ctx.addIssue({ code: 'custom', path: [name], message: 'required with PUBLIC_URL' })
+    }
+  })
+  // The sign-in and OAuth server's settings, whole or absent: what the check above guarantees, as a type.
+  .transform((c) => ({
+    ...c,
+    auth:
+      c.PUBLIC_URL && c.BETTER_AUTH_SECRET && c.WHATSAPP_DISPLAY_NUMBER
+        ? {
+            publicUrl: c.PUBLIC_URL,
+            secret: c.BETTER_AUTH_SECRET,
+            displayNumber: c.WHATSAPP_DISPLAY_NUMBER,
+          }
+        : undefined,
+  }))
 
 export type Config = z.infer<typeof schema>
 

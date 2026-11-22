@@ -13,7 +13,6 @@ import {
   windowReplies,
 } from './agent'
 import { sensitive } from './agent/memory'
-import { answerLink, type Links } from './auth/link'
 import { actionLabel, execute } from './execute'
 import { RECENT_LIMIT } from './ledger'
 import { log } from './log'
@@ -26,7 +25,7 @@ import {
   REPLY_NON_TEXT,
   REPLY_VOICE,
 } from './render'
-import { answerAction, undoRequest } from './resolve'
+import { answerAction, linkCode, undoRequest } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
 import type { Timings, TurnTiming } from './timings'
@@ -47,8 +46,8 @@ export interface ProcessorOptions {
   helpContact?: string
   /** Turns voice notes into text. Without one, a voice note is answered with a request for text. */
   transcriber?: Transcriber
-  /** Sign-ins of an agent over MCP (docs/mcp-spec.md): the code a person sends and their "sí". Absent: those messages are ordinary text. */
-  links?: Links
+  /** Connecting an agent over MCP is on (docs/mcp-spec.md): "vincular <code>", and the "sí" to its question. Off: those messages are ordinary text. */
+  signIn?: boolean
   /** Ms after `received_at` at which a slow message gets one interim note. Default 10 s. */
   interimMs?: number
   /** Ms after `received_at` at which an uncommitted message fails. Default 30 s. */
@@ -313,30 +312,20 @@ export function createProcessor(o: ProcessorOptions) {
         // The facts the message names are known only now that it is heard.
         memory = await store.facts(accountId, text)
       }
-      // "vincular <code>", and the "sí" to the question it raises, are code's job too: typed text only, never a
-      // model's reading and never a transcript. The newest open question owns a bare "sí" (see `answerLink`).
-      const linked =
-        o.links && !isPhoto && !voice && c.kind === 'text'
-          ? await answerLink(o.links, {
-              text,
-              accountId,
-              questionOpen: conversation.question !== null,
-            })
-          : null
-      if (linked) {
-        return unprompted(
-          { tool: 'notice', input: { text: linked } },
-          { tool: 'notice', input: { link: true }, status: 'answered' },
-        )
-      }
       // A bare answer to the question we just asked, or a bare "deshacer", is code's job: no model call at all. Not for a
       // note of voice: a delete, a correction or an undo is never run on what a model of speech thought it heard. A
       // "deshacer" while a question is open most likely means "never mind", not "undo the batch before": the model reads it.
+      // "vincular <code>" comes first, whatever else is open (typed text only, like every answer code gives). The "sí" or
+      // "no" to its question is `answerAction`'s: the question is the previous reply's own, so the newest one owns it.
+      const code = o.signIn && c.kind === 'text' ? linkCode(text) : null
+      // The sign-in's question is not one that blocks a "deshacer": there is nothing for the person to cancel.
+      const blocking = conversation.question && conversation.question.pending?.action !== 'link'
       const answer =
         isPhoto || voice
           ? null
-          : (answerAction(text, conversation.question) ??
-            (conversation.question ? null : undoRequest(text)))
+          : code
+            ? ({ tool: 'link_ask', input: { code } } as const)
+            : (answerAction(text, conversation.question) ?? (blocking ? null : undoRequest(text)))
       if (answer) {
         return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }
@@ -356,14 +345,16 @@ export function createProcessor(o: ProcessorOptions) {
         conversation: conversation.turns,
         photo: Boolean(photo),
         voice: Boolean(voice),
-        pending: conversation.question
-          ? conversation.question.pending?.action === 'forget_all'
-            ? { asked: [], action: 'forget_all' }
-            : {
-                asked: conversation.question.asked,
-                action: conversation.question.pending?.action ?? 'none',
-              }
-          : null,
+        // The sign-in's question is code's alone: the model is not told about it.
+        pending:
+          conversation.question && conversation.question.pending?.action !== 'link'
+            ? conversation.question.pending?.action === 'forget_all'
+              ? { asked: [], action: 'forget_all' }
+              : {
+                  asked: conversation.question.asked,
+                  action: conversation.question.pending?.action ?? 'none',
+                }
+            : null,
       }
       const result = await runAgent({
         client: o.client ?? defaultClient(),

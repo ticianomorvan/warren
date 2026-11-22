@@ -193,6 +193,8 @@ export const scopeText = (scope: string) => SCOPE_TEXT[scope] ?? `Permiso “${s
 export interface ConsentView {
   nonce: string
   client: string
+  /** The person's number, masked (`+54 9 ····5678`): whose account this connects. */
+  account: string
   /** The host the client is sent back to with the code. */
   redirectHost: string
   scopes: string[]
@@ -229,13 +231,16 @@ export function consentPage(v: ConsentView): string {
     'Permitir acceso a Warren',
     `<div class="card">
 <h1>${esc(v.client)} quiere acceder a tu Warren</h1>
-<dl><dt>Después te lleva a</dt><dd>${esc(v.redirectHost)}</dd></dl>
+<dl>
+${v.account ? `<dt>Se conecta a la cuenta de</dt><dd>${esc(v.account)}</dd>` : ''}
+<dt>Después te lleva a</dt><dd>${esc(v.redirectHost)}</dd>
+</dl>
 <p>Con este permiso va a poder:</p>
 <ul class="scopes">${v.scopes.map((s) => `<li>${esc(scopeText(s))}</li>`).join('')}</ul>
 <button class="btn primary" type="button" data-accept="yes">Permitir</button>
 <button class="btn secondary" type="button" data-accept="no">Cancelar</button>
 <p class="err" id="err" role="alert" hidden></p>
-<p class="muted foot">Si no empezaste esta conexión vos, tocá Cancelar.</p>
+<p class="muted foot">Si ese número no es el tuyo, o no empezaste esta conexión vos, tocá Cancelar.</p>
 </div>`,
     v.nonce,
     CONSENT_SCRIPT,

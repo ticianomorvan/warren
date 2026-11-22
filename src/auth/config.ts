@@ -98,7 +98,28 @@ export function createAuth(s: AuthSettings) {
     },
     account: { modelName: AUTH_TABLES.account },
     verification: { modelName: AUTH_TABLES.verification },
-    advanced: { database: { generateId: 'uuid' } },
+    advanced: {
+      database: { generateId: 'uuid' },
+      // Railway's edge writes X-Real-IP with the client's address on every request and replaces any copy a client sends
+      // (docs.railway.com, Specs & Limits; staff: "for client-IP rate limiting, X-Real-IP is the header to use"). Not
+      // X-Forwarded-For: its hop count is not guaranteed. Services in our own private network can set it freely, and none
+      // is there. Where the header is absent (a test, a laptop) the limiter has no address and does not count.
+      ipAddress: { ipAddressHeaders: ['x-real-ip'] },
+      // Explicit, so the origin check also holds under NODE_ENV=test, where better-auth skips it by default.
+      disableOriginCheck: false,
+    },
+    // On whatever NODE_ENV says: by default it is only on in production. In memory: one process, one replica (AGENTS.md),
+    // so a table would add nothing; a deploy resets the counters, which only gives an attacker a fresh minute.
+    rateLimit: {
+      enabled: true,
+      storage: 'memory',
+      window: 10,
+      max: 100,
+      customRules: {
+        // Finishing a sign-in needs a confirmed WhatsApp answer: nobody needs more than a few tries.
+        '/warren/link/complete': { window: 60, max: 10 },
+      },
+    },
     // Warn and above only: nothing about a person goes to the log.
     logger: { level: 'warn', ...(s.log ? { log: s.log } : {}) },
     // Closed over HTTP outright, so each holds even if a plugin's own check changes: the session JWT

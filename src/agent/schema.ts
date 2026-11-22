@@ -220,8 +220,16 @@ export type Notice = { tool: 'notice'; input: { text: string } }
 /** The person's "sí" to "¿Seguro?": code's own action, never one the model can send. */
 export type ConfirmedForget = { tool: 'forget_all_confirmed'; input: Record<string, never> }
 
-/** What code runs by itself: a notice, or a confirmed forget. A model call never comes to these except a refused secret, which is a notice. */
-export type CodeAction = Notice | ConfirmedForget
+/**
+ * Connecting an agent over MCP (docs/mcp-spec.md, Design 3), all code's own: the code a browser showed, sent as
+ * "vincular <code>"; and the person's "sí" or "no" to the question that raised, by the id that question carries.
+ */
+export type LinkAsk = { tool: 'link_ask'; input: { code: string } }
+export type LinkConfirm = { tool: 'link_confirm'; input: { link_id: number } }
+export type LinkDecline = { tool: 'link_decline'; input: { link_id: number } }
+
+/** What code runs by itself: a notice, a confirmed forget, or a step of a sign-in. A model call never comes to these except a refused secret, which is a notice. */
+export type CodeAction = Notice | ConfirmedForget | LinkAsk | LinkConfirm | LinkDecline
 
 /** What runs at the commit point: the model's terminal calls, or an action of code's own. */
 export type Action = ModelAction | CodeAction
@@ -232,3 +240,5 @@ export type Pending =
   | { action: 'delete' }
   /** "¿Seguro?" over forgetting everything: only a bare "sí" runs it. */
   | { action: 'forget_all' }
+  /** "¿Conectar …?" over a sign-in (`link_request.id`): only a bare "sí" confirms it, a bare "no" declines it. */
+  | { action: 'link'; link_id: number }

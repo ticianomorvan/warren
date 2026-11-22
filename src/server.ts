@@ -26,27 +26,27 @@ const graph = createGraph({
 })
 const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, fetch: keepAliveFetch() })
 // The sign-in and OAuth server for MCP exist only when PUBLIC_URL is set (the config then requires the rest).
-const links = config.PUBLIC_URL ? createLinks(sql) : undefined
+const links = config.auth ? createLinks(sql) : undefined
 const auth =
-  config.PUBLIC_URL && config.BETTER_AUTH_SECRET && config.WHATSAPP_DISPLAY_NUMBER && links
+  config.auth && links
     ? createAuthRoutes({
         auth: createAuth({
           sql,
-          publicUrl: config.PUBLIC_URL,
-          secret: config.BETTER_AUTH_SECRET,
+          publicUrl: config.auth.publicUrl,
+          secret: config.auth.secret,
           links,
           log: (level, message) =>
             log('auth_log', { level, message }, level === 'error' ? 'error' : 'info'),
         }),
         sql,
         links,
-        publicUrl: config.PUBLIC_URL,
-        displayNumber: config.WHATSAPP_DISPLAY_NUMBER,
+        publicUrl: config.auth.publicUrl,
+        displayNumber: config.auth.displayNumber,
       })
     : undefined
 const processor = createProcessor({
   store,
-  links,
+  signIn: config.auth !== undefined,
   graph,
   allowed: config.ALLOWED_WA_IDS,
   maxAttempts: MAX_ATTEMPTS,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { answerAction, answerNumber } from './resolve'
+import { answerAction, answerNumber, linkCode, type PendingQuestion } from './resolve'
 
 describe('answerNumber', () => {
   it('reads a message that is only the pick of one of the options shown', () => {
@@ -136,5 +136,50 @@ describe('answerAction: the confirmation of forgetting everything', () => {
 
   it('without the question there is nothing to confirm', () => {
     expect(answerAction('sí', null)).toBeNull()
+  })
+})
+
+describe('a sign-in question', () => {
+  const question: PendingQuestion = { asked: [], pending: { action: 'link', link_id: 7 } }
+
+  it('only a bare "sí" confirms it and only a bare "no" declines it', () => {
+    for (const yes of ['sí', 'Sí', 'si', 'SI!', 'sí.']) {
+      expect(answerAction(yes, question), yes).toEqual({
+        tool: 'link_confirm',
+        input: { link_id: 7 },
+      })
+    }
+    for (const no of ['no', 'No.', 'nop']) {
+      expect(answerAction(no, question), no).toEqual({
+        tool: 'link_decline',
+        input: { link_id: 7 },
+      })
+    }
+  })
+
+  it('nothing else is an answer to it: not ok, dale or bueno, not a number, not more words', () => {
+    for (const other of [
+      'ok',
+      'dale',
+      'bueno',
+      'sí, dale',
+      '1',
+      'ese',
+      'no sé',
+      'café 3500',
+      'sí pero no',
+    ]) {
+      expect(answerAction(other, question), other).toBeNull()
+    }
+  })
+})
+
+describe('linkCode', () => {
+  it('reads "vincular <code>" and nothing else, in upper case', () => {
+    expect(linkCode('vincular K7M2QX')).toBe('K7M2QX')
+    expect(linkCode('  Vinculá k7m2qx. ')).toBe('K7M2QX')
+    expect(linkCode('vincular K7M2Q')).toBeNull()
+    expect(linkCode('vincular K7M2QX por favor')).toBeNull()
+    expect(linkCode('café 3500 vincular K7M2QX')).toBeNull()
   })
 })
