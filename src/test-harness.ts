@@ -65,7 +65,7 @@ export async function setup(
     transcriber: opts.transcriber,
     signIn: opts.auth !== undefined,
     maxAttempts: 3,
-    staleMs: opts.staleMs ?? 0,
+    staleMs: opts.staleMs ?? 60_000,
     // Made-up message times (2025, 2026): the clock is before all of them, so a message's own time is "now" for a reminder.
     clock: opts.clock ?? (() => new Date(1760000000 * 1000)),
     interimMs: opts.interimMs ?? 60_000,
