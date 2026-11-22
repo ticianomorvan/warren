@@ -137,6 +137,8 @@ export interface Graph {
   markReadAndType(wamid: string): Promise<void>
   /** Sends a text message to a webhook `wa_id` and returns its wamid. */
   sendText(waId: string, body: string): Promise<string>
+  /** Sends an approved template (its body parameters, in order) to a webhook `wa_id` and returns its wamid. */
+  sendTemplate(waId: string, name: string, lang: string, params: string[]): Promise<string>
   /** Downloads a photo by its media id (id, then URL, then bytes) within the limits; throws `MediaError`. */
   fetchImage(mediaId: string, signal?: AbortSignal): Promise<Image>
   /** The same for a voice note, within its own limits; throws `MediaError`. */
@@ -299,6 +301,24 @@ export function createGraph(o: GraphOptions): Graph {
     sendText: (waId, body) =>
       toRecipient(waId, async (to) => {
         const res = await post({ recipient_type: 'individual', to, type: 'text', text: { body } })
+        const id = res.messages?.[0]?.id
+        if (!id) throw new GraphError(200, 'no message id in response')
+        return id
+      }),
+    sendTemplate: (waId, name, lang, params) =>
+      toRecipient(waId, async (to) => {
+        const res = await post({
+          recipient_type: 'individual',
+          to,
+          type: 'template',
+          template: {
+            name,
+            language: { code: lang },
+            components: [
+              { type: 'body', parameters: params.map((text) => ({ type: 'text', text })) },
+            ],
+          },
+        })
         const id = res.messages?.[0]?.id
         if (!id) throw new GraphError(200, 'no message id in response')
         return id

@@ -14,7 +14,10 @@
     "eval": "tsx evals/run.ts",
     "eval:scenarios": "tsx evals/scenarios/run.ts",
     "start": "tsx src/server.ts",
-    "latency": "tsx src/latency.ts"
+    "latency": "tsx src/latency.ts",
+    "template:status": "tsx src/reminders/cli.ts template-status",
+    "reminder:try-template": "tsx src/reminders/cli.ts try-template",
+    "reminder:add": "tsx src/reminders/cli.ts add"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.10.0",

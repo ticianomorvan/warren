@@ -3,6 +3,7 @@ import type { Sql } from './db'
 import { type FactRow, liveFacts } from './facts'
 import { type FindFilter, findMovements, type MovementRow, recentMovements } from './ledger'
 import { REDACTED_BODY } from './redact'
+import { recordReminderStatus } from './reminders/db'
 import type { PendingQuestion } from './resolve'
 import type { Timings } from './timings'
 
@@ -95,6 +96,8 @@ export interface StatusInput {
   wamid: string
   status: string
   at: Date
+  /** Meta's error code of a `failed` status. */
+  code?: number | undefined
 }
 
 export interface StoreOptions {
@@ -124,8 +127,12 @@ export function createStore(sql: Sql, o: StoreOptions) {
       return rows.length > 0
     },
 
-    /** One statement, any arrival order. A `read` also stands in for a missing `delivered`. */
+    /**
+     * One statement, any arrival order. A `read` also stands in for a missing `delivered`. A status for a
+     * reminder's wamid belongs to its `reminder_send` (see `recordReminderStatus`), not to `reply`.
+     */
     async recordStatus(s: StatusInput): Promise<void> {
+      if (await recordReminderStatus(sql, s)) return
       const delivered = s.status === 'delivered' || s.status === 'read' ? s.at : null
       await sql`
         INSERT INTO reply (outbound_wamid, delivered_at, read_at, failed_at)

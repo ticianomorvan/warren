@@ -66,6 +66,43 @@ describe('createGraph', () => {
     expect(tos).toEqual(['34612345678'])
   })
 
+  it('sends a template with its language and one body parameter per value', async () => {
+    const bodies: unknown[] = []
+    const graph = createGraph({
+      version: 'v27.0',
+      phoneNumberId: '1',
+      token: 't',
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)))
+        return new Response(JSON.stringify({ messages: [{ id: 'wamid.T' }] }))
+      },
+    })
+    await expect(
+      graph.sendTemplate('5493515138578', 'warren_reminder', 'es_AR', ['pagar la Visa']),
+    ).resolves.toBe('wamid.T')
+    expect(bodies).toEqual([
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: '5493515138578',
+        type: 'template',
+        template: {
+          name: 'warren_reminder',
+          language: { code: 'es_AR' },
+          components: [{ type: 'body', parameters: [{ type: 'text', text: 'pagar la Visa' }] }],
+        },
+      },
+    ])
+  })
+
+  it('retries a template once with the short form after 131030, like a text', async () => {
+    const { graph, tos } = fakeGraph((to) => to === '543515138578')
+    await expect(
+      graph.sendTemplate('5493515138578', 'warren_reminder', 'es_AR', ['x']),
+    ).resolves.toBe('wamid.2')
+    expect(tos).toEqual(['5493515138578', '543515138578'])
+  })
+
   it('treats a recipient-list rejection as permanent', () => {
     const e = new GraphError(400, 'Recipient phone number not in allowed list', 131030)
     expect(e.notSent).toBe(true)

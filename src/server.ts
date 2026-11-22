@@ -9,6 +9,7 @@ import { connect, migrate } from './db'
 import { keepAliveFetch } from './http'
 import { log } from './log'
 import { createProcessor } from './process'
+import { createReminderSender } from './reminders/send'
 import { createStore } from './store'
 import { createTranscriber } from './transcribe'
 import { createGraph } from './whatsapp/graph'
@@ -57,6 +58,12 @@ const processor = createProcessor({
     ? createTranscriber({ apiKey: config.OPENROUTER_API_KEY })
     : undefined,
 })
+const reminders = createReminderSender({
+  sql,
+  graph,
+  allowed: config.ALLOWED_WA_IDS,
+  template: config.REMINDER_TEMPLATE,
+})
 const server = createApp({ store, config, processor, auth })
 
 server.listen(config.PORT, () => log('listening', { port: config.PORT }))
@@ -70,7 +77,10 @@ warmUp(client, 'haiku').then(
 // Startup sweep, then every 30 s. One process only: the claim keeps two sweeps from double-sending,
 // but only one replica is supported.
 const tick = () =>
-  processor.sweep().catch((err) => log('sweep_error', { error: String(err) }, 'error'))
+  Promise.all([
+    processor.sweep().catch((err) => log('sweep_error', { error: String(err) }, 'error')),
+    reminders.sweep().catch((err) => log('reminder_sweep_error', { error: String(err) }, 'error')),
+  ])
 void tick()
 const timer = setInterval(tick, 30_000)
 
@@ -81,8 +91,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     server.close()
     // Messages still parsing go back to `pending` for the next process; replies already being sent
     // finish, so a deploy does not leave rows `unknown`.
-    processor
-      .stop(10_000)
+    Promise.all([processor.stop(10_000), reminders.stop()])
       .then(() => sql.end({ timeout: 5 }))
       .finally(() => process.exit(0))
   })

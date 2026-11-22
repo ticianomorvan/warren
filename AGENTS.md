@@ -53,6 +53,8 @@ src/mcp/      Warren over MCP (slice 5.2, `docs/mcp-spec.md`): door.ts (every `/
               `sub` → `auth_user` → account → its WhatsApp id still allowed; else a 401 challenge, 503 when the database is down; authentication only, each tool asks for its own scope), endpoint.ts (`createMcpHandler`, a new stateless `McpServer` per request,
               `toNodeHandler`, every failure caught), tools.ts (the three read tools and their closed-able output schemas), write.ts (one MCP write: a settled `inbound_message` row of channel `mcp` and `applyCall` in one transaction; the request id's replay),
               write-tools.ts (the six write tools)
+src/reminders/ Reminders over WhatsApp (slice 6; `docs/reminders-spec.md`; 6.1 is the send path, no agent yet): schedule.ts (pure: the typed schedule, its zod schema and `nextOccurrence`),
+              send.ts (the sweep: claim, window, cap, text or template, at-most-once), db.ts (`insertReminder`, `tidyWhat`, `recordReminderStatus`), cli.ts (`template:status`, `reminder:try-template`, `reminder:add`)
 src/run-summary.ts  Plans, sums and renders a summary: the one path under WhatsApp's `summarize` and MCP's `warren_summarize`
 src/server.ts Entry point: config, migrate, warm-up, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
@@ -107,6 +109,9 @@ pnpm start         # the server; needs DATABASE_URL, ANTHROPIC_API_KEY and the W
                    # OPENROUTER_API_KEY turns voice notes on (unset: they are answered with a request for text)
 pnpm latency [--last N]   # p50/p95 received -> typing/reply, by action, then where the time goes (claim, reads, model turns, commit, send, tokens, cache misses), from DATABASE_URL (Railway: the Postgres public URL)
 pnpm tsx evals/cache-probe.ts pairs|strict|gap   # real-API probes: cold vs warm prefix, strict vs not, the TTL after a gap (spends ~US$0.02-0.04 each)
+pnpm template:status [name]   # GETs the reminder template at Meta (needs WHATSAPP_BUSINESS_ACCOUNT_ID, GRAPH_API_VERSION, WHATSAPP_ACCESS_TOKEN; the name is REMINDER_TEMPLATE unless given) and prints its name, category and status only
+pnpm reminder:try-template <wa_id>   # sends the template once to that number: a REAL message
+pnpm reminder:add <wa_id> "<what>" <yyyy-mm-ddThh:mm>   # a one-off reminder at that Argentine time, through insertReminder (no model); DATABASE_URL; the running server's tick sends it
 pnpm eval [--model haiku|sonnet] [--split dev|test|all] [--concurrency N]   # one message at a time through the agent, needs .env
 pnpm eval:scenarios [--split dev|test|all] [--budget 0.30] [--only s001,s002]   # multi-turn scenarios, real pipeline and model, needs .env
                    # (voice scenarios also call the real transcription service: OPENROUTER_API_KEY)
@@ -195,6 +200,18 @@ wrong changes. Its test split is held out like the other: never print or tune on
   `payload`) and `applyCall`. A call that changes nothing (a refusal, a no-op) rolls the row back. A retried `request_id` returns the first answer (`replayed: true`) only for the same call: the same person, tool and checked input (a hash in `payload`); any other use of the id is refused. A call that holds a secret (`sensitive`) keeps no raw inputs: its stored command, audit and body are scrubbed (the rendered record in `reply_text` and the result in `payload` stay, as a WhatsApp reply and the movement row do).
   `inbound_message.channel` is `whatsapp` or `mcp`: the claim and the sweep, the conversation window and the question to answer, and the latency report read only `whatsapp`; the undo reads both (that is how it spans channels). A typed "desconectar" (also "desconectá a Claude"),
   only when no question is open and with no model call, runs `disconnectAccount` inside the commit transaction: refresh tokens revoked, consents, sessions and pending authorization codes removed, `account.mcp_revoked_at` stamped, which the door compares with a token's `iat` so a live token dies on its next call.
+- **Reminders, send path (slice 6.1; `docs/reminders-spec.md`).** Tables `reminder` (append-only like `fact`; `schedule` jsonb, `next_due_at` null once finished) and `reminder_send`
+  (one row per occurrence, `unique (reminder_id, due_at)`). The 30 s tick runs `createReminderSender(...).sweep()` beside the message sweep (one sweep at a time per process, at most 20 sends a tick).
+  Each reminder is claimed in its own transaction (`for update skip locked`): its `reminder_send` row is inserted as `started`, `next_due_at` advanced and committed; only then is anything sent, so a send is
+  at most once, across a restart or a deploy mid-send, and a shutdown (`stop()`, at most 10 s) strands at most the send in progress. After downtime only the latest missed occurrence is sent, with
+  "(era para el 10/12 a las 09:00)" when it is more than 15 min late. Text ("⏰ Recordatorio: …") when the person's newest `channel = 'whatsapp'` message (by `COALESCE(meta_ts, received_at)`: when they wrote, not when a
+  redelivery stored it) is under 23 h old; otherwise the template `REMINDER_TEMPLATE` (`warren_reminder`, `es_AR`, one body parameter: the text). Meta usually reports a closed window as a `failed` status with 131047 after a 200:
+  `recordReminderStatus` turns that text's row into `retry_template` in one guarded statement, and the next sweep claims it once as a template (a redelivered webhook changes nothing); a 131047 on the send itself (a 4xx)
+  falls back at once. Unset `REMINDER_TEMPLATE`, no template is ever sent: the send ends `failed` and is logged. An account that is no longer in `ALLOWED_WA_IDS` has the occurrence spent as `failed`. A 4xx ends it
+  `failed` with Meta's code; a 5xx, a timeout or a killed process ends it `unknown` (a `started` row older than 10 min, which logs an `alert` with the count) and is never sent again. At most 10 sends
+  per person in a rolling 24 h (the next is `capped` and logs an `alert`); more than 200 in all only logs an `alert`. A `failed` status for a reminder's wamid ends its row `failed` with the code and takes it out of
+  `sent_count` (`store.recordStatus` hands reminder wamids to it and does not touch `reply`). `what` is stored on one line (`tidyWhat`). Schedules are `src/reminders/schedule.ts` (Argentine time, UTC-3, no DST;
+  `nextOccurrence` counts `count` from `start`). The agent tools, BAJA and undo are slice 6.2.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
 - **Photos (agent B2).** An `image` webhook message keeps its media id and caption in `inbound_message`
   (`payload`, `body`); the bytes are never stored. `graph.fetchImage` looks the id up, checks the declared size

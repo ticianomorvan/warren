@@ -82,13 +82,14 @@ export function createApp(o: AppOptions): Server {
         if (inserted) log('message_received', { wamid: m.id, kind: m.type })
       }
       for (const s of statuses) {
+        const e = s.errors?.[0]
         await store.recordStatus({
           wamid: s.id,
           status: s.status,
           at: seconds(s.timestamp) ?? new Date(),
+          code: e?.code,
         })
         if (s.status === 'failed') {
-          const e = s.errors?.[0]
           log('status_failed', { outbound: s.id, code: e?.code, title: e?.title }, 'error')
         }
       }
