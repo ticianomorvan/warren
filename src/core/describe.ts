@@ -291,7 +291,7 @@ export function skipLine(part: string, reason: SkipReason): string {
     case 'not_found':
       return `No encontré ${part}.`
     case 'what_to_change':
-      return `¿Qué querés cambiar de ${part}?`
+      return `¿Qué querés cambiar ${/^el /i.test(part) ? `del ${part.slice(3)}` : `de ${part}`}?`
     case 'cannot':
       return `${capitalize(part)}: eso no lo puedo hacer.`
     case 'separately':

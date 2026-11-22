@@ -7,7 +7,7 @@ import { DECLINES } from './guards'
 describe('the lines code says that v1 did not', () => {
   it('a skip is rendered by code, one line per reason', () => {
     expect(skipLine('la nafta del lunes', 'not_found')).toBe('No encontré la nafta del lunes.')
-    expect(skipLine('el súper', 'what_to_change')).toBe('¿Qué querés cambiar de el súper?')
+    expect(skipLine('el súper', 'what_to_change')).toBe('¿Qué querés cambiar del súper?')
     expect(skipLine('un préstamo', 'cannot')).toBe('Un préstamo: eso no lo puedo hacer.')
     expect(skipLine('lo de la tarjeta', 'separately')).toBe('Mandame lo de la tarjeta aparte.')
     expect(SKIP_REASONS).toHaveLength(4)

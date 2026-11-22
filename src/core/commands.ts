@@ -403,7 +403,7 @@ export const COMMANDS = {
         .string()
         .max(80)
         .describe(
-          "The part of the message you did not do, in the person's words: at most 8 words, no numbers.",
+          'The thing you did not find or do, as a noun phrase in the person\'s words, without the verb: "el súper", "el primero" (not "borrá el súper"). At most 8 words, no numbers.',
         ),
       reason: z
         .enum(SKIP_REASONS)
