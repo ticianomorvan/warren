@@ -6,7 +6,7 @@ import { COMMANDS, type OUTPUTS, type Tool } from '../core/commands'
 import { call, forge, type Json, ok, refused, rpc } from '../mcp-test-kit'
 import { sql, TODAY, useDatabase } from '../test-harness'
 import { addDays } from '../time'
-import { decodeCursor, encodeCursor } from './tools'
+import { decodeCursor, encodeCursor, listGroups, MAX_GROUPS_LISTED } from './tools'
 
 /**
  * The tools of `/mcp` over real HTTP with real tokens (the sign-in flow mints them): what `tools/list` says, and the read tools. Ported
@@ -399,5 +399,33 @@ describe('a tool that cannot read', () => {
       await sql`ALTER TABLE movement_away RENAME TO movement`
     }
     ok(await call(app, a.access_token, 'warren_find_movements'), 'find_movements')
+  })
+})
+
+describe('listGroups', () => {
+  const group = (key: string, direction: 'in' | 'out', currency: 'ARS' | 'USD') => ({
+    key,
+    label: null,
+    direction,
+    currency,
+    count: 1,
+    total: '1',
+  })
+
+  it('keeps the latest buckets of a grouping by time, and the biggest of any other, per direction and currency', () => {
+    const days = Array.from({ length: 40 }, (_, i) => group(`d${i}`, 'out', 'ARS'))
+    const byDay = listGroups(days, 'day')
+    expect(byDay.listed).toHaveLength(31)
+    expect(byDay.listed[0]?.key).toBe('d9') // the oldest nine are left out
+    expect(byDay.omitted).toBe(9)
+    // Another pair never crowds this one out.
+    const mixed = [...days, group('in', 'in', 'USD')]
+    expect(listGroups(mixed, 'day').listed.some((g) => g.key === 'in')).toBe(true)
+    const cats = Array.from({ length: MAX_GROUPS_LISTED + 5 }, (_, i) =>
+      group(`c${i}`, 'out', 'ARS'),
+    )
+    const byCategory = listGroups(cats, 'category')
+    expect(byCategory.listed[0]?.key).toBe('c0') // the database's order: the biggest first
+    expect(byCategory.omitted).toBe(5)
   })
 })
