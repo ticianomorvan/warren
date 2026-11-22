@@ -272,8 +272,8 @@ export const EXAMPLES: Example[] = [
     calls: [call('remember_fact', { kind: 'alias', key: 'la del galicia', value: 'la visa' })],
   },
   {
-    message: 'acordate que los cafes van en entretenimiento',
-    calls: [call('remember_fact', { kind: 'category', key: 'cafe', value: 'entretenimiento' })],
+    message: 'acordate que los lavaderos van en transporte',
+    calls: [call('remember_fact', { kind: 'category', key: 'lavadero', value: 'transporte' })],
   },
   {
     message: 'cobro el 5 de cada mes',
@@ -296,14 +296,14 @@ export const EXAMPLES: Example[] = [
     calls: [log(mv('9500', 'súper', 'supermercado', { payment: 'crédito visa' }))],
   },
   {
-    facts: 'id=4 categoría "cafe" → entretenimiento',
-    message: 'cafe 2800',
-    calls: [log(mv('2800', 'café', 'entretenimiento'))],
+    facts: 'id=4 categoría "lavadero" → transporte',
+    message: 'lavadero 8200',
+    calls: [log(mv('8200', 'lavadero', 'transporte'))],
   },
   {
     message:
-      'un cafe 2600 (no "Hechos": only a fact changes where a thing goes, so the default category stands)',
-    calls: [log(mv('2600', 'café', 'restaurantes'))],
+      'un lavadero 7500 (no "Hechos": only a fact changes where a thing goes, so the default category stands)',
+    calls: [log(mv('7500', 'lavadero', 'otros'))],
   },
   {
     facts: 'id=3 alias "la del galicia" = "la visa"',
