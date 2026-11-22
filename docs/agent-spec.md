@@ -838,6 +838,52 @@ the split and the filters; it never computes a total, a difference, a percentage
   `evals/agent.ts` maps a range back to the named period it equals so the single-message cases keep grading `this_month` for "en noviembre".
 - **Audit.** A summarize entry in `tool_calls` carries `detail`: the days that were summed ("2026-11-01..2026-11-21 vs 2026-10-01..2026-10-31 by category").
 
+### Results (D)
+
+- Tests: 638 passed, 6 skipped (the real-Postgres file). New: `range.test.ts` (a table of phrases to ranges for a fixed Saturday, 21
+  November 2026; each day of the week for "el finde"; month, year and leap-day edges; Argentine midnight; every refusal),
+  `summary.test.ts` (cents, rounding ties, no division by zero, floats that fail), `render-summary.test.ts` (labels, blocks,
+  caps, a summary too long for `fitReply`) and `summaries.test.ts`. The last one builds a ledger through the real pipeline (two
+  corrections, one of them moving a movement across a month end; a delete that stays; a delete undone; ARS, USD and income) and checks
+  every total, group and comparison two ways: a literal worked out by hand, and an aggregation written another way (raw rows in
+  any state, filtered and summed in code in integer cents, never the product's SQL). It also covers an empty range, a zero previous
+  period, month boundaries, a leap day, 23:59 and 00:00 Argentine time, a future range, a reversed one, and a range over two years.
+- Mutations (one at a time, the suite run, restored after each): **66 of 66 killed**, plus one equivalent mutant removed by deleting the
+  redundant guard it mutated.
+  - Arithmetic (25): the difference sign, rounding down instead of half up, the percentage sign dropped or its denominator wrong, the zero
+    guard off, comma and sign in the percentage, cents not padded (in and out), more/less swapped, the comparison the wrong way round,
+    the live filter off, the end or start of the range exclusive, currencies mixed, groups ranked backwards, payments not folded,
+    weeks and months truncated wrongly, a cut one early, the oldest buckets kept instead of the newest, a group sort on the wrong
+    range, USD printed as ARS, the wrong currency's total.
+  - Period resolution (27): last week's offset, weeks starting on Sunday, the weekend's Saturday, "el finde pasado" not moving back, a period
+    not cut at today, a month name picking next year or last year wrongly, "el 5" in the future, 31 in a 30-day month, 29 February in a
+    year without one, days in a month off by one, the 731-day cap at 730 and 732, a reversed range allowed, a range starting today
+    refused, a future range allowed, the previous month going back two or none, the previous custom range off by one or overlapping,
+    the previous week off by one, a whole month not seen as one, last year two years back, stray fields accepted, the Argentine day
+    turning over in UTC, month 0 or 13 accepted, the in-progress flag lost.
+  - Guards, `other` parsing and labels (14): a refused range running anyway, `other` beside no comparison ignored, a comparison by time allowed, the second range
+    not resolved or not parsed, `range` without `other` accepted, the forms of `other` too permissive (four ways), a label that names last
+    week "esta semana", does not mark "en curso", or drops the year.
+  - The fitReply test was checked the same way: re-joining the blocks into one line makes it fail.
+- Scenario eval, `--split all`, Haiku 5.5, 161 scenarios (145 before and the 16 new), two runs of the final code:
+  **159/161 (98.8%)** and **160/161 (99.4%)**; held-out test split 37/37 both times; the 16 summary scenarios (`summary` tag, 10 dev and 6 test)
+  **16/16 both times**; 0 invented numbers, 0 unnecessary questions. Silent wrong changes: **1 in the first run and 0 in the second**. The
+  one is s117 ("borra el super y la nafta fue 7000"), the pre-existing flake documented in the slice C notes (about 2 of 8 runs on `main`);
+  it is not a summary scenario. The other miss in both runs, s114 ("me cobraste dos veces el café?", a dev scenario that is a
+  `find_movements` answer), passed 4 of 4 when run alone on this branch and on `main`: its text was dropped by the numbers check
+  ("doble registro" reads as a number word) only inside the full run. Per turn p50 1,698 / 1,949 ms and p95 3,107 / 3,565 ms. Second model
+  turn: 13 of 197 turns that called the model (6.6%) and 15 of 197 (7.6%); in the summary scenarios alone, 0 of 12 in the first
+  dev run. Latency by tag, the two runs: `summary` p50 1,944 / 2,506 ms, p95 3,076 / 3,932 ms; `query` p50 1,691 / 2,328 ms, p95 2,176 / 3,609 ms;
+  `time-reference` p50 1,944 ms, p95 3,107 ms (run 1). A summary is one model call and one SQL pass (two with a comparison).
+- `pnpm eval --split all` (152 cases): **150/152 (98.7%)**, 0 silent amounts, 0 silent targets, p50 1,621 ms, p95 2,870 ms. Slice C's
+  run was 150/152 as well; the dev miss was c085, the test misses are not printed. An earlier dev-only run: 120/121 (c098: "cuánto gasté en
+  nafta el mes pasado" answered with the description filter, not the category).
+- The first real run of the new schema failed every message: the grammar was too large (see Decisions). It was found by the
+  scenario run, before any other check, and led to the shape above. Warm-up: the first request after this change compiles the grammar
+  (about 10 s, seen as a 14 s turn in the first dev run); the server's startup warm-up covers it.
+- Model spend about US$0.33 by the printed per-run costs (scenario runs US$0.0065 + 0.054 + 0.069 + 0.068, `pnpm eval` runs 0.036 twice
+  by mistake of one rerun + 0.047, probes and reruns of s114 about US$0.01). Nothing was deployed and nothing outside the repository was touched.
+
 ### Open
 
 - **Like with like.** Whether "¿gasté más que el mes pasado?" should compare the same days of last month (1–21 October) instead of
