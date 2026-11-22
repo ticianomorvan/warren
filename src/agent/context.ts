@@ -1,4 +1,5 @@
 import type { Sql } from '../core/db'
+import { money } from '../core/es'
 import type { Shown } from '../core/guards'
 import type { Question } from '../core/turn'
 import { type FactRow, liveFacts } from '../domain/facts'
@@ -69,11 +70,11 @@ export const clip = (value: string, max = 400) =>
 
 /** One movement as the model reads it: its id (what it sends back), when and what. */
 export const movementLine = (m: MovementRow) =>
-  `id=${m.id} ${m.direction} ${m.amount} ${m.currency} ${m.date}${m.time ? ` ${m.time}` : ''} ${clip(m.description, 120)} [${m.category}] (${clip(m.payment ?? 'sin medio', 80)})`
+  `id=${m.id} ${m.direction} ${money(m.amount, m.currency)} ${m.date}${m.time ? ` ${m.time}` : ''} ${clip(m.description, 120)} [${m.category}] (${clip(m.payment ?? 'sin medio', 80)})`
 
 /** A movement as a source for the numbers check: what `movementLine` tells the model, without its id. */
 export const movementFact = (m: MovementRow) =>
-  `${m.direction} ${m.amount} ${m.currency} ${m.date}${m.time ? ` ${m.time}` : ''} ${clip(m.description, 120)} ${m.category} ${clip(m.payment ?? '', 80)}`
+  `${m.direction} ${m.amount} ${money(m.amount, m.currency)} ${m.date}${m.time ? ` ${m.time}` : ''} ${clip(m.description, 120)} ${m.category} ${clip(m.payment ?? '', 80)}`
 
 const FACT_LABEL = { alias: 'alias', category: 'categoría', note: 'dato' } as const
 

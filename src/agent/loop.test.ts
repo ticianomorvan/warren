@@ -245,6 +245,23 @@ describe('runAgent', () => {
     expect(r.calls).toEqual([{ tool: 'reply', input: { text: 'hola' } }])
     expect(r.audit.map((x) => x.status)).toEqual(['rejected', 'skipped', 'accepted'])
   })
+
+  it('a reply the vetting refuses goes back to the model with the reason; the last turn is let through', async () => {
+    const vet = (text: string) => (text.includes('tres') ? 'number in words: tres' : null)
+    const { client, seen } = fake(
+      calls(['reply', { text: 'tres cafés' }]),
+      calls(['reply', { text: 'Anotados: $3.500' }]),
+    )
+    const r = await run(client, { vet })
+    expect(r.calls).toEqual([{ tool: 'reply', input: { text: 'Anotados: $3.500' } }])
+    expect(r.audit.map((x) => x.status)).toEqual(['rejected', 'accepted'])
+    expect(JSON.stringify(seen[1]?.params.messages)).toContain('number in words: tres')
+
+    const stubborn = fake(calls(['reply', { text: 'tres cafés' }]))
+    const last = await run(stubborn.client, { vet })
+    expect(last.turns).toBe(MAX_TURNS)
+    expect(last.calls).toEqual([{ tool: 'reply', input: { text: 'tres cafés' } }])
+  })
 })
 
 describe('warmUp', () => {

@@ -89,7 +89,8 @@ const sameAmount = (a: string, b: string) => Number(a) === Number(b)
 interface Fields {
   amount: string
   date: string
-  description: string
+  /** Any one of these matches (a list only when the scenario says the choice is open). */
+  description: string | string[]
   /** Not checked when undefined (a new movement whose category the scenario does not pin). */
   category: string | undefined
   payment: string | null
@@ -104,10 +105,12 @@ function diff(row: Row, e: Fields): string[] {
   const out: string[] = []
   if (!sameAmount(row.amount, e.amount)) out.push(`amount ${row.amount}, expected ${e.amount}`)
   if (row.date !== e.date) out.push(`date ${row.date}, expected ${e.date}`)
+  const wanted = [e.description].flat()
   const description = e.strictDescription
-    ? norm(row.description) === norm(e.description)
-    : looseText(row.description, e.description)
-  if (!description) out.push(`description "${row.description}", expected "${e.description}"`)
+    ? wanted.some((w) => norm(row.description) === norm(w))
+    : wanted.some((w) => looseText(row.description, w))
+  if (!description)
+    out.push(`description "${row.description}", expected "${wanted.join('" or "')}"`)
   if (e.category !== undefined && row.category !== e.category) {
     out.push(`category ${row.category}, expected ${e.category}`)
   }
@@ -259,7 +262,7 @@ export function gradeTurn(input: TurnInput): TurnGrade {
     problems.push(`unexpected new movement ${describe(r)}${r.payment ? ` (${r.payment})` : ''}`)
   }
   for (const e of unmatched) {
-    problems.push(`missing movement ${e.description} ${e.amount} ${e.currency}`)
+    problems.push(`missing movement ${[e.description].flat().join('|')} ${e.amount} ${e.currency}`)
   }
   // A deleted ref is gone; a refless ended row cannot be addressed again.
   for (const [ref, id] of newRefs) {

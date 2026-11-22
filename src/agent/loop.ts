@@ -76,6 +76,11 @@ export interface AgentInput {
   env: AgentEnv
   /** Aborts the call and the SDK's retries: the message deadline and the shutdown. */
   signal?: AbortSignal
+  /**
+   * Why a `reply` text may not be sent (a number code did not give, a claim of a change), or null when it may. The loop gives the
+   * model the reason and another turn to write it again, so the person gets its words and not the fallback.
+   */
+  vet?: (text: string, found: readonly MovementRow[]) => string | null
   /** When the message's own deadline passes: each call's timeout is cut to fit before it. */
   deadlineAt?: number
 }
@@ -312,6 +317,20 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
         c.entry.status = 'declined'
         c.entry.detail = after.declined
       } else c.verdict = after
+    }
+
+    // A reply's words are vetted here, while the model can still write them again (the last turn is sent as it is: `compose` falls back).
+    if (i.vet && turn < MAX_TURNS) {
+      for (const { c, call } of pending) {
+        if (call.tool !== 'reply' || c.verdict.kind !== 'ok') continue
+        const why = i.vet(call.input.text, [...found.values()])
+        if (why === null) continue
+        const message = `text refused: ${why}. Write it again with only numbers that are in the lists, a find_movements result or the message (no count, no number in words), and no claim of a change.`
+        c.verdict = { kind: 'rejected', message }
+        c.text = message
+        c.entry.status = 'rejected'
+        c.entry.detail = message
+      }
     }
 
     // Ids found in this turn may be acted on only from the next one: one that appears in a search of this very turn was guessed.

@@ -99,8 +99,8 @@ const NewMovement = z.strictObject({
   /** Names the movement for later turns. */
   ref: z.string().optional(),
   amount: Amount,
-  /** Loose match: either text contains the other, accents and case ignored. */
-  description: z.string().min(1),
+  /** Loose match: either text contains the other, accents and case ignored. A list accepts any of its words (a genuinely open choice). */
+  description: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
   date: Day.optional(),
   direction: Direction.default('out'),
   currency: Currency.default('ARS'),

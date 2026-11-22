@@ -16,20 +16,20 @@ Gate (`docs/rebuild-spec.md`): at least 95% fully right, 0 silent wrong changes,
 
 ## Latest
 
-Model claude-haiku-5-5; 3 runs (2026-11-22, 2026-11-22, 2026-11-22); 340 scenarios and 411 turns per run.
+Model claude-haiku-5-5; 3 runs (2026-11-22, 2026-11-22, 2026-11-22); 341 scenarios and 415 turns per run.
 
 |  | Run 1 | Run 2 | Run 3 | Median |
 |---|---|---|---|---|
-| Scenarios fully right | 333 | 334 | 336 | 334 |
-| Fully right, share | 97.9% | 98.2% | 98.8% | 98.2% |
-| Silent wrong changes | 1 | 1 | 0 | 1 |
-| Unnecessary questions | 2 | 0 | 0 | 0 |
+| Scenarios fully right | 337 | 337 | 337 | 337 |
+| Fully right, share | 98.8% | 98.8% | 98.8% | 98.8% |
+| Silent wrong changes | 0 | 0 | 0 | 0 |
+| Unnecessary questions | 0 | 0 | 0 | 0 |
 | Invented numbers | 0 | 0 | 0 | 0 |
-| Per-turn latency p50 | 1,143 ms | 1,166 ms | 1,151 ms | 1,151 ms |
-| Per-turn latency p95 | 1,708 ms | 1,747 ms | 1,800 ms | 1,747 ms |
+| Per-turn latency p50 | 1,168 ms | 1,164 ms | 1,162 ms | 1,164 ms |
+| Per-turn latency p95 | 1,736 ms | 1,827 ms | 1,802 ms | 1,802 ms |
 | Model turns per message, p50 | 1 | 1 | 1 | 1 |
-| Messages needing a second model turn | 2.1% | 2.6% | 2.8% | 2.6% |
-| Cost (US$) | 0.1572 | 0.1595 | 0.1597 | 0.1595 |
+| Messages needing a second model turn | 2.3% | 3.1% | 2.6% | 2.6% |
+| Cost (US$) | 0.1603 | 0.1608 | 0.1605 | 0.1605 |
 
 ## v1 baseline (tag `v1-final`, main 066eb87)
 
