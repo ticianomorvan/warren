@@ -47,11 +47,11 @@ Done means:
 
 ## Cost (Meta rate card effective 2026-10-01, Argentina)
 
-| Message | USD | ARS at BNA 1,600 / MEP 1,743 |
-|---|---|---|
-| Utility template (any time) | 0.026 | 41.6 / 45.3 |
-| Free-form text inside the 24 h window | first 1,000 a month free per number, then 0.026 | 0 / 41.6–45.3 |
-| Marketing template (if Meta re-categorizes) | 0.0618 | 98.9 / 107.7 |
+| Message                                     | USD                                             | ARS at BNA 1,600 / MEP 1,743 |
+| ------------------------------------------- | ----------------------------------------------- | ---------------------------- |
+| Utility template (any time)                 | 0.026                                           | 41.6 / 45.3                  |
+| Free-form text inside the 24 h window       | first 1,000 a month free per number, then 0.026 | 0 / 41.6–45.3                |
+| Marketing template (if Meta re-categorizes) | 0.0618                                          | 98.9 / 107.7                 |
 
 Since 2026-10-01 a utility template inside the window is billed too, and free-form replies are free
 only for the first 1,000 a month per number. This also applies to Warren's ordinary replies
@@ -166,3 +166,24 @@ From scratch today, this is still the shape: one table, one claim, one tick.
 2. Template code names in English; the agent may create the template (done: `warren_reminder`).
 3. If templates fail with 131042, Ticiano adds a payment method in Billing Hub.
 4. Default time 09:00; 20 live reminders and 10 sends a day per person; no global block.
+
+## As built: slice 1 (2026-11-22)
+
+What shipped, and where it differs from the text above.
+
+- `014_reminders.sql`, `src/reminders/{schedule,send,db,cli}.ts`, `Graph.sendTemplate`, `REMINDER_TEMPLATE`, the status webhook, three scripts
+  (`template:status`, `reminder:try-template`, `reminder:add`). The tick runs the reminder sweep next to the message sweep.
+- `reminder.inbound_message_id` is nullable: a reminder made by `pnpm reminder:add` has no batch. Slice 2 sets it on every agent-made one.
+- `schedule.ts`: `nth` is `{n, weekday}` (n in 1–4 or -1) and only for `every: month`; `month_days` and `nth` are exclusive; an end with `until`
+  and `count` together is allowed (the first to be reached ends it). A monthly schedule with no day, and a yearly one with no `month_days`, use the
+  day of `start` (31 and 29 February clamp). `count` counts from `start`, skipped occurrences included. Periods are searched from `start` on every
+  call (at most 20,000), which for a daily schedule over years is a few thousand iterations a claim.
+- The per-person cap counts `reminder_send` rows in a rolling 24 h with status `started`, `sent` or `unknown` (a `failed` send cost nothing and a `capped`
+  one was not sent); the daily alert counts the same over all people and fires once, when a claim crosses 200.
+- Window and cap are decided inside the claim transaction. A `started` row older than 10 minutes becomes `unknown` at the start of each sweep.
+- A 4xx that is not 131047 (for example a paused template) ends the send `failed`; it is not retried: the occurrence is spent. A rate-limit 4xx (130429)
+  is the same today. Revisit if it shows up in the logs.
+- The late note goes inside the template's one parameter ("pagar la Visa (era para el 10/12 a las 09:00)"), so it stays one line.
+- Status webhooks: `store.recordStatus` first looks the wamid up in `reminder_send`; a reminder's wamid never creates a `reply` row. A status that arrives
+  before the sender has stored the wamid (milliseconds) falls through to `reply`; accepted.
+- Not run here, by design: `template:status` and `reminder:try-template` (the live checks are the owner's agent's, after deploy).

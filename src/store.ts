@@ -3,6 +3,7 @@ import type { Sql } from './db'
 import { type FactRow, liveFacts } from './facts'
 import { type FindFilter, findMovements, type MovementRow, recentMovements } from './ledger'
 import { REDACTED_BODY } from './redact'
+import { recordReminderStatus } from './reminders/db'
 import type { PendingQuestion } from './resolve'
 import type { Timings } from './timings'
 
@@ -95,6 +96,8 @@ export interface StatusInput {
   wamid: string
   status: string
   at: Date
+  /** Meta's error code of a `failed` status. */
+  code?: number | undefined
 }
 
 export interface StoreOptions {
@@ -124,8 +127,12 @@ export function createStore(sql: Sql, o: StoreOptions) {
       return rows.length > 0
     },
 
-    /** One statement, any arrival order. A `read` also stands in for a missing `delivered`. */
-    async recordStatus(s: StatusInput): Promise<void> {
+    /**
+     * One statement, any arrival order. A `read` also stands in for a missing `delivered`. A status for a
+     * reminder's wamid belongs to its `reminder_send` (a `failed` one ends it `failed`), not to `reply`.
+     */
+    async recordStatus(s: StatusInput): Promise<'reply' | 'reminder'> {
+      if (await recordReminderStatus(sql, s)) return 'reminder'
       const delivered = s.status === 'delivered' || s.status === 'read' ? s.at : null
       await sql`
         INSERT INTO reply (outbound_wamid, delivered_at, read_at, failed_at)
@@ -136,6 +143,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
           delivered_at = LEAST(reply.delivered_at, EXCLUDED.delivered_at),
           read_at = COALESCE(reply.read_at, EXCLUDED.read_at),
           failed_at = COALESCE(reply.failed_at, EXCLUDED.failed_at)`
+      return 'reply'
     },
 
     /**

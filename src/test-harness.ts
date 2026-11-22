@@ -81,7 +81,7 @@ export function useDatabase(real?: { url?: string; max?: number; schema?: string
     await sql`TRUNCATE link_request, auth_oauth_access_token, auth_oauth_refresh_token, auth_oauth_consent,
       auth_oauth_client_resource, auth_oauth_client_assertion, auth_oauth_resource, auth_oauth_client, auth_session,
       auth_account, auth_verification, auth_jwks, auth_user,
-      fact, movement, reply, inbound_message, account RESTART IDENTITY CASCADE`
+      reminder_send, reminder, fact, movement, reply, inbound_message, account RESTART IDENTITY CASCADE`
   })
 }
 
@@ -100,6 +100,8 @@ export type FakeMedia = Uint8Array | Error
 export function fakeGraph(
   o: {
     send?: SendFn
+    /** Replaces `send` for templates only. */
+    sendTemplate?: SendFn
     typing?: () => Promise<void>
     media?: Record<string, FakeMedia>
     /** Holds a download until it resolves. */
@@ -109,6 +111,7 @@ export function fakeGraph(
   const calls = {
     typing: [] as string[],
     sent: [] as { to: string; body: string }[],
+    templates: [] as { to: string; name: string; lang: string; params: string[] }[],
     downloads: [] as string[],
     /** The abort signal each download was given: the message's own deadline. */
     signals: [] as (AbortSignal | undefined)[],
@@ -140,6 +143,14 @@ export function fakeGraph(
       calls.attempts++
       const id = o.send ? await o.send(calls.attempts) : `wamid.OUT${calls.attempts}`
       calls.sent.push({ to, body })
+      return id
+    },
+    async sendTemplate(to, name, lang, params) {
+      calls.attempts++
+      const id = o.sendTemplate
+        ? await o.sendTemplate(calls.attempts)
+        : `wamid.TPL${calls.attempts}`
+      calls.templates.push({ to, name, lang, params })
       return id
     },
   }

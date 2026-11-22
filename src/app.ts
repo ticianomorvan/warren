@@ -82,14 +82,24 @@ export function createApp(o: AppOptions): Server {
         if (inserted) log('message_received', { wamid: m.id, kind: m.type })
       }
       for (const s of statuses) {
-        await store.recordStatus({
+        const e = s.errors?.[0]
+        const owner = await store.recordStatus({
           wamid: s.id,
           status: s.status,
           at: seconds(s.timestamp) ?? new Date(),
+          code: e?.code,
         })
         if (s.status === 'failed') {
-          const e = s.errors?.[0]
-          log('status_failed', { outbound: s.id, code: e?.code, title: e?.title }, 'error')
+          log(
+            'status_failed',
+            {
+              outbound: s.id,
+              code: e?.code,
+              title: e?.title,
+              ...(owner === 'reminder' && { reminder: true }),
+            },
+            'error',
+          )
         }
       }
     } catch (err) {

@@ -30,6 +30,19 @@ const fields = z.object({
     .string()
     .optional()
     .transform((s) => s?.trim() || undefined),
+  // The name of the approved WhatsApp template that carries a reminder outside the 24 h window
+  // (`warren_reminder`, language es_AR; docs/reminders-spec.md). Unset, Warren sends no template: a reminder
+  // that needs one is logged and marked failed.
+  REMINDER_TEMPLATE: z
+    .string()
+    .optional()
+    .transform((s) => s?.trim() || undefined)
+    .pipe(
+      z
+        .string()
+        .regex(/^[a-z0-9_]{1,512}$/)
+        .optional(),
+    ),
   // The sign-in and OAuth server for MCP (docs/mcp-spec.md). `PUBLIC_URL` turns it on and makes the other two
   // required. Unset, none of its routes exist and none of the three is read.
   PUBLIC_URL: z
