@@ -1,6 +1,6 @@
 import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
-import { resolveRange } from '../range'
+import { parseOther, resolveRange } from '../range'
 import { hasLongNumber, hasNumberWord } from './say'
 import { MAX_FOUND, type ModelAction, TOOL_INPUTS, type ToolInput, type ToolName } from './schema'
 import {
@@ -41,11 +41,14 @@ export function checkSummary(q: ToolInput<'summarize'>, today: string): string |
   const asked = resolveRange(q.range, today)
   if (!asked.ok) return `range: ${asked.reason}`
   if (q.compare_to === 'range') {
-    if (!q.other) return 'compare_to "range" needs other: the second range to compare with'
-    const second = resolveRange(q.other, today)
-    if (!second.ok) return `other: ${second.reason}`
-  } else if (q.other) {
-    return `other is only for compare_to "range" (this one is "${q.compare_to}"): leave it out, or set compare_to "range"`
+    if (q.other.trim() === '')
+      return 'compare_to "range" needs other: the second range to compare with'
+    const second = parseOther(q.other)
+    if (typeof second === 'string') return second
+    const resolved = resolveRange(second, today)
+    if (!resolved.ok) return `other: ${resolved.reason}`
+  } else if (q.other.trim() !== '') {
+    return `other is only for compare_to "range" (this one is "${q.compare_to}"): send "" or set compare_to "range"`
   }
   if (q.compare_to !== 'none' && ['day', 'week', 'month'].includes(q.group_by)) {
     return `a comparison cannot be grouped by ${q.group_by}: use group_by none, category or payment, or drop the comparison`

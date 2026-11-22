@@ -153,8 +153,12 @@ export const TOOL_INPUTS = {
       range: RangeSchema(),
       group_by: z.enum(GROUPS),
       compare_to: z.enum(COMPARES),
-      /** Only with `compare_to: "range"`: the second range ("noviembre vs octubre": range November, other October). */
-      other: RangeSchema().optional(),
+      /**
+       * Only with `compare_to: "range"` ("" otherwise): the second range as a short text, because a second typed
+       * range does not fit the strict-tool grammar. A named period (`last_month`), `month:10` or `month:10:2025`,
+       * `year:2025`, or `dates:11-01..11-15` (`from..to`, the same forms as `range`). Code parses it (`parseOther`).
+       */
+      other: z.string(),
       direction: Direction().nullable(),
       category: Category().nullable(),
       payment: z.string().nullable(),

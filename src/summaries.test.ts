@@ -303,7 +303,7 @@ describe('a comparison is two sums and code does the rest', () => {
       summarize('this_month', {
         category: 'supermercado',
         compare_to: 'range',
-        other: range('month', { month: 9 }),
+        other: 'month:9',
       }),
     )
     // súper: October 12.000 + 9.000 = 21.000 against September 10.000: 11.000 more, 110%
@@ -342,17 +342,17 @@ describe('a comparison is two sums and code does the rest', () => {
     const a = await app(
       summarize('this_month', {
         compare_to: 'range',
-        other: range('month', { month: 12, year: 2024 }),
+        other: 'month:12:2024',
       }),
       summarize('month', {
         range: range('month', { month: 12, year: 2024 }),
         compare_to: 'range',
-        other: range('this_month'),
+        other: 'this_month',
       }),
       summarize('month', {
         range: range('month', { month: 12, year: 2024 }),
         compare_to: 'range',
-        other: range('month', { month: 11, year: 2024 }),
+        other: 'month:11:2024',
       }),
     )
     expect(await say(a)).toBe(
@@ -583,8 +583,14 @@ describe('what is refused is told to the model, with the reason', () => {
       replyCall('Es mucho tiempo, ¿lo acotamos?'),
       summarize('this_month', { compare_to: 'previous', group_by: 'day' }),
       replyCall('No puedo comparar día por día.'),
-      summarize('this_month', { other: range('last_month') }),
+      summarize('this_month', { other: 'last_month' }),
       replyCall('Dime qué comparar.'),
+      summarize('this_month', { compare_to: 'range' }),
+      replyCall('¿Con qué lo comparo?'),
+      summarize('this_month', { compare_to: 'range', other: 'octubre' }),
+      replyCall('¿Con qué mes?'),
+      summarize('this_month', { compare_to: 'range', other: 'month:12:2026' }),
+      replyCall('Ese mes no llegó.'),
     )
     await say(a)
     expect(seenBy(a)).toContain('the most is 731')
@@ -592,6 +598,12 @@ describe('what is refused is told to the model, with the reason', () => {
     expect(seenBy(a)).toContain('cannot be grouped by day')
     await say(a)
     expect(seenBy(a)).toContain('other is only for compare_to \\"range\\"')
+    await say(a)
+    expect(seenBy(a)).toContain('needs other: the second range to compare with')
+    await say(a)
+    expect(seenBy(a)).toContain('other \\"octubre\\" is not understood')
+    await say(a)
+    expect(seenBy(a)).toContain('other: The month 2026-12 has not started yet')
     a.close()
   })
 

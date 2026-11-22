@@ -527,6 +527,7 @@ describe('runAgent: summarize filters are copied into a line', () => {
         range: { period: 'today', month: 0, year: 0, from: '', to: '' },
         group_by: 'none',
         compare_to: 'none',
+        other: '',
         direction: 'out',
         category: null,
         payment: null,

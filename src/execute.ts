@@ -1,6 +1,7 @@
 import type { Action } from './agent'
 import type { AuditEntry } from './agent/loop'
 import { composeReply, type Say, type Step } from './agent/say'
+import type { RangeInput } from './agent/schema'
 import type { Sql } from './db'
 import {
   insertMovements,
@@ -12,7 +13,7 @@ import {
   supersede,
 } from './ledger'
 import { applyChanges, changedFields } from './movement'
-import { previousRange, type Resolved, resolveRange } from './range'
+import { parseOther, previousRange, type Resolved, resolveRange } from './range'
 import {
   REPLY_GONE,
   REPLY_SAY_FALLBACK,
@@ -197,8 +198,8 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         const before =
           compare_to === 'previous'
             ? previousRange(asked)
-            : compare_to === 'range' && other
-              ? resolved(other)
+            : compare_to === 'range'
+              ? resolved(parseOther(other) as RangeInput)
               : null
         const side = async (r: Resolved): Promise<Side> => ({
           range: r,

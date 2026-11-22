@@ -1,4 +1,4 @@
-import type { RangeInput } from './agent/schema'
+import { NAMED_PERIODS, type RangeInput } from './agent/schema'
 import { addDays, type DateRange } from './time'
 
 /**
@@ -239,6 +239,46 @@ export function resolveRange(spec: RangeInput, today: string): Resolution {
     case 'dates':
       return resolveDates(spec, today)
   }
+}
+
+const empty = (period: RangeInput['period']): RangeInput => ({
+  period,
+  month: 0,
+  year: 0,
+  from: '',
+  to: '',
+})
+
+/**
+ * The second range of a comparison, as the model wrote it: a named period, `month:10`, `month:10:2025`, `year:2025`
+ * or `dates:11-01..11-15`. A text that is none of these is returned as the reason the model reads.
+ */
+export function parseOther(text: string): RangeInput | string {
+  const t = text.trim().toLowerCase()
+  const named = NAMED_PERIODS.find((p) => p === t)
+  if (named) return empty(named)
+  const forms = 'a named period, "month:10", "month:10:2025", "year:2025" or "dates:11-01..11-15"'
+  const [kind = '', rest = ''] = [
+    t.slice(0, Math.max(t.indexOf(':'), 0)),
+    t.slice(t.indexOf(':') + 1),
+  ]
+  const numbers = rest.split(':')
+  const integer = (n: string | undefined) =>
+    n !== undefined && /^\d{1,4}$/.test(n) ? Number(n) : null
+  if (kind === 'month' && numbers.length <= 2) {
+    const month = integer(numbers[0])
+    const year = numbers[1] === undefined ? 0 : integer(numbers[1])
+    if (month !== null && year !== null) return { ...empty('month'), month, year }
+  }
+  if (kind === 'year' && numbers.length === 1) {
+    const year = integer(numbers[0])
+    if (year !== null) return { ...empty('year'), year }
+  }
+  if (kind === 'dates') {
+    const [from = '', to = '', ...more] = rest.split('..')
+    if (from !== '' && more.length === 0) return { ...empty('dates'), from, to }
+  }
+  return `other "${text}" is not understood: use ${forms}`
 }
 
 /**

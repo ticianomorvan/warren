@@ -109,6 +109,7 @@ describe('a voice note', () => {
             range: { period: 'this_month', month: 0, year: 0, from: '', to: '' },
             group_by: 'none',
             compare_to: 'none',
+            other: '',
             direction: 'out',
             category: null,
             payment: null,

@@ -270,7 +270,7 @@ function compareGroups(
     const b = was.find((g) => g.key === key)
     const named = (a ?? b) as GroupTotal
     const c = change(a?.total ?? '0', b?.total ?? '0')
-    const percent = b && c.tenths !== null ? ` (${formatPercent(c.tenths)})` : ''
+    const percent = c.tenths !== null ? ` (${formatPercent(c.tenths)})` : ''
     return `• ${groupLabel(by, named, today)} ${formatMoney(a?.total ?? '0', p.currency)} vs ${formatMoney(b?.total ?? '0', p.currency)}${percent}`
   })
   const hidden = keys.length - shown.length

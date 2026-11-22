@@ -53,7 +53,8 @@ export const summarize = (
     range?: ReturnType<typeof range>
     group_by?: string
     compare_to?: 'none' | 'previous' | 'range'
-    other?: ReturnType<typeof range>
+    /** The second range of a comparison, as text: `month:10`, `last_month`... */
+    other?: string
   } = {},
 ): ToolCall => ({
   name: 'summarize',
@@ -61,6 +62,7 @@ export const summarize = (
     range: range(period),
     group_by: 'none',
     compare_to: 'none',
+    other: '',
     direction: 'out',
     category: null,
     payment: null,
