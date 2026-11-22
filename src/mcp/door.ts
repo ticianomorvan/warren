@@ -1,9 +1,7 @@
-import type { IncomingMessage } from 'node:http'
 import { requireMcpAuth } from '@better-auth/mcp'
 import { createResourceServerChallenge } from '@better-auth/oauth-provider'
 import type { AuthInfo } from '@modelcontextprotocol/server'
 import { APIError } from 'better-auth/api'
-import { fromNodeHeaders } from 'better-auth/node'
 import { isAllowed } from '../access'
 import { type Auth, mcpUrl, SCOPES } from '../auth/config'
 import type { Sql } from '../core/db'
@@ -14,7 +12,7 @@ export type Admitted =
   | { ok: true; authInfo: AuthInfo & { extra: { accountId: number; waId: string } } }
   | { ok: false; response: Response }
 
-export type Door = (req: IncomingMessage) => Promise<Admitted>
+export type Door = (request: Request) => Promise<Admitted>
 
 export interface DoorOptions {
   auth: Auth
@@ -135,11 +133,7 @@ export function createDoor(o: DoorOptions): Door {
     }
   }
 
-  return async (req) => {
-    const request = new Request(resource, {
-      method: req.method,
-      headers: fromNodeHeaders(req.headers),
-    })
+  return async (request) => {
     let admitted: Admitted | undefined
     let response: Response
     try {

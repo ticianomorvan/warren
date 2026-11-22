@@ -44,6 +44,8 @@ export const REPLY = {
   reminderFar:
     'Solo puedo avisarte de cosas que pasan en el próximo año: decime una fecha más cercana.',
   reminderGone: '⏰ Ese recordatorio ya no existe.',
+  noWhatsappAddress:
+    'Esta cuenta no tiene un WhatsApp donde mandarte el aviso: escribile a Warren por WhatsApp primero.',
   remindersNone: 'No tenés recordatorios.',
 } as const
 

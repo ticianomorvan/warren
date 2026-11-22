@@ -1,17 +1,6 @@
-import { createPrivateKey, sign } from 'node:crypto'
-import { symmetricDecrypt } from 'better-auth/crypto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mcpUrl } from '../auth/config'
-import {
-  type App,
-  CLIENT_ID,
-  type Connected,
-  claims,
-  mint,
-  WA_A,
-  WA_B,
-  withClaude,
-} from '../auth-test-kit'
+import { type App, type Connected, claims, mint, WA_A, WA_B, withClaude } from '../auth-test-kit'
+import { forge as forgeOf, rpc as rpcOf } from '../mcp-test-kit'
 import { sql, useDatabase } from '../test-harness'
 
 /**
@@ -173,88 +162,3 @@ describe('the door', () => {
     expect((await rpc(a.access_token, 'tools/list')).status).toBe(200)
   })
 })
-
-// ---- The protocol
-
-// ---- JSON-RPC and forged tokens
-
-// biome-ignore lint/suspicious/noExplicitAny: a test reads JSON-RPC answers loosely
-type Json = any
-
-type Rpc = { status: number; headers: Headers; body: Record<string, Json> | null }
-
-/** The answer is JSON or, for a legacy client, one SSE `message` event: both read the same. */
-async function readBody(res: Response): Promise<Record<string, Json> | null> {
-  const text = await res.text()
-  if (!text) return null
-  if (res.headers.get('content-type')?.includes('text/event-stream')) {
-    const data = text
-      .split('\n')
-      .filter((l) => l.startsWith('data:'))
-      .map((l) => l.slice(5).trim())
-      .at(-1)
-    return data ? JSON.parse(data) : null
-  }
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { raw: text }
-  }
-}
-
-let id = 0
-
-async function rpcOf(
-  app: App,
-  bearer: string | null,
-  method: string,
-  params: unknown = {},
-  extra: Record<string, string> = {},
-) {
-  const res = await fetch(`${app.base}/mcp`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-      ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
-      ...extra,
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }),
-  })
-  return { status: res.status, headers: res.headers, body: await readBody(res) } satisfies Rpc
-}
-
-// ---- Tokens
-
-/** A token as better-auth signs it, with any claim or header changed: the real signing key, taken out of the table. */
-async function forgeOf(
-  app: App,
-  sub: string,
-  over: {
-    claims?: Record<string, unknown>
-    header?: Record<string, unknown>
-    sub?: string
-    dropClaims?: string[]
-  } = {},
-) {
-  const [key] =
-    await sql`SELECT id, "privateKey" AS private FROM auth_jwks ORDER BY "createdAt" DESC LIMIT 1`
-  const secret = (await (app.auth as NonNullable<typeof app.auth>).$context).secretConfig
-  const jwk = JSON.parse(await symmetricDecrypt({ key: secret, data: JSON.parse(key?.private) }))
-  const now = Math.floor(Date.now() / 1000)
-  const payload: Record<string, unknown> = {
-    iss: app.base,
-    aud: mcpUrl(app.base),
-    sub: over.sub ?? sub,
-    azp: CLIENT_ID,
-    scope: 'ledger:read ledger:write',
-    iat: now,
-    exp: now + 900,
-    ...over.claims,
-  }
-  for (const k of over.dropClaims ?? []) delete payload[k]
-  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
-  const input = `${b64({ alg: 'EdDSA', typ: 'at+jwt', kid: key?.id, ...over.header })}.${b64(payload)}`
-  const signature = sign(null, Buffer.from(input), createPrivateKey({ key: jwk, format: 'jwk' }))
-  return `${input}.${signature.toString('base64url')}`
-}

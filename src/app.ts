@@ -15,6 +15,8 @@ export interface AppOptions {
   worker: Worker
   /** The OAuth server's routes for MCP (docs/mcp-spec.md); without them none of its paths exist. */
   auth?: AuthRoutes
+  /** `/mcp`: the MCP endpoint (its door, origin check and tools). Without it the path does not exist. */
+  mcp?: (req: IncomingMessage, res: ServerResponse) => Promise<void>
 }
 
 /** The raw body, or null when it is over the limit. An oversized body is still read to the end. */
@@ -89,6 +91,7 @@ export function createApp(o: AppOptions): Server {
     if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, 'ok')
     if (url.pathname === '/webhook' && req.method === 'GET') return verify(url, res)
     if (url.pathname === '/webhook' && req.method === 'POST') return receive(req, res)
+    if (url.pathname === '/mcp' && o.mcp) return o.mcp(req, res)
     if (o.auth && (await o.auth(req, res, url))) return
     send(res, 404)
   }

@@ -6,6 +6,7 @@ import { betterAuth } from 'better-auth'
 import { jwt } from 'better-auth/plugins'
 import { PostgresJSDialect } from 'kysely-postgres-js'
 import type { Sql } from '../core/db'
+import { clientIdAllowed } from '../mcp/clients'
 import { linkSession, type SessionLinks } from './plugin'
 
 /** What a token may be used for. `offline_access` is the refresh token. */
@@ -16,22 +17,6 @@ export const ACCESS_TOKEN_SECONDS = 15 * 60
 
 /** The sign-in session only exists to finish consent. */
 export const SESSION_SECONDS = 60 * 60
-
-/**
- * Whose client ids may connect. A client's `client_id` is a URL Warren fetches, so only these hosts
- * are ever fetched.
- */
-export const CLIENT_ID_HOSTS: readonly string[] = ['claude.ai', 'claude.com']
-
-/** True for an https client id on one of `CLIENT_ID_HOSTS`. Checked before any fetch. */
-export function clientIdAllowed(clientId: string): boolean {
-  try {
-    const url = new URL(clientId)
-    return url.protocol === 'https:' && CLIENT_ID_HOSTS.includes(url.hostname)
-  } catch {
-    return false
-  }
-}
 
 /** The MCP endpoint, which is also the audience of every access token (RFC 8707). */
 export const mcpUrl = (publicUrl: string) => new URL('/mcp', publicUrl).href

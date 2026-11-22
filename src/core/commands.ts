@@ -220,12 +220,155 @@ const define = <S extends z.ZodType, K extends Entry['kind']>(entry: Entry<S> & 
 
 const Nothing = z.object({})
 
-/** What every MCP write returns beside the line Warren writes. */
-const Written = z.object({
-  record: z.string().describe('What changed, as Warren writes it (Spanish).'),
-  turn: z.int().describe('The id of the unit of work this belongs to.'),
+// ---- What an MCP client gets back: structured output, with real shapes. Money is exact (a decimal string) beside how Warren shows it.
+
+const Money = {
+  amount: z.string().describe('Decimal string, exact. Quote it as given.'),
+  display: z.string().describe('The amount as Warren writes it, e.g. "$3.500" or "US$ 20".'),
+}
+const MovementView = z.object({
+  id: z.int().describe('Warren id of the movement: the same across its corrections.'),
+  date: z.string().describe('yyyy-mm-dd, Argentine day.'),
+  time: z.string().describe('hh:mm Argentine time when it was logged.'),
+  direction: z.enum(['in', 'out']).describe('"out" is money spent, "in" money received.'),
+  ...Money,
+  currency: Currency,
+  description: z.string(),
+  category: Category,
+  payment: z.string().nullable(),
 })
-const Listing = z.object({}).loose()
+const FactView = z.object({
+  id: z.int(),
+  kind: z.enum(FACT_KINDS),
+  key: z.string(),
+  value: z.string(),
+})
+const ReminderView = z.object({
+  id: z.int().describe('Warren id of the reminder.'),
+  what: z.string(),
+  next_due_at: z
+    .string()
+    .nullable()
+    .describe('When it fires next, an ISO instant; null once a one-off has been sent.'),
+  when: z.string().describe('The reminder in words, as Warren says it (Spanish).'),
+})
+const Total = z.object({
+  direction: z.enum(['in', 'out']),
+  currency: Currency,
+  count: z.int(),
+  ...Money,
+})
+const Group = Total.extend({
+  key: z.string(),
+  label: z.string().describe('The group in words, as Warren says it.'),
+})
+const Side = z.object({
+  from: z.string(),
+  to: z.string(),
+  label: z.string().describe('The range in words, e.g. "Octubre (1–31)".'),
+  totals: z.array(Total).describe('One per direction and currency; never added together.'),
+  groups: z.array(Group),
+  groups_omitted: z.int().describe('Groups left out of `groups` (the text lists the rest).'),
+})
+
+/** What every change returns: the line Warren writes, the unit of work it belongs to and whether this is an answer replayed. */
+const Written = {
+  record: z.string().describe('What changed, as Warren writes it on WhatsApp (Spanish).'),
+  turn: z
+    .int()
+    .nullable()
+    .describe(
+      'The unit of work this belongs to (an undo takes it back); null when nothing changed.',
+    ),
+  replayed: z
+    .boolean()
+    .describe(
+      'True when this answers an earlier call with the same request_id: nothing was written now.',
+    ),
+}
+const UndoneItem = z.object({
+  kind: z.enum([
+    'logged',
+    'corrected',
+    'deleted',
+    'fact_removed',
+    'fact_restored',
+    'fact_reverted',
+    'reminder_removed',
+    'reminder_restored',
+  ]),
+  movement: MovementView.optional().describe('The movement as it stands now.'),
+  from: MovementView.optional().describe('A corrected movement as the correction left it.'),
+  fact: FactView.optional(),
+  was: z.string().optional().describe("A fact's value before it was taken back."),
+  reminder: ReminderView.optional(),
+})
+
+/** The output of each MCP tool. `mcp/tools.ts` builds its results from these types. */
+export const OUTPUTS = {
+  find_movements: z.object({
+    movements: z.array(MovementView),
+    next_cursor: z
+      .string()
+      .nullable()
+      .describe('Pass as `cursor` for the next page; null at the end.'),
+  }),
+  summarize: Side.extend({
+    compared_with: Side.nullable(),
+    changes: z
+      .array(
+        z.object({
+          direction: z.enum(['in', 'out']),
+          currency: Currency,
+          way: z
+            .enum(['more', 'less', 'same'])
+            .describe('How the asked range went from the compared one.'),
+          ...Money,
+          percent: z
+            .string()
+            .nullable()
+            .describe('"+20,5%", or null when there was nothing before.'),
+        }),
+      )
+      .describe('Empty unless the summary was compared.'),
+    summary: z.string().describe('The same summary as Warren writes it on WhatsApp, in Spanish.'),
+  }),
+  list_facts: z.object({ facts: z.array(FactView), total: z.int() }),
+  list_reminders: z.object({ reminders: z.array(ReminderView) }),
+  log_movements: z.object({ ...Written, movements: z.array(MovementView) }),
+  correct_movement: z.object({
+    ...Written,
+    changed: z
+      .array(z.string())
+      .describe('The fields the correction changed; empty when it was already so.'),
+    before: MovementView,
+    after: MovementView,
+  }),
+  delete_movement: z.object({ ...Written, deleted: MovementView }),
+  undo_last: z.object({
+    ...Written,
+    undone_turn: z.int().describe('The unit of work that was taken back.'),
+    items: z
+      .array(UndoneItem)
+      .describe('What came back or went away, one per movement, fact or reminder.'),
+  }),
+  remember_fact: z.object({
+    ...Written,
+    status: z.enum(['new', 'updated', 'unchanged']),
+    fact: FactView,
+    previous_value: z.string().nullable(),
+  }),
+  forget_fact: z.object({ ...Written, forgotten: z.array(FactView) }),
+  set_reminder: z.object({ ...Written, reminder: ReminderView }),
+  cancel_reminder: z.object({ ...Written, reminder: ReminderView }),
+} as const
+
+const RequestId = z
+  .uuid()
+  .optional()
+  .describe(
+    'A uuid you make up for this call. Send the same call again with the same request_id (a retry after a timeout) and Warren returns the first answer without writing twice.',
+  )
 
 const LEDGER_READ = 'ledger:read'
 const LEDGER_WRITE = 'ledger:write'
@@ -256,10 +399,10 @@ export const COMMANDS = {
       description:
         'Finds live movements by words, dates, category, payment or amount, newest first, a page at a time. Use it to get the id of a movement before correcting or deleting it.',
       scope: LEDGER_READ,
-      output: Listing,
+      output: OUTPUTS.find_movements,
       extra: {
-        limit: z.int().min(1).max(50).optional(),
-        cursor: z.string().optional().describe('The `next` of the previous page.'),
+        limit: z.int().min(1).max(50).optional().describe('Page size, 1 to 50 (default 25).'),
+        cursor: z.string().max(32).optional().describe('The `next_cursor` of the previous page.'),
       },
     },
   }),
@@ -291,13 +434,8 @@ export const COMMANDS = {
       description:
         'Logs up to 10 movements (spending or income) for the person. The person can undo it from WhatsApp ("deshacer").',
       scope: LEDGER_WRITE,
-      output: Written,
-      extra: {
-        request_id: z
-          .uuid()
-          .optional()
-          .describe('A uuid you make up: a retry with the same one writes nothing twice.'),
-      },
+      output: OUTPUTS.log_movements,
+      extra: { request_id: RequestId },
     },
   }),
 
@@ -314,8 +452,8 @@ export const COMMANDS = {
       description:
         'Changes fields of one live movement. Nothing is overwritten: a correction adds a new version.',
       scope: LEDGER_WRITE,
-      output: Written,
-      extra: { request_id: z.uuid().optional() },
+      output: OUTPUTS.correct_movement,
+      extra: { request_id: RequestId },
     },
   }),
 
@@ -332,8 +470,8 @@ export const COMMANDS = {
         'Deletes one live movement. Nothing is erased: the movement is marked deleted and "deshacer" brings it back.',
       scope: LEDGER_WRITE,
       destructive: true,
-      output: Written,
-      extra: { request_id: z.uuid().optional() },
+      output: OUTPUTS.delete_movement,
+      extra: { request_id: RequestId },
     },
   }),
 
@@ -367,7 +505,7 @@ export const COMMANDS = {
       description:
         'Totals of spending and income over a range, optionally split or compared. Every figure is computed by Warren; quote them, never recompute.',
       scope: LEDGER_READ,
-      output: Listing,
+      output: OUTPUTS.summarize,
     },
   }),
 
@@ -442,8 +580,8 @@ export const COMMANDS = {
         'Undoes the last unit of work of this person, whichever channel made it, as a whole. The result says what came back, or why nothing did.',
       scope: LEDGER_WRITE,
       destructive: true,
-      output: Written,
-      extra: { request_id: z.uuid().optional() },
+      output: OUTPUTS.undo_last,
+      extra: { request_id: RequestId },
     },
   }),
 
@@ -468,8 +606,8 @@ export const COMMANDS = {
       description:
         'Stores one fact the person told you (an alias, a category rule or a note), in their words. Never a secret or contact data.',
       scope: LEDGER_WRITE,
-      output: Written,
-      extra: { request_id: z.uuid().optional() },
+      output: OUTPUTS.remember_fact,
+      extra: { request_id: RequestId },
     },
   }),
 
@@ -493,8 +631,8 @@ export const COMMANDS = {
       description: 'Forgets one remembered fact, by id or by key. "deshacer" brings it back.',
       scope: LEDGER_WRITE,
       destructive: true,
-      output: Written,
-      extra: { request_id: z.uuid().optional() },
+      output: OUTPUTS.forget_fact,
+      extra: { request_id: RequestId },
     },
   }),
 
@@ -529,7 +667,7 @@ export const COMMANDS = {
       title: 'List what Warren remembers',
       description: 'Lists every live fact (alias, category rule or note) the person told Warren.',
       scope: LEDGER_READ,
-      output: Listing,
+      output: OUTPUTS.list_facts,
     },
   }),
 
@@ -565,8 +703,8 @@ export const COMMANDS = {
       description:
         'Sets a reminder: Warren sends the person a WhatsApp message at the time it says.',
       scope: LEDGER_WRITE,
-      output: Written,
-      extra: { request_id: z.uuid().optional() },
+      output: OUTPUTS.set_reminder,
+      extra: { request_id: RequestId },
     },
   }),
 
@@ -583,8 +721,8 @@ export const COMMANDS = {
       description: 'Cancels one live reminder, by id. "deshacer" brings it back.',
       scope: LEDGER_WRITE,
       destructive: true,
-      output: Written,
-      extra: { request_id: z.uuid().optional() },
+      output: OUTPUTS.cancel_reminder,
+      extra: { request_id: RequestId },
     },
   }),
 
@@ -599,7 +737,7 @@ export const COMMANDS = {
       title: 'List reminders',
       description: 'Lists every live reminder, the next to come first.',
       scope: LEDGER_READ,
-      output: Listing,
+      output: OUTPUTS.list_reminders,
     },
   }),
 } satisfies Record<string, Entry>

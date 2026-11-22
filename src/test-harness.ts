@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createTestDatabase, sql, useDatabase } from '../test/db'
 import { cafeMovement, fakeGraph, fakeModel, type ToolCall } from '../test/fakes'
@@ -9,6 +10,8 @@ import { type AuthRoutes, createAuthRoutes } from './auth/routes'
 import type { Movement } from './core/commands'
 import type { Sql } from './core/db'
 import { commit } from './core/turn'
+import { createDoor } from './mcp/door'
+import { createMcpEndpoint } from './mcp/endpoint'
 import type { Transcriber } from './transcribe'
 import { createWarren } from './warren'
 import { accountFor } from './whatsapp/ingest'
@@ -51,6 +54,7 @@ export async function setup(
   const links = opts.auth ? createLinks(opts.sql ?? sql) : undefined
   // The OAuth server's issuer is the server's own origin, which is known only once it listens.
   let routes: AuthRoutes | undefined
+  let mcp: ((req: IncomingMessage, res: ServerResponse) => Promise<void>) | undefined
   const { ingest, worker, makeWorker, server } = createWarren({
     sql: opts.sql ?? sql,
     config: {
@@ -71,7 +75,10 @@ export async function setup(
     interimMs: opts.interimMs ?? 60_000,
     deadlineMs: opts.deadlineMs ?? 120_000,
     ...(opts.auth
-      ? { authRoutes: (req, res, url) => routes?.(req, res, url) ?? Promise.resolve(false) }
+      ? {
+          authRoutes: (req, res, url) => routes?.(req, res, url) ?? Promise.resolve(false),
+          mcp: (req, res) => mcp?.(req, res) ?? Promise.resolve(),
+        }
       : {}),
   })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
@@ -93,7 +100,13 @@ export async function setup(
       links,
       publicUrl: base,
       displayNumber: DISPLAY_NUMBER,
-      allowed: opts.allowed ?? ['*'],
+    })
+    mcp = createMcpEndpoint({
+      door: createDoor({ auth, sql: db, publicUrl: base, allowed: opts.allowed ?? ['*'] }),
+      sql: db,
+      publicUrl: base,
+      // The same fixed clock as the worker's: an MCP write and a WhatsApp message made "now" are in the same day and the undo window.
+      now: opts.clock ?? (() => new Date(1760000000 * 1000)),
     })
   }
   return {

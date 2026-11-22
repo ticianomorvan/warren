@@ -1,4 +1,4 @@
-import type { Server } from 'node:http'
+import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type Anthropic from '@anthropic-ai/sdk'
 import { createApp } from './app'
 import { createAuth } from './auth/config'
@@ -8,6 +8,8 @@ import type { Config } from './config'
 import type { Sql } from './core/db'
 import { createReminderSender, type ReminderSender } from './domain/reminders/send'
 import { log } from './log'
+import { createDoor } from './mcp/door'
+import { createMcpEndpoint } from './mcp/endpoint'
 import type { Transcriber } from './transcribe'
 import type { Graph } from './whatsapp/graph'
 import { createIngest, type Ingest } from './whatsapp/ingest'
@@ -29,6 +31,8 @@ export interface WarrenDeps {
   transcriber?: Transcriber | undefined
   /** Ready-made OAuth routes (tests late-bind them to the server's own origin); else built from `config.auth`. */
   authRoutes?: AuthRoutes
+  /** The ready-made `/mcp` handler, late-bound the same way. */
+  mcp?: (req: IncomingMessage, res: ServerResponse) => Promise<void>
   /** Turns on "vincular <code>" in the worker. Default: whether the OAuth server is on. */
   signIn?: boolean
   maxAttempts?: number
@@ -60,29 +64,38 @@ export function createWarren(deps: WarrenDeps): Warren {
   const { sql, config } = deps
   const maxAttempts = deps.maxAttempts ?? 5
   const ingest = createIngest(sql, { allowed: config.ALLOWED_WA_IDS })
-  // The sign-in and OAuth server for MCP exist only when PUBLIC_URL is set (the config then requires the rest).
-  const auth =
-    deps.authRoutes ??
-    (config.auth
-      ? (() => {
-          const links = createLinks(sql)
-          return createAuthRoutes({
-            auth: createAuth({
-              sql,
-              publicUrl: config.auth.publicUrl,
-              secret: config.auth.secret,
-              links,
-              log: (level, message) =>
-                log('auth_log', { level, message }, level === 'error' ? 'error' : 'info'),
-            }),
-            sql,
-            links,
-            publicUrl: config.auth.publicUrl,
-            displayNumber: config.auth.displayNumber,
-            allowed: config.ALLOWED_WA_IDS,
-          })
-        })()
-      : undefined)
+  // The sign-in, the OAuth server and `/mcp` exist only when PUBLIC_URL is set (the config then requires the rest).
+  let auth = deps.authRoutes
+  let mcp = deps.mcp
+  if (!auth && config.auth) {
+    const links = createLinks(sql)
+    const instance = createAuth({
+      sql,
+      publicUrl: config.auth.publicUrl,
+      secret: config.auth.secret,
+      links,
+      log: (level, message) =>
+        log('auth_log', { level, message }, level === 'error' ? 'error' : 'info'),
+    })
+    auth = createAuthRoutes({
+      auth: instance,
+      sql,
+      links,
+      publicUrl: config.auth.publicUrl,
+      displayNumber: config.auth.displayNumber,
+    })
+    mcp = createMcpEndpoint({
+      door: createDoor({
+        auth: instance,
+        sql,
+        publicUrl: config.auth.publicUrl,
+        allowed: config.ALLOWED_WA_IDS,
+      }),
+      sql,
+      publicUrl: config.auth.publicUrl,
+      ...(deps.clock ? { now: deps.clock } : {}),
+    })
+  }
   const makeWorker = (client: Anthropic = deps.client) =>
     createWorker({
       sql,
@@ -106,7 +119,13 @@ export function createWarren(deps: WarrenDeps): Warren {
     template: config.REMINDER_TEMPLATE,
     ...(deps.clock ? { now: deps.clock } : {}),
   })
-  const server = createApp({ ingest, config, worker, auth })
+  const server = createApp({
+    ingest,
+    config,
+    worker,
+    ...(auth ? { auth } : {}),
+    ...(mcp ? { mcp } : {}),
+  })
   return {
     ingest,
     worker,
