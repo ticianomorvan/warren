@@ -133,7 +133,7 @@ const movementAdapter: Adapter<MovementRow> = {
       FROM movement
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM movement WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
-      ORDER BY id FOR UPDATE`
+      ORDER BY movement.id FOR UPDATE`
     return rows.map(({ madeIn, endedIn, live, ...row }) => ({ row, madeIn, endedIn, live }))
   },
   end: (tx, version, turn) => endVersion(tx, version, turn),
@@ -158,7 +158,7 @@ const factAdapter: Adapter<FactRow> = {
       FROM fact
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM fact WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
-      ORDER BY id FOR UPDATE`
+      ORDER BY fact.id FOR UPDATE`
     return rows.map(({ madeIn, endedIn, live, ...row }) => ({ row, madeIn, endedIn, live }))
   },
   end: (tx, version, turn) => endFact(tx, version, turn),
@@ -221,7 +221,7 @@ const reminderAdapter: Adapter<ReminderRow> = {
       FROM reminder
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM reminder WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
-      ORDER BY id FOR UPDATE`
+      ORDER BY reminder.id FOR UPDATE`
     const out: Version<ReminderRow>[] = []
     for (const r of rows) {
       // A row whose schedule no longer parses is left out: it cannot be shown or restored, and must not break the others.

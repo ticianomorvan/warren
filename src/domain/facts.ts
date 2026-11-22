@@ -141,7 +141,7 @@ export async function liveFacts(
   const newest = await sql<(FactRow & { total: number })[]>`
     SELECT ${columns(sql)}, count(*) OVER ()::int AS total FROM fact
     WHERE account_id = ${accountId} AND ended_at IS NULL
-    ORDER BY id DESC LIMIT ${limit}`
+    ORDER BY fact.id DESC LIMIT ${limit}`
   const total = newest[0]?.total ?? 0
   const said = normalizeKey(message)
   if (said === '' || total <= newest.length) return { facts: newest, total }
@@ -150,7 +150,7 @@ export async function liveFacts(
     SELECT ${columns(sql)} FROM fact
     WHERE account_id = ${accountId} AND ended_at IS NULL AND id <> ALL(${newest.map((f) => f.version)}::bigint[])
       AND strpos(${` ${said}`}, ' ' || key) > 0
-    ORDER BY id DESC LIMIT ${MAX_MATCHED_FACTS}`
+    ORDER BY fact.id DESC LIMIT ${MAX_MATCHED_FACTS}`
   return { facts: [...newest, ...named].sort((a, b) => b.version - a.version), total }
 }
 
@@ -180,7 +180,7 @@ export function findLive(sql: Sql, accountId: number, f: LiveFilter, o: { lock?:
       ${f.id === undefined ? sql`` : sql`AND entity_id = ${f.id}`}
       ${f.kind === undefined ? sql`` : sql`AND kind = ${f.kind}`}
       ${f.key === undefined ? sql`` : sql`AND key = ${f.key}`}
-    ORDER BY id ${o.lock ? sql`FOR UPDATE` : sql``}`
+    ORDER BY fact.id ${o.lock ? sql`FOR UPDATE` : sql``}`
 }
 
 export async function countLiveFacts(sql: Sql, accountId: number): Promise<number> {

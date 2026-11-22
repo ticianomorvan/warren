@@ -14,7 +14,6 @@ import {
   liveReminderList,
   log,
   minutes,
-  NOW,
   newAccount,
   remember,
   remind,
@@ -77,6 +76,28 @@ describe('undo of a correction', () => {
     ])
     expect(await liveMovements(sql)).toEqual([{ entity: 1, amount: '3500', description: 'café' }])
     expect(say(u, views)).toBe('↩︎ Deshice:\n• Café $3.500 (estaba $3.800, efectivo)')
+  })
+})
+
+describe('undo of two corrections of one movement in one turn', () => {
+  it('is one step back to what it was before the turn, however many versions the turn made', async () => {
+    const a = await newAccount(sql)
+    await turn(sql, a, [log(cafe())])
+    await turn(
+      sql,
+      a,
+      [
+        correct(1, { amount: '3600' }),
+        correct(1, { amount: '3700' }),
+        correct(1, { amount: '3800' }),
+      ],
+      { at: minutes(5) },
+    )
+    const u = await undoAt(a, minutes(6))
+    expect(kinds(u)).toEqual(['corrected'])
+    expect(await liveMovements(sql)).toEqual([{ entity: 1, amount: '3500', description: 'café' }])
+    expect(await undoAt(a, minutes(7))).toMatchObject({ status: 'applied' })
+    expect(await liveMovements(sql)).toEqual([])
   })
 })
 

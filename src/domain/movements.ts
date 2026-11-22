@@ -39,14 +39,14 @@ export function recentMovements(sql: Sql, accountId: number, limit = RECENT_LIMI
   return sql<MovementRow[]>`
     SELECT ${columns(sql)} FROM movement
     WHERE account_id = ${accountId} AND ended_at IS NULL
-    ORDER BY id DESC LIMIT ${limit}`
+    ORDER BY movement.id DESC LIMIT ${limit}`
 }
 
 /** The entity id of the account's newest live movement, or null when it has none. */
 export async function newestLiveId(sql: Sql, accountId: number): Promise<number | null> {
   const [row] = await sql<{ id: number | null }[]>`
     SELECT entity_id::int AS id FROM movement
-    WHERE account_id = ${accountId} AND ended_at IS NULL ORDER BY id DESC LIMIT 1`
+    WHERE account_id = ${accountId} AND ended_at IS NULL ORDER BY movement.id DESC LIMIT 1`
   return row?.id ?? null
 }
 
@@ -101,7 +101,7 @@ export function liveByIds(sql: Sql, accountId: number, ids: number[]) {
   return sql<MovementRow[]>`
     SELECT ${columns(sql)} FROM movement
     WHERE account_id = ${accountId} AND entity_id = ANY(${ids}::bigint[]) AND ended_at IS NULL
-    ORDER BY id DESC`
+    ORDER BY movement.id DESC`
 }
 
 /** Ends a version in a turn. Never removes the row; false when it was not live. */
@@ -214,5 +214,5 @@ export function findMovements(
       ${f.amount ? sql`AND amount = ${f.amount}::numeric` : sql``}
       ${payment ? sql`AND position(${payment}::text IN ${sql.unsafe(foldedPayment)}) > 0` : sql``}
       ${words.length > 0 ? sql`AND search LIKE ALL (${words.map(like)}::text[])` : sql``}
-    ORDER BY id DESC LIMIT ${Math.max(f.limit, 1)}`
+    ORDER BY movement.id DESC LIMIT ${Math.max(f.limit, 1)}`
 }

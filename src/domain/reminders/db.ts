@@ -56,7 +56,7 @@ export async function liveReminders(sql: Sql, accountId: number): Promise<Remind
   const rows = await sql<RawRow[]>`
     SELECT ${columns(sql)} FROM reminder
     WHERE account_id = ${accountId} AND ${LIVE(sql)}
-    ORDER BY next_due_at, id`
+    ORDER BY next_due_at, reminder.id`
   return rows.map(toRow).filter(present)
 }
 
