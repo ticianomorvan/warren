@@ -38,6 +38,7 @@ afterEach(() => app.close())
 
 describe('warren_log_movements', () => {
   it('logs, renders the record, and leaves a turn on the channel mcp that carries it', async () => {
+    const waBefore = (await sql`SELECT 1 FROM wa_message`).length
     const r = ok(
       await write('log_movements', {
         movements: [movement(), movement({ description: 'súper', amount: '12000' })],
