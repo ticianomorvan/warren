@@ -318,14 +318,13 @@ export function createProcessor(o: ProcessorOptions) {
       // "vincular <code>" comes first, whatever else is open (typed text only, like every answer code gives). The "sí" or
       // "no" to its question is `answerAction`'s: the question is the previous reply's own, so the newest one owns it.
       const code = o.signIn && c.kind === 'text' ? linkCode(text) : null
-      // The sign-in's question is not one that blocks a "deshacer": there is nothing for the person to cancel.
-      const blocking = conversation.question && conversation.question.pending?.action !== 'link'
       const answer =
         isPhoto || voice
           ? null
           : code
             ? ({ tool: 'link_ask', input: { code } } as const)
-            : (answerAction(text, conversation.question) ?? (blocking ? null : undoRequest(text)))
+            : (answerAction(text, conversation.question) ??
+              (conversation.question ? null : undoRequest(text)))
       if (answer) {
         return unprompted(answer, { tool: answer.tool, input: answer.input, status: 'answered' })
       }

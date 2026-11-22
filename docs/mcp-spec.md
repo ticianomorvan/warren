@@ -172,3 +172,6 @@ Decided while building, changing the text above:
 - The "¿Conectar …?" question is the reply's own `pending: {action: 'link', link_id}` (like forget-all), so only the very next message can answer it, and only a bare
   "sí" confirms: this replaces "the next sí within the expiry". The link steps run in `execute()` inside the commit transaction (`link_ask`, `link_confirm`, `link_decline`).
 - `/sign-in` is limited per address (Railway's `X-Real-IP`) and the consent page shows the linked number, masked.
+- After the second review: the sign-in page asks "¿Es la tuya?" (masked number) when WhatsApp confirmed, and only the click finishes it, because better-auth skips the consent page for a returning
+  person and every Claude user shares one client id. The endpoint itself does not check an acknowledgement: it is reachable only from that page (an httpOnly cookie, SameSite=Lax, a JSON POST under the origin check), so the page-level gate plus the origin check is the whole control.
+- The per-address limit counts an IPv6 address as its /64 and runs under a per-address advisory lock (7203004).

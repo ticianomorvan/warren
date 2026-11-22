@@ -103,8 +103,11 @@ export function createAuth(s: AuthSettings) {
       // Railway's edge writes X-Real-IP with the client's address on every request and replaces any copy a client sends
       // (docs.railway.com, Specs & Limits; staff: "for client-IP rate limiting, X-Real-IP is the header to use"). Not
       // X-Forwarded-For: its hop count is not guaranteed. Services in our own private network can set it freely, and none
-      // is there. Where the header is absent (a test, a laptop) the limiter has no address and does not count.
-      ipAddress: { ipAddressHeaders: ['x-real-ip'] },
+      // is there. Where the header is absent, better-auth's limiter has no address and does not count (in development and
+      // test it falls back to 127.0.0.1); the /sign-in limit instead falls back to the socket's address (`routes.ts`), so
+      // requests without the header share one bucket there. better-auth keys an IPv6 address by its /64 and an
+      // IPv4-mapped one as IPv4 (one subscriber holds the whole prefix); `src/auth/ip.ts` does the same for /sign-in.
+      ipAddress: { ipAddressHeaders: ['x-real-ip'], ipv6Subnet: 64 },
       // Explicit, so the origin check also holds under NODE_ENV=test, where better-auth skips it by default.
       disableOriginCheck: false,
     },

@@ -13,7 +13,12 @@ export function connect(
 
 const dir = new URL('./migrations/', import.meta.url)
 
-/** Applies each `NNN_name.sql` once, in order, under an advisory lock. Safe to run on every start. */
+/**
+ * Applies each `NNN_name.sql` once, in order, under an advisory lock. Safe to run on every start.
+ *
+ * The advisory locks in use (the first key; the second, where there is one, says whose): 7203001 the migrations,
+ * 7203002 an account's undo, 7203003 an account's facts, 7203004 the sign-in pages one address opens.
+ */
 export async function migrate(sql: Sql): Promise<void> {
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort()
   await sql.begin(async (tx) => {

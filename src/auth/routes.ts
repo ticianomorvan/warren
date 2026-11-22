@@ -182,7 +182,21 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
 
   async function signInStatus(req: IncomingMessage, res: ServerResponse) {
     const secret = cookie(req, LINK_COOKIE)
-    sendJson(res, 200, { state: secret ? await links.state(secret) : 'closed' })
+    const { state, waId } = secret ? await links.state(secret) : { state: 'closed' as const }
+    // Once confirmed the page asks whose account this is, and only the click on "Sí, continuar" finishes the sign-in:
+    // a person who consented before is not asked again on the consent page, so this is where they see it.
+    sendJson(res, 200, { state, ...(waId ? { account: maskNumber(waId) } : {}) })
+  }
+
+  /** "No es mía": closes this browser's sign-in. */
+  async function signInCancel(req: IncomingMessage, res: ServerResponse) {
+    const secret = cookie(req, LINK_COOKIE)
+    // A page of ours, on our own origin, is the only caller: a form on another site cannot close it.
+    if (req.headers.origin && req.headers.origin !== new URL(publicUrl).origin) {
+      return sendJson(res, 403, { error: 'origin' })
+    }
+    if (secret) await links.cancel(secret)
+    sendJson(res, 200, { state: 'closed' })
   }
 
   async function consent(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -230,7 +244,11 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
 
   return async (req, res, url) => {
     const path = url.pathname
-    const isPage = path === '/sign-in' || path === '/sign-in/status' || path === '/oauth/consent'
+    const isPage =
+      path === '/sign-in' ||
+      path === '/sign-in/status' ||
+      path === '/sign-in/cancel' ||
+      path === '/oauth/consent'
     if (!isPage && path !== '/mcp' && !OAUTH_PATH.test(path)) return false
     if (req.headers.host !== publicHost) {
       res.writeHead(404, { 'content-type': 'text/plain' }).end()
@@ -238,6 +256,7 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
     }
     if (path === '/sign-in' && req.method === 'GET') await signIn(req, res, url)
     else if (path === '/sign-in/status' && req.method === 'GET') await signInStatus(req, res)
+    else if (path === '/sign-in/cancel' && req.method === 'POST') await signInCancel(req, res)
     else if (path === '/oauth/consent' && req.method === 'GET') await consent(req, res, url)
     else if (path === '/mcp') await mcpRoute(req, res)
     else if (OAUTH_PATH.test(path)) await betterAuth(req, res)

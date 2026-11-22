@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto'
 import type { Sql } from '../db'
+import { ipKey } from './ip'
 import type { SessionLinks } from './plugin'
 
 /** Letters and digits that cannot be read as each other: no 0/O, 1/I/L. 31 ** 6 is about 887 million. */
@@ -11,6 +12,8 @@ export const LINK_TTL_MINUTES = 10
 export const MAX_LINKS_PER_IP = 10
 /** All open sign-ins at most: a backstop for many addresses at once, far above what people need. */
 export const MAX_OPEN_LINKS = 2000
+/** The first key of the advisory lock that serializes opening sign-in pages per address (the second is its hash). See `src/db.ts` for the others. */
+const LINK_LOCK = 7203004
 
 export const newCode = () =>
   Array.from({ length: CODE_LENGTH }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('')
@@ -35,7 +38,10 @@ export interface Links extends SessionLinks {
   current(secret: string, clientName: string): Promise<OpenedLink | null>
   /** A new sign-in for the page, or null when this address (or the table) has too many open. */
   open(clientName: string, ip: string): Promise<OpenedLink | null>
-  state(secret: string): Promise<LinkState>
+  /** The state of this browser's sign-in, and, once confirmed, the WhatsApp id of the account that confirmed it. */
+  state(secret: string): Promise<{ state: LinkState; waId?: string }>
+  /** The person said it is not their account: the sign-in is closed. */
+  cancel(secret: string): Promise<void>
 }
 
 /** Open: not spent, not confirmed, not expired. */
@@ -53,38 +59,54 @@ export function createLinks(sql: Sql): Links {
     },
 
     async open(clientName, ip) {
-      const [counts] = await sql<{ open: string; mine: string }[]>`
-        SELECT count(*) FILTER (WHERE used_at IS NULL AND expires_at > now()) AS open,
-               count(*) FILTER (WHERE ip_hash = ${hashSecret(ip)}
-                 AND created_at > now() - make_interval(mins => ${LINK_TTL_MINUTES})) AS mine
-        FROM link_request`
-      if (Number(counts?.open) >= MAX_OPEN_LINKS || Number(counts?.mine) >= MAX_LINKS_PER_IP) {
-        return null
-      }
-      await sql`DELETE FROM link_request WHERE expires_at < now() - interval '1 day'`
-      const secret = newSecret()
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const code = newCode()
-        const rows = await sql<{ expiresAt: Date }[]>`
-          INSERT INTO link_request (code, secret_hash, client_name, ip_hash, expires_at)
-          VALUES (${code}, ${hashSecret(secret)}, ${clientName}, ${hashSecret(ip)},
-            now() + make_interval(mins => ${LINK_TTL_MINUTES}))
-          ON CONFLICT (code) DO NOTHING
-          RETURNING expires_at AS "expiresAt"`
-        if (rows[0]) return { code, secret, expiresAt: rows[0].expiresAt }
-      }
-      throw new Error('no free sign-in code')
+      const mine = hashSecret(ipKey(ip))
+      // One address at a time: the count and the insert are one step, so a burst from it cannot all pass the count.
+      return sql.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(${LINK_LOCK}, hashtext(${mine}))`
+        const [counts] = await tx<{ open: string; mine: string }[]>`
+          SELECT count(*) FILTER (WHERE used_at IS NULL AND expires_at > now()) AS open,
+                 count(*) FILTER (WHERE ip_hash = ${mine}
+                   AND created_at > now() - make_interval(mins => ${LINK_TTL_MINUTES})) AS mine
+          FROM link_request`
+        if (Number(counts?.open) >= MAX_OPEN_LINKS || Number(counts?.mine) >= MAX_LINKS_PER_IP) {
+          return null
+        }
+        await tx`DELETE FROM link_request WHERE expires_at < now() - interval '1 day'`
+        const secret = newSecret()
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const code = newCode()
+          const rows = await tx<{ expiresAt: Date }[]>`
+            INSERT INTO link_request (code, secret_hash, client_name, ip_hash, expires_at)
+            VALUES (${code}, ${hashSecret(secret)}, ${clientName}, ${mine},
+              now() + make_interval(mins => ${LINK_TTL_MINUTES}))
+            ON CONFLICT (code) DO NOTHING
+            RETURNING expires_at AS "expiresAt"`
+          if (rows[0]) return { code, secret, expiresAt: rows[0].expiresAt }
+        }
+        throw new Error('no free sign-in code')
+      })
     },
 
     async state(secret) {
-      const [row] = await sql<{ state: LinkState }[]>`
+      const [row] = await sql<{ state: LinkState; wa_id: string | null }[]>`
         SELECT CASE
-          WHEN used_at IS NOT NULL OR expires_at <= now() THEN 'closed'
-          WHEN confirmed_at IS NOT NULL THEN 'confirmed'
-          WHEN asked_at IS NOT NULL THEN 'asked'
-          ELSE 'waiting' END AS state
-        FROM link_request WHERE secret_hash = ${hashSecret(secret)}`
-      return row?.state ?? 'closed'
+          WHEN l.used_at IS NOT NULL OR l.expires_at <= now() THEN 'closed'
+          WHEN l.confirmed_at IS NOT NULL THEN 'confirmed'
+          WHEN l.asked_at IS NOT NULL THEN 'asked'
+          ELSE 'waiting' END AS state,
+          CASE WHEN l.confirmed_at IS NOT NULL AND l.used_at IS NULL AND l.expires_at > now()
+            THEN a.wa_id END AS wa_id
+        FROM link_request l LEFT JOIN account a ON a.id = l.account_id
+        WHERE l.secret_hash = ${hashSecret(secret)}`
+      return row
+        ? { state: row.state, ...(row.wa_id ? { waId: row.wa_id } : {}) }
+        : { state: 'closed' }
+    },
+
+    async cancel(secret) {
+      await sql`
+        UPDATE link_request SET used_at = now()
+        WHERE secret_hash = ${hashSecret(secret)} AND used_at IS NULL`
     },
 
     async spend(secret) {

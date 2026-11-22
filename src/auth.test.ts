@@ -2,16 +2,19 @@ import { createHash, randomBytes, randomInt } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { getMigrations } from 'better-auth/db/migration'
 import { describe, expect, it } from 'vitest'
+import { ipKey } from './auth/ip'
 import { cleanName, maskNumber } from './auth/routes'
 import { forgetAll, replyCall, script } from './command-fixtures'
 import { loadConfig } from './config'
 import { REPLY_LINK } from './render'
 import {
   bodies,
+  cafe,
   DISPLAY_NUMBER,
   fakeModel,
   gate,
   messageBody,
+  movements,
   post,
   row,
   settle,
@@ -551,6 +554,20 @@ describe('the question of a sign-in belongs to the very next answer', () => {
     },
   )
 
+  it('"deshacer" right after the sign-in question is the agent\'s to read, and code does not undo an earlier movement', async () => {
+    const { app } = await withClaude({
+      model: script(cafe, replyCall('Decime qué querés cambiar.')),
+    })
+    expect((await whatsapp(app, WA_A, 'café 3500'))[0]).toContain('Café')
+    await asked(app)
+    expect(await whatsapp(app, WA_A, 'deshacer')).toEqual(['Decime qué querés cambiar.'])
+    expect(await movements()).toHaveLength(1)
+    expect(
+      await sql`SELECT 1 FROM movement WHERE deleted_at IS NULL AND superseded_by IS NULL`,
+    ).toHaveLength(1)
+    app.close()
+  })
+
   it('a "no" declines it, and the browser is closed', async () => {
     const { app } = await withClaude()
     const { b } = await asked(app)
@@ -771,6 +788,77 @@ describe('what is served, and where', () => {
   })
 })
 
+describe('whose account, before anything is finished', () => {
+  const statusBody = async (b: Browser) =>
+    (await (await b.go('/sign-in/status')).json()) as { state: string; account?: string }
+
+  it('the status names the account only once it is confirmed, and masked', async () => {
+    const { app } = await withClaude()
+    const b = browser(app.base)
+    const { code } = await openSignIn(b, app.base, pkce().challenge)
+    expect(await statusBody(b)).toEqual({ state: 'waiting' })
+    await whatsapp(app, WA_A, `vincular ${code}`)
+    expect(await statusBody(b)).toEqual({ state: 'asked' })
+    await whatsapp(app, WA_A, 'sí')
+    expect(await statusBody(b)).toEqual({ state: 'confirmed', account: '+54 9 ····0001' })
+    expect(JSON.stringify(await statusBody(b))).not.toContain(WA_A)
+    // A browser that does not hold the secret is told nothing.
+    expect(await statusBody(browser(app.base))).toEqual({ state: 'closed' })
+    app.close()
+  })
+
+  it('a person who consented before skips the consent page, so the sign-in page is where they see whose account it is', async () => {
+    const { app } = await withClaude()
+    // B has connected their own Claude once: consent for this client and these scopes exists.
+    await connect(app, browser(app.base), { challenge: pkce().challenge, from: WA_B })
+    const sessions = async () => Number((await sql`SELECT count(*) AS n FROM auth_session`)[0]?.n)
+    expect(await sessions()).toBe(1)
+
+    // The victim's browser opens a sign-in; B sends its code from B's own phone and answers "sí".
+    const victim = browser(app.base)
+    const { code, search, html } = await openSignIn(victim, app.base, pkce().challenge)
+    await whatsapp(app, WA_B, `vincular ${code}`)
+    await whatsapp(app, WA_B, 'sí')
+    // Nothing finishes by itself: the page is told whose account this is and no session was made.
+    expect(await statusBody(victim)).toEqual({ state: 'confirmed', account: '+54 9 ····0002' })
+    expect(await sessions()).toBe(1)
+    // The page calls the finishing endpoint only from the click on "Sí, continuar", never from its polling.
+    expect(html).toContain('Sí, continuar')
+    expect(html).toContain('No es mía')
+    expect(html.match(/link\/complete/g)).toHaveLength(1)
+    expect(html).toContain("yes.addEventListener('click', complete)")
+    const poll = /async function poll\(\) \{[\s\S]*?\n {2}\}\n/.exec(html)?.[0] ?? ''
+    expect(poll).toContain('/sign-in/status')
+    expect(poll).not.toContain('complete')
+    // And this is why the page asks: for B the consent page would be skipped, straight back to the client.
+    const done = await complete(victim, search)
+    const next = new URL(((await done.json()) as { url: string }).url, app.base)
+    expect(next.origin + next.pathname).toBe(REDIRECT)
+    app.close()
+  })
+
+  it('"No es mía" closes the sign-in; only the browser that holds it, from our own origin, can', async () => {
+    const { app } = await withClaude()
+    const b = browser(app.base)
+    const { code, search } = await openSignIn(b, app.base, pkce().challenge)
+    await whatsapp(app, WA_A, `vincular ${code}`)
+    await whatsapp(app, WA_A, 'sí')
+    expect((await browser(app.base).json('/sign-in/cancel', {})).status).toBe(200) // no cookie: nothing happens
+    expect(await status(b)).toBe('confirmed')
+    const cross = await b.go('/sign-in/cancel', {
+      method: 'POST',
+      headers: { origin: 'https://evil.example' },
+    })
+    expect(cross.status).toBe(403)
+    expect(await status(b)).toBe('confirmed')
+    expect((await b.json('/sign-in/cancel', {})).status).toBe(200)
+    expect(await status(b)).toBe('closed')
+    expect((await complete(b, search)).status).toBe(403)
+    expect(await sql`SELECT 1 FROM auth_session`).toHaveLength(0)
+    app.close()
+  })
+})
+
 describe('abuse limits and the origin check', () => {
   it('refuses a cross-origin POST to finish a sign-in, even with the right cookie', async () => {
     const { app } = await withClaude()
@@ -817,6 +905,39 @@ describe('abuse limits and the origin check', () => {
     app.close()
   })
 
+  it('an IPv6 /64 is one address for the limit', async () => {
+    const { app } = await withClaude()
+    for (let k = 0; k < 10; k++) {
+      const ip = `2001:db8:1:2:${k.toString(16)}::${k + 1}`
+      expect(
+        (await openSignIn(browser(app.base, ip), app.base, pkce().challenge)).page.status,
+      ).toBe(200)
+    }
+    const same = await openSignIn(
+      browser(app.base, '2001:db8:1:2:ffff::9'),
+      app.base,
+      pkce().challenge,
+    )
+    expect(same.page.status).toBe(429)
+    expect(
+      (await openSignIn(browser(app.base, '2001:db8:1:3::1'), app.base, pkce().challenge)).page
+        .status,
+    ).toBe(200)
+    app.close()
+  })
+
+  it('a burst from one address cannot pass the limit together', async () => {
+    const { app } = await withClaude()
+    const opened = await Promise.all(
+      Array.from({ length: 25 }, () =>
+        (app.links as NonNullable<typeof app.links>).open('Claude (claude.ai)', '203.0.113.50'),
+      ),
+    )
+    expect(opened.filter(Boolean)).toHaveLength(10)
+    expect(await sql`SELECT 1 FROM link_request`).toHaveLength(10)
+    app.close()
+  })
+
   it('better-auth limits finishing a sign-in per address, under the address Railway writes', async () => {
     const { app } = await withClaude()
     const b = browser(app.base, '198.51.100.9')
@@ -848,6 +969,22 @@ describe('the schema', () => {
       sql`INSERT INTO auth_user (name, email, "emailVerified", warren_account_id)
         VALUES ('x', 'x@users.invalid', true, 999)`,
     ).rejects.toThrow()
+  })
+})
+
+describe('ipKey', () => {
+  it('keeps IPv4, turns an IPv4-mapped IPv6 into IPv4 and an IPv6 into its /64', () => {
+    expect(ipKey('203.0.113.7')).toBe('203.0.113.7')
+    expect(ipKey(' 203.0.113.7 ')).toBe('203.0.113.7')
+    expect(ipKey('::ffff:203.0.113.7')).toBe('203.0.113.7')
+    expect(ipKey('::ffff:cb00:7107')).toBe('203.0.113.7')
+    expect(ipKey('2001:db8:1:2:3:4:5:6')).toBe('2001:db8:1:2::/64')
+    expect(ipKey('2001:0DB8:0001:0002:ffff::9')).toBe('2001:db8:1:2::/64')
+    expect(ipKey('2001:db8::1')).toBe('2001:db8:0:0::/64')
+    expect(ipKey('[2001:db8:1:2::1]')).toBe('2001:db8:1:2::/64')
+    expect(ipKey('fe80::1%eth0')).toBe('fe80:0:0:0::/64')
+    expect(ipKey('::1')).toBe('0:0:0:0::/64')
+    expect(ipKey('unknown')).toBe('unknown')
   })
 })
 

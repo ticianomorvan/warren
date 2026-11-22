@@ -64,8 +64,10 @@ p { margin: 0 0 14px; text-wrap: pretty; }
 @keyframes pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .dot { animation: none; } .btn { transition: none; } }
 p.tight { margin-top: 14px; }
-.closed .live { display: none; }
+.closed .live, .confirming .live, .confirming .status, .closed .ack { display: none; }
 .closed .status { margin-top: 0; }
+.ack p { margin-bottom: 16px; }
+.ack b { overflow-wrap: anywhere; white-space: nowrap; }
 p.foot { margin: 14px 0 0; }
 .number { font-weight: 600; white-space: nowrap; }
 ul.scopes { list-style: none; margin: 0 0 18px; padding: 0; }
@@ -125,9 +127,15 @@ const SIGN_IN_SCRIPT = `
     });
   }
   let finished = false;
+  const ack = document.getElementById('ack');
+  const who = document.getElementById('who');
+  const yes = document.getElementById('yes');
+  const no = document.getElementById('no');
+  const closed = (t) => { finished = true; document.body.classList.remove('confirming'); document.body.classList.add('closed'); say(t, 'bad'); };
+  // The only call that finishes the sign-in, and only a click on "Sí, continuar" makes it.
   async function complete() {
     finished = true;
-    say('Listo, conectando…', 'done');
+    yes.disabled = no.disabled = true;
     try {
       const res = await fetch('/api/auth/warren/link/complete', {
         method: 'POST', credentials: 'same-origin',
@@ -137,16 +145,30 @@ const SIGN_IN_SCRIPT = `
       const next = res.ok ? await res.json() : null;
       if (next && next.url) { location.replace(next.url); return; }
     } catch {}
-    say('No pudimos terminar la conexión. Volvé a Claude y probá de nuevo.', 'bad');
+    closed('No pudimos terminar la conexión. Volvé a Claude y probá de nuevo.');
   }
+  async function reject() {
+    finished = true;
+    yes.disabled = no.disabled = true;
+    try { await fetch('/sign-in/cancel', { method: 'POST', credentials: 'same-origin' }); } catch {}
+    closed('Cancelamos la conexión. Si no la pediste vos, no pasó nada.');
+  }
+  yes.addEventListener('click', complete);
+  no.addEventListener('click', reject);
   async function poll() {
     if (finished) return;
     try {
       const res = await fetch('/sign-in/status', { credentials: 'same-origin', cache: 'no-store' });
-      const { state } = await res.json();
-      if (state === 'confirmed') return complete();
-      if (state === 'closed') { finished = true; document.body.classList.add('closed'); return say('Este código venció. Volvé a Claude y tocá conectar de nuevo.', 'bad'); }
-      say(state === 'asked' ? 'Warren te preguntó por WhatsApp. Respondé “sí” para conectar.' : 'Esperando tu mensaje…');
+      const { state, account } = await res.json();
+      if (state === 'closed') return closed('Este código venció. Volvé a Claude y tocá conectar de nuevo.');
+      if (state === 'confirmed' && account) {
+        // Whose account this is, before anything is finished: someone else may have sent this code.
+        who.textContent = account;
+        ack.hidden = false;
+        document.body.classList.add('confirming');
+      } else {
+        say(state === 'asked' ? 'Warren te preguntó por WhatsApp. Respondé “sí” para conectar.' : 'Esperando tu mensaje…');
+      }
     } catch {}
     setTimeout(poll, 2000);
   }
@@ -168,6 +190,11 @@ export function signInPage(v: SignInView): string {
 <button class="btn secondary live" id="copy" type="button" data-text="${esc(message)}" hidden>Copiar mensaje</button>
 <p class="muted tight live">¿Estás en la compu? Mandalo desde tu celular al <span class="number">${esc(v.displayNumber)}</span>.</p>
 <div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">Esperando tu mensaje…</span></div>
+<div class="ack" id="ack" hidden role="alert">
+<p>Vas a conectar la cuenta de <b id="who"></b>. ¿Es la tuya?</p>
+<button class="btn primary" id="yes" type="button">Sí, continuar</button>
+<button class="btn secondary" id="no" type="button">No es mía</button>
+</div>
 <p class="muted foot live">El código vence a los ${v.minutes} minutos. Si no fuiste vos quien pidió conectar, cerrá esta página.</p>
 </div>`,
     v.nonce,
