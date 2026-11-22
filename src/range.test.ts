@@ -60,19 +60,19 @@ describe('resolveRange: what people say, for a fixed Saturday 2026-11-21', () =>
     ],
     ['2025', r('year', { year: 2025 }), '2025-01-01..2025-12-31 year'],
     ['2026', r('year', { year: 2026 }), '2026-01-01..2026-11-21 (en curso) year'],
-    ['el 5', r('dates', { from: '5' }), '2026-11-05..2026-11-05 custom'],
-    ['el 25 (not yet this month)', r('dates', { from: '25' }), '2026-10-25..2026-10-25 custom'],
-    ['el 21 (today)', r('dates', { from: '21' }), '2026-11-21..2026-11-21 custom'],
-    ['el 31 (November has no 31)', r('dates', { from: '31' }), '2026-10-31..2026-10-31 custom'],
+    ['el 5', r('dates', { from: '5' }), '2026-11-05..2026-11-05 day'],
+    ['el 25 (not yet this month)', r('dates', { from: '25' }), '2026-10-25..2026-10-25 day'],
+    ['el 21 (today)', r('dates', { from: '21' }), '2026-11-21..2026-11-21 day'],
+    ['el 31 (November has no 31)', r('dates', { from: '31' }), '2026-10-31..2026-10-31 day'],
     [
       'del 1 al 15 de noviembre',
       r('dates', { from: '11-01', to: '11-15' }),
       '2026-11-01..2026-11-15 custom',
     ],
     [
-      'del 15 al 25 (the 25th is still to come: last month)',
+      'del 15 al 25 (the 25th is still to come: cut at today)',
       r('dates', { from: '15', to: '25' }),
-      '2026-10-15..2026-10-25 custom',
+      '2026-11-15..2026-11-21 (en curso) custom',
     ],
     [
       'del 20 al 5 (across a month end)',
@@ -84,16 +84,12 @@ describe('resolveRange: what people say, for a fixed Saturday 2026-11-21', () =>
       r('dates', { from: '12-28', to: '01-03' }),
       '2025-12-28..2026-01-03 custom',
     ],
-    ['el 5 de octubre', r('dates', { from: '10-05' }), '2026-10-05..2026-10-05 custom'],
-    [
-      'el 1 de diciembre (last year)',
-      r('dates', { from: '12-01' }),
-      '2025-12-01..2025-12-01 custom',
-    ],
+    ['el 5 de octubre', r('dates', { from: '10-05' }), '2026-10-05..2026-10-05 day'],
+    ['el 1 de diciembre (last year)', r('dates', { from: '12-01' }), '2025-12-01..2025-12-01 day'],
     [
       'el 29 de febrero (the last leap day)',
       r('dates', { from: '02-29' }),
-      '2024-02-29..2024-02-29 custom',
+      '2024-02-29..2024-02-29 day',
     ],
     [
       'explicit days',
@@ -139,10 +135,10 @@ describe('resolveRange: the day of the week and of the month decide', () => {
   })
 
   it('"el 5" is this month\'s unless that is still to come', () => {
-    expect(ok(r('dates', { from: '5' }), '2026-11-03')).toBe('2026-10-05..2026-10-05 custom')
-    expect(ok(r('dates', { from: '5' }), '2026-11-05')).toBe('2026-11-05..2026-11-05 custom')
-    expect(ok(r('dates', { from: '5' }), '2026-01-03')).toBe('2025-12-05..2025-12-05 custom')
-    expect(ok(r('dates', { from: '31' }), '2026-03-01')).toBe('2026-01-31..2026-01-31 custom') // no 31 February
+    expect(ok(r('dates', { from: '5' }), '2026-11-03')).toBe('2026-10-05..2026-10-05 day')
+    expect(ok(r('dates', { from: '5' }), '2026-11-05')).toBe('2026-11-05..2026-11-05 day')
+    expect(ok(r('dates', { from: '5' }), '2026-01-03')).toBe('2025-12-05..2025-12-05 day')
+    expect(ok(r('dates', { from: '31' }), '2026-03-01')).toBe('2026-01-31..2026-01-31 day') // no 31 February
   })
 
   it('"octubre" is the last October that has started', () => {
@@ -156,9 +152,9 @@ describe('resolveRange: the day of the week and of the month decide', () => {
   })
 
   it('"29 de febrero" is the last leap day, across the century rule', () => {
-    expect(ok(r('dates', { from: '02-29' }), '2028-03-01')).toBe('2028-02-29..2028-02-29 custom')
-    expect(ok(r('dates', { from: '02-29' }), '2028-02-28')).toBe('2024-02-29..2024-02-29 custom')
-    expect(ok(r('dates', { from: '02-29' }), '2100-03-01')).toBe('2096-02-29..2096-02-29 custom')
+    expect(ok(r('dates', { from: '02-29' }), '2028-03-01')).toBe('2028-02-29..2028-02-29 day')
+    expect(ok(r('dates', { from: '02-29' }), '2028-02-28')).toBe('2024-02-29..2024-02-29 day')
+    expect(ok(r('dates', { from: '02-29' }), '2100-03-01')).toBe('2096-02-29..2096-02-29 day')
   })
 
   it('weeks and months turn over at Argentine midnight, not at UTC midnight', () => {
@@ -205,7 +201,6 @@ describe('resolveRange: refusals, with the reason the model sees', () => {
       'is reversed: it starts on 2026-11-15 and ends on 2026-11-10',
     )
     expect(why(r('dates', { from: '11-20', to: '11-05' }), NOW)).toContain('is reversed')
-    expect(why(r('dates', { from: '2026-11-20', to: '5' }), NOW)).toContain('is reversed')
   })
 
   it('a range over two years, and the most that is allowed', () => {
@@ -303,7 +298,7 @@ describe('previousRange', () => {
     expect(prior(r('dates', { from: '2026-11-01', to: '2026-11-15' }))).toBe(
       '2026-10-17..2026-10-31 custom',
     )
-    expect(prior(r('dates', { from: '2026-11-05' }))).toBe('2026-11-04..2026-11-04 custom')
+    expect(prior(r('dates', { from: '2026-11-05' }))).toBe('2026-11-04..2026-11-04 day')
     expect(prior(r('dates', { from: '2026-03-02', to: '2026-03-04' }))).toBe(
       '2026-02-27..2026-03-01 custom',
     )
@@ -326,7 +321,7 @@ describe('parseOther: the second range of a comparison, written as a short text'
     expect(parsed('month:2:2024')).toBe('2024-02-01..2024-02-29 month')
     expect(parsed('year:2025')).toBe('2025-01-01..2025-12-31 year')
     expect(parsed('dates:11-01..11-15')).toBe('2026-11-01..2026-11-15 custom')
-    expect(parsed('dates:5')).toBe('2026-11-05..2026-11-05 custom')
+    expect(parsed('dates:5')).toBe('2026-11-05..2026-11-05 day')
     expect(parsed('dates:2026-10-17..2026-10-31')).toBe('2026-10-17..2026-10-31 custom')
   })
 
@@ -354,5 +349,65 @@ describe('parseOther: the second range of a comparison, written as a short text'
     expect(why(parseOther('dates:2026-11-10..2026-11-02') as RangeInput, NOW)).toContain(
       'is reversed',
     )
+  })
+})
+
+describe('resolveRange: days whose end has not come yet are cut at today (review of slice D)', () => {
+  it('"del 1 al 15 de noviembre" asked before the 15th is this month so far, not last year', () => {
+    expect(ok(r('dates', { from: '11-01', to: '11-15' }), '2026-11-12')).toBe(
+      '2026-11-01..2026-11-12 (en curso) custom',
+    )
+    expect(ok(r('dates', { from: '11-01', to: '11-15' }), '2026-11-15')).toBe(
+      '2026-11-01..2026-11-15 custom',
+    )
+    expect(ok(r('dates', { from: '11-21', to: '11-25' }), NOW)).toBe(
+      '2026-11-21..2026-11-21 (en curso) custom',
+    )
+    expect(ok(r('dates', { from: '11-01', to: '11-30' }), NOW)).toBe(
+      '2026-11-01..2026-11-21 (en curso) month',
+    )
+    expect(ok(r('dates', { from: '01-01', to: '12-31' }), NOW)).toBe(
+      '2026-01-01..2026-11-21 (en curso) year',
+    )
+  })
+
+  it('a start that has not come is refused whatever the end', () => {
+    // the latest 25 November that is not in the future is last year's: the whole range is last year's
+    expect(ok(r('dates', { from: '11-25', to: '11-30' }), NOW)).toBe(
+      '2025-11-25..2025-11-30 custom',
+    )
+    expect(why(r('dates', { from: '2026-11-25', to: '2026-11-30' }), NOW)).toContain(
+      'has not started',
+    )
+  })
+
+  it('a range across the end of a month or a year still wraps, and the same month backwards is refused', () => {
+    expect(ok(r('dates', { from: '20', to: '5' }), NOW)).toBe('2026-10-20..2026-11-05 custom')
+    expect(ok(r('dates', { from: '12-28', to: '01-03' }), NOW)).toBe(
+      '2025-12-28..2026-01-03 custom',
+    )
+    expect(why(r('dates', { from: '11-20', to: '11-05' }), NOW)).toContain('is reversed')
+  })
+
+  it('a full start with a partial end goes forward to the first such day', () => {
+    expect(ok(r('dates', { from: '2026-10-20', to: '5' }), NOW)).toBe(
+      '2026-10-20..2026-11-05 custom',
+    )
+    expect(ok(r('dates', { from: '2026-11-20', to: '5' }), NOW)).toBe(
+      '2026-11-20..2026-11-21 (en curso) custom',
+    )
+  })
+})
+
+describe('resolveRange: years that are not years', () => {
+  it('a year below 2000 or past 2200 is not a day, so nothing reaches the database or addDays', () => {
+    for (const from of ['0001-01-01', '1999-12-31', '0025-03-01', '2201-01-01']) {
+      expect(why(r('dates', { from, to: from }), NOW), from).toContain('not a real day')
+    }
+  })
+
+  it('a year is always four digits in the days it returns', () => {
+    const res = resolveRange(r('dates', { from: '2000-01-01', to: '2000-01-03' }), NOW)
+    expect(res.ok && res.range.from).toBe('2000-01-01')
   })
 })

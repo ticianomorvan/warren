@@ -1,5 +1,5 @@
-import { NAMED_PERIODS, type RangeInput } from './agent/schema'
-import { addDays, type DateRange } from './time'
+import { isTimeGroup, NAMED_PERIODS, type RangeInput, type ToolInput } from './agent/schema'
+import { addDays, type DateRange, dayParts as parts } from './time'
 
 /**
  * Which kind of span a range is, which decides what "the one before" means: a month goes back to the
@@ -20,9 +20,8 @@ export type Resolution = { ok: true; range: Resolved } | { ok: false; reason: st
 export const MAX_RANGE_DAYS = 731
 
 const pad = (n: number) => String(n).padStart(2, '0')
-const iso = (y: number, m: number, d: number) => `${y}-${pad(m)}-${pad(d)}`
+const iso = (y: number, m: number, d: number) => `${String(y).padStart(4, '0')}-${pad(m)}-${pad(d)}`
 const daysIn = (y: number, m: number) => new Date(Date.UTC(y, m, 0)).getUTCDate()
-const parts = (day: string) => day.split('-').map(Number) as [number, number, number]
 const weekday = (day: string) => new Date(`${day}T00:00:00Z`).getUTCDay() // 0 is Sunday
 
 /** The inclusive number of days from `from` to `to`. */
@@ -51,7 +50,7 @@ function parseEndpoint(text: string): Endpoint | string {
   let match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s)
   if (match) {
     const [y, m, d] = [Number(match[1]), Number(match[2]), Number(match[3])]
-    return m >= 1 && m <= 12 && d >= 1 && d <= daysIn(y, m)
+    return y >= 2000 && y <= 2200 && m >= 1 && m <= 12 && d >= 1 && d <= daysIn(y, m)
       ? { form: 'full', y, m, d }
       : `"${s}" is not a real day`
   }
@@ -97,6 +96,35 @@ function latest(e: Endpoint, limit: string): string | null {
   return null
 }
 
+/** Where an endpoint falls in a year or month, to tell a range that runs on from one that wraps ("28 dic al 3 ene"). */
+const order = (e: Endpoint) => (e.form === 'md' ? e.m * 100 + e.d : e.form === 'd' ? e.d : 0)
+
+/** The first day that is the endpoint on or after `from`: where "al 15" ends a range that started on the 1st. */
+function firstFrom(e: Endpoint, from: string): string | null {
+  if (e.form === 'full') return iso(e.y, e.m, e.d)
+  const [fy, fm] = parts(from)
+  if (e.form === 'md') {
+    for (let y = fy; y < fy + 9; y++) {
+      if (e.d > daysIn(y, e.m)) continue
+      const day = iso(y, e.m, e.d)
+      if (day >= from) return day
+    }
+    return null
+  }
+  for (let ahead = 0; ahead < 36; ahead++) {
+    const first = new Date(Date.UTC(fy, fm - 1 + ahead, 1))
+    const y = first.getUTCFullYear()
+    const m = first.getUTCMonth() + 1
+    if (e.d > daysIn(y, m)) continue
+    const day = iso(y, m, e.d)
+    if (day >= from) return day
+  }
+  return null
+}
+
+const reversed = (from: string, to: string) =>
+  `The range is reversed: it starts on ${from} and ends on ${to}. If the person only said the days in the wrong order, send it again in order; if you cannot tell what they mean, ask them with reply.`
+
 function resolveDates(spec: RangeInput, today: string): Resolution {
   if (spec.from.trim() === '') return refuse('period "dates" needs from (yyyy-mm-dd, mm-dd or dd)')
   const start = parseEndpoint(spec.from)
@@ -104,21 +132,31 @@ function resolveDates(spec: RangeInput, today: string): Resolution {
   const end = spec.to.trim() === '' ? start : parseEndpoint(spec.to)
   if (typeof end === 'string') return refuse(`to: ${end}`)
 
-  // The end first (the latest such day up to today), then the start (the latest such day up to the end), so
-  // "del 15 al 25" is one stretch of days and "del 20 al 5" runs from the 20th of one month to the 5th of the next.
-  const to = latest(end, today)
-  if (to === null)
-    return refuse(`to: "${spec.to || spec.from}" is not a day that exists in the last years`)
-  const sameMonthBackwards =
-    start.form === 'md' && end.form === 'md' && start.m === end.m && start.d > end.d
-  const from = sameMonthBackwards ? iso(parts(to)[0], start.m, start.d) : latest(start, to)
-  if (from === null)
-    return refuse(`from: "${spec.from}" is not a day that exists in the last years`)
-  if (from > to) {
+  const missing = (which: 'from' | 'to') =>
+    refuse(
+      `${which}: "${which === 'from' ? spec.from : spec.to || spec.from}" is not a day that exists in the last years`,
+    )
+  let from: string | null
+  let to: string | null
+  const wraps = start.form === end.form && start.form !== 'full' && order(end) < order(start)
+  if (start.form === 'md' && end.form === 'md' && start.m === end.m && start.d > end.d) {
     return refuse(
-      `The range is reversed: it starts on ${from} and ends on ${to}. If the person only said the days in the wrong order, send it again in order; if you cannot tell what they mean, ask them with reply.`,
+      `The range is reversed: it starts on day ${start.d} and ends on day ${end.d} of the same month ("${spec.from}" to "${spec.to}"). If the person only said the days in the wrong order, send it again in order; if you cannot tell what they mean, ask them with reply.`,
     )
   }
+  if (wraps) {
+    // "del 28 de diciembre al 3 de enero", "del 20 al 5": the end is the latest such day up to today, the start the latest before it.
+    to = latest(end, today)
+    from = to === null ? null : latest(start, to)
+  } else {
+    // The start is the latest such day up to today and the end the first such day from it, cut at today when it has
+    // not come: "del 1 al 15 de noviembre" asked on the 12th is the 1st to the 12th.
+    from = latest(start, today)
+    to = from === null ? null : firstFrom(end, from)
+  }
+  if (from === null) return missing('from')
+  if (to === null) return missing('to')
+  if (from > to) return refuse(reversed(from, to))
   return bounded({ from, to, kind: 'custom' }, today, `The days ${from} to ${to}`)
 }
 
@@ -148,6 +186,7 @@ function bounded(whole: Whole, today: string, what: string): Resolution {
     const [ty, tm, td] = parts(whole.to)
     if (fy === ty && fm === tm && fd === 1 && td === daysIn(ty, tm)) kind = 'month'
     else if (fy === ty && fm === 1 && fd === 1 && tm === 12 && td === 31) kind = 'year'
+    else if (whole.from === whole.to) kind = 'day'
   }
   const range: Resolved = {
     from: whole.from,
@@ -309,4 +348,36 @@ export function previousRange(r: Resolved): Resolved {
       return whole({ from: addDays(r.from, -days), to: addDays(r.from, -1), kind: 'custom' })
     }
   }
+}
+
+/** What a summary covers: the range asked about and, when it is compared, the range it is compared with. */
+export interface SummaryPlan {
+  asked: Resolved
+  before: Resolved | null
+}
+
+/**
+ * Every rule of a summary's days in one place, for `checkCall` (which tells the model why not) and for `execute` (which
+ * runs it): the range, the second range's text, "previous", and what cannot be compared. A string is the reason it cannot run.
+ */
+export function planSummary(
+  q: Pick<ToolInput<'summarize'>, 'range' | 'group_by' | 'compare_to' | 'other'>,
+  today: string,
+): SummaryPlan | string {
+  const asked = resolveRange(q.range, today)
+  if (!asked.ok) return `range: ${asked.reason}`
+  if (q.compare_to !== 'range' && q.other.trim() !== '') {
+    return `other is only for compare_to "range" (this one is "${q.compare_to}"): send "" or set compare_to "range"`
+  }
+  if (q.compare_to === 'none') return { asked: asked.range, before: null }
+  if (isTimeGroup(q.group_by)) {
+    return `a comparison cannot be grouped by ${q.group_by}: use group_by none, category or payment, or drop the comparison`
+  }
+  if (q.compare_to === 'previous') return { asked: asked.range, before: previousRange(asked.range) }
+  if (q.other.trim() === '')
+    return 'compare_to "range" needs other: the second range to compare with'
+  const spec = parseOther(q.other)
+  if (typeof spec === 'string') return spec
+  const second = resolveRange(spec, today)
+  return second.ok ? { asked: asked.range, before: second.range } : `other: ${second.reason}`
 }

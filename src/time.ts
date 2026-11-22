@@ -31,3 +31,10 @@ export function addDays(isoDate: string, days: number): string {
 }
 
 export type DateRange = { from: string; to: string }
+
+/** [year, month, day] of a yyyy-mm-dd day. */
+export const dayParts = (day: string) => day.split('-').map(Number) as [number, number, number]
+
+/** The Monday of the week of a day. */
+export const mondayOf = (day: string) =>
+  addDays(day, -((new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7))

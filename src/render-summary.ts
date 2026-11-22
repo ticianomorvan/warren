@@ -1,9 +1,9 @@
-import type { Category, GroupBy } from './agent/schema'
+import { type Category, type GroupBy, isTimeGroup } from './agent/schema'
 import type { GroupTotal, QueryTotal } from './ledger'
 import type { Resolved } from './range'
 import { CATEGORY_LABEL, capitalize, formatMoney } from './render'
 import { change, formatPercent, toCents } from './summary'
-import { addDays, weekdayName } from './time'
+import { addDays, mondayOf, dayParts as parts, weekdayName } from './time'
 
 /**
  * The reply to a summary, from SQL results and nothing else: every figure here is a sum or a count the database
@@ -62,11 +62,8 @@ export interface Side {
   groups: GroupTotal[]
 }
 
-const parts = (day: string) => day.split('-').map(Number) as [number, number, number]
 const month = (m: number) => MONTHS_SHORT[m - 1] ?? ''
 const movements = (n: number) => `${n} ${n === 1 ? 'movimiento' : 'movimientos'}`
-const mondayOf = (day: string) =>
-  addDays(day, -((new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7))
 
 /** "9–15 nov", "28 oct–3 nov", "5 nov"; the year is added when a day is not of the current year. */
 export function spanText(from: string, to: string, today: string): string {
@@ -109,7 +106,6 @@ export function rangeLabel(r: Resolved, today: string): string {
     case 'year':
       return `Año ${fy} (${spanText(r.from, r.to, today)}${open})`
     case 'custom': {
-      if (r.from === r.to) return `El ${spanText(r.from, r.to, today)}`
       return `Del ${spanText(r.from, r.to, today).replace('–', ' al ')}`
     }
   }
@@ -150,7 +146,8 @@ const byPair = (a: Pair, b: Pair) =>
 const bigger = (a: bigint, b: bigint) => (a > b ? -1 : a < b ? 1 : 0)
 
 /**
- * The reply to a summary: one block per direction and currency (out first, ARS first), never added together.
+ * The reply to a summary: one line per direction and currency (out first, ARS first), never added together; each is its own
+ * list for `fitReply` to cut.
  * With `previous` it shows both totals and the difference of each block, from `summary.change`, and says so when
  * there is nothing before to compare with.
  */
@@ -159,7 +156,7 @@ export function renderSummary(
   today: string,
   current: Side,
   previous: Side | null,
-): string {
+): string[] {
   const label = rangeLabel(current.range, today)
   const before = previous ? rangeLabel(previous.range, today) : ''
   const payment = scope.payment?.trim()
@@ -177,9 +174,11 @@ export function renderSummary(
   }
   pairs.sort(byPair)
   if (pairs.length === 0) {
-    return previous
-      ? `No encontré ${noun(scope.direction)}${filter} en ${label} ni en ${before}.`
-      : `${label}: no encontré ${noun(scope.direction)}${filter}.`
+    return [
+      previous
+        ? `No encontré ${noun(scope.direction)}${filter} en ${label} ni en ${before}.`
+        : `${label}: no encontré ${noun(scope.direction)}${filter}.`,
+    ]
   }
 
   const totalOf = (side: Side, p: Pair) => side.totals.find((t) => same(t, p))
@@ -207,7 +206,7 @@ export function renderSummary(
       ...compareGroups(scope.groupBy, groupsOf(current, p), groupsOf(previous, p), p, today),
     ]
   })
-  return blocks.flat().join('\n')
+  return blocks.map((block) => block.join('\n'))
 }
 
 /** The line that says how the range compares with the one before, or why it cannot. */
@@ -228,7 +227,7 @@ function compareLine(
 /** The groups of one block: what was bought or paid, biggest first and cut at `MAX_GROUPS`; days, weeks or months in order. */
 function listGroups(by: GroupBy, groups: GroupTotal[], today: string): string[] {
   if (by === 'none' || groups.length === 0) return []
-  const timed = by === 'day' || by === 'week' || by === 'month'
+  const timed = isTimeGroup(by)
   const cap = timed ? MAX_BUCKETS : MAX_GROUPS
   const shown = timed ? groups.slice(-cap) : groups.slice(0, cap)
   const hidden = groups.length - shown.length
@@ -238,9 +237,9 @@ function listGroups(by: GroupBy, groups: GroupTotal[], today: string): string[] 
   )
   return [
     TITLE[by],
-    ...(hidden > 0 && timed ? [`• … y ${hidden} anteriores`] : []),
+    ...(hidden > 0 && timed ? [`… y ${hidden} anteriores`] : []),
     ...rows,
-    ...(hidden > 0 && !timed ? [`• … y ${hidden} más`] : []),
+    ...(hidden > 0 && !timed ? [`… y ${hidden} más`] : []),
   ]
 }
 
@@ -274,5 +273,5 @@ function compareGroups(
     return `• ${groupLabel(by, named, today)} ${formatMoney(a?.total ?? '0', p.currency)} vs ${formatMoney(b?.total ?? '0', p.currency)}${percent}`
   })
   const hidden = keys.length - shown.length
-  return [TITLE[by], ...rows, ...(hidden > 0 ? [`• … y ${hidden} más`] : [])]
+  return [TITLE[by], ...rows, ...(hidden > 0 ? [`… y ${hidden} más`] : [])]
 }

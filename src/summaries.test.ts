@@ -542,10 +542,10 @@ describe('groups', () => {
       '• Ropa $10.000 (1 movimiento)',
       '• Entretenimiento $9.000 (1 movimiento)',
     ])
-    expect(groups.at(-1)).toBe('• … y 3 más') // eleven groups: the ten and the 100 of "otros", eight shown
+    expect(groups.at(-1)).toBe('… y 3 más') // eleven groups: the ten and the 100 of "otros", eight shown
     const days = (await say(a)).split('\n')
     expect(days).toHaveLength(2 + 1 + 31) // the total, the title, "y 14 anteriores" and 31 days
-    expect(days[2]).toBe('• … y 14 anteriores')
+    expect(days[2]).toBe('… y 14 anteriores')
     expect(days[3]).toBe('• jue 15/05 $100 (1 movimiento)')
     expect(days.at(-1)).toBe('• sáb 14/06 $100 (1 movimiento)')
     a.close()

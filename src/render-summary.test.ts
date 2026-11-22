@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { GroupTotal, QueryTotal } from './ledger'
 import type { Resolved } from './range'
-import { MAX_GROUPS, rangeLabel, renderSummary, spanText } from './render-summary'
+import { fitReply } from './render'
+import { renderSummary as lines, MAX_GROUPS, rangeLabel, spanText } from './render-summary'
+
+/** The reply as one text: each direction and currency is a line of its own. */
+const renderSummary = (...a: Parameters<typeof lines>) => lines(...a).join('\n')
 
 const NOW = '2026-11-21' // a Saturday
 const day = (from: string, to = from, o: Partial<Resolved> = {}): Resolved => ({
@@ -53,7 +57,7 @@ describe('rangeLabel: the days in words', () => {
     ['days in a month', day('2026-11-01', '2026-11-15'), 'Del 1 al 15 nov'],
     ['days across months', day('2026-10-28', '2026-11-03'), 'Del 28 oct al 3 nov'],
     ['days across years', day('2025-12-28', '2026-01-03'), 'Del 28 dic 2025 al 3 ene 2026'],
-    ['one day of another year', day('2024-02-29'), 'El 29 feb 2024'],
+    ['one day of another year', day('2024-02-29', '2024-02-29', { kind: 'day' }), 'El 29 feb 2024'],
   ]
   for (const [name, range, label] of table) {
     it(name, () => expect(rangeLabel(range, NOW)).toBe(label))
@@ -199,7 +203,7 @@ describe('renderSummary', () => {
     expect(lines).toHaveLength(2 + MAX_GROUPS + 1)
     expect(lines[1]).toBe('Por categoría:')
     expect(lines[2]).toBe('• Súper $11.000 (1 movimiento)')
-    expect(lines.at(-1)).toBe('• … y 3 más')
+    expect(lines.at(-1)).toBe('… y 3 más')
   })
 
   it('a group that only one of the two ranges has is shown against $0', () => {
@@ -218,5 +222,41 @@ describe('renderSummary', () => {
         .split('\n')
         .slice(3),
     ).toEqual(['Por categoría:', '• Súper $300 vs $100 (+200%)', '• Ropa $0 vs $300 (-100%)'])
+  })
+})
+
+describe('a summary that is too long for one message (review of slice D)', () => {
+  it('is cut list by list, and each "… y N más" counts what its own list lost', () => {
+    const pairs = [
+      ['out', 'ARS'],
+      ['out', 'USD'],
+      ['in', 'ARS'],
+      ['in', 'USD'],
+    ] as const
+    const days = Array.from({ length: 31 }, (_, k) => `2026-10-${String(k + 1).padStart(2, '0')}`)
+    const side = {
+      range: day('2026-10-01', '2026-10-31', { kind: 'month' }),
+      totals: pairs.map(([direction, currency]) => total(direction, currency, '31000', 31)),
+      groups: pairs.flatMap(([direction, currency]) =>
+        days.map((key) => group(key, '1000', 1, { direction, currency })),
+      ),
+    }
+    const blocks = lines({ ...scope, groupBy: 'day' }, NOW, side, null)
+    expect(blocks).toHaveLength(4)
+    expect(blocks.join('\n').length).toBeGreaterThan(4000)
+    const reply = fitReply({ lines: blocks, notes: [] }).split('\n')
+    expect(reply.join('\n').length).toBeLessThanOrEqual(4000)
+    // split the reply back into its four lists by their header line
+    const headers = reply.flatMap((row, k) =>
+      / (gastaste|cobraste) |^Y US\$/.test(row) ? [k] : [],
+    )
+    expect(headers).toHaveLength(4)
+    headers.forEach((start, k) => {
+      const list = reply.slice(start, headers[k + 1] ?? reply.length)
+      const shown = list.filter((row) => /^• (lun|mar|mié|jue|vie|sáb|dom) /.test(row)).length
+      const more = list.find((row) => /^• … y \d+ más$/.test(row))
+      expect(shown, `list ${k}`).toBeGreaterThan(0)
+      expect(shown + Number(more?.match(/\d+/)?.[0] ?? 0), `list ${k}`).toBe(31)
+    })
   })
 })

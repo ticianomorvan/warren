@@ -1,6 +1,6 @@
 import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
-import { parseOther, resolveRange } from '../range'
+import { planSummary } from '../range'
 import { hasLongNumber, hasNumberWord } from './say'
 import { MAX_FOUND, type ModelAction, TOOL_INPUTS, type ToolInput, type ToolName } from './schema'
 import {
@@ -36,24 +36,10 @@ export interface Guard {
 
 const MAX_QUESTION_WORDS = 6
 
-/** Why a summary cannot run, in words for the model: a range that has not happened, is reversed or too long, or a mismatch of its parts. */
+/** Why a summary cannot run, in words for the model; null when it can. */
 export function checkSummary(q: ToolInput<'summarize'>, today: string): string | null {
-  const asked = resolveRange(q.range, today)
-  if (!asked.ok) return `range: ${asked.reason}`
-  if (q.compare_to === 'range') {
-    if (q.other.trim() === '')
-      return 'compare_to "range" needs other: the second range to compare with'
-    const second = parseOther(q.other)
-    if (typeof second === 'string') return second
-    const resolved = resolveRange(second, today)
-    if (!resolved.ok) return `other: ${resolved.reason}`
-  } else if (q.other.trim() !== '') {
-    return `other is only for compare_to "range" (this one is "${q.compare_to}"): send "" or set compare_to "range"`
-  }
-  if (q.compare_to !== 'none' && ['day', 'week', 'month'].includes(q.group_by)) {
-    return `a comparison cannot be grouped by ${q.group_by}: use group_by none, category or payment, or drop the comparison`
-  }
-  return null
+  const plan = planSummary(q, today)
+  return typeof plan === 'string' ? plan : null
 }
 
 /** Whether a message holds an amount at all, in digits or in words ("tres mil"): without one there is no new value to send. */

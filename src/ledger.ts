@@ -1,4 +1,10 @@
-import { MAX_FOUND, type Movement, type RecentMovement } from './agent/schema'
+import {
+  type GroupBy,
+  isTimeGroup,
+  MAX_FOUND,
+  type Movement,
+  type RecentMovement,
+} from './agent/schema'
 import type { Sql } from './db'
 import { normalizeText } from './movement'
 import type { DateRange } from './time'
@@ -315,9 +321,6 @@ export function findMovements(sql: Sql, accountId: number, f: FindFilter) {
     ORDER BY id DESC LIMIT ${Math.min(Math.max(f.limit, 1), MAX_FOUND)}`
 }
 
-/** What the totals of a summary are split by (`none` is one total per direction and currency). */
-export type GroupKey = 'none' | 'category' | 'payment' | 'day' | 'week' | 'month'
-
 /** One total of a summary: a direction, a currency and, when grouped, one group of it. Currencies and directions are never mixed. */
 export interface GroupTotal extends QueryTotal {
   /** The group: a category, a folded payment ('' for none), a day (yyyy-mm-dd), the Monday of a week or a month (yyyy-mm). '' when not grouped. */
@@ -331,7 +334,7 @@ export interface GroupTotal extends QueryTotal {
  * "VISA" are one) and shown as written; a week is its Monday. Dates are cast to `timestamp` first: `date_trunc`
  * on a `date` would go through the session time zone.
  */
-const GROUP_SQL: Record<Exclude<GroupKey, 'none'>, string> = {
+const GROUP_SQL: Record<Exclude<GroupBy, 'none'>, string> = {
   category: 'category',
   payment: folded("btrim(coalesce(payment, ''))"),
   day: `to_char(occurred_on, 'YYYY-MM-DD')`,
@@ -380,21 +383,16 @@ export async function queryGroups(
   sql: Sql,
   accountId: number,
   f: QueryFilter,
-  by: GroupKey,
+  by: Exclude<GroupBy, 'none'>,
 ): Promise<GroupTotal[]> {
-  if (by === 'none') {
-    const totals = await queryTotals(sql, accountId, f)
-    return totals.map((t) => ({ ...t, key: '', label: null }))
-  }
   const key = sql.unsafe(GROUP_SQL[by])
-  const byTime = by === 'day' || by === 'week' || by === 'month'
   return sql<GroupTotal[]>`
     SELECT direction, currency, ${key} AS key,
       ${by === 'payment' ? sql`coalesce(min(nullif(btrim(payment), '')), '')` : sql`NULL::text`} AS label,
       sum(amount)::text AS total, count(*)::int AS count
     FROM movement WHERE ${matching(sql, accountId, f)}
     GROUP BY direction, currency, ${key}
-    ORDER BY direction DESC, currency, ${byTime ? sql`${key}` : sql`sum(amount) DESC, ${key}`}`
+    ORDER BY direction DESC, currency, ${isTimeGroup(by) ? sql`${key}` : sql`sum(amount) DESC, ${key}`}`
 }
 
 /** What a summary shows of one range: the totals of each direction and currency and, when grouped, the groups under them. */
@@ -408,7 +406,7 @@ export async function summaryRows(
   sql: Sql,
   accountId: number,
   f: QueryFilter,
-  by: GroupKey,
+  by: GroupBy,
 ): Promise<SummaryRows> {
   return {
     totals: await queryTotals(sql, accountId, f),

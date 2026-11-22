@@ -752,3 +752,97 @@ last batch of changes: all that one message logged, corrected or deleted, in one
 - `restores` is read only by the chain walk; nothing shows it to the person. A later slice may want "volvé a poner lo que deshice" (a redo), which this model can carry (the undo
   message names what it undid) but does not offer.
 - The undo does not look at `confidence`/photos: an undone photo log is a log like any other.
+
+## Agent slice D notes (2026-11-21)
+
+Built on branch `agent-summaries`, on top of undo (#44). A person asks, by text or voice, for a total over any days, split by
+category, payment, day, week or month, or compared with another range, and gets a code-rendered reply. The model chooses the days,
+the split and the filters; it never computes a total, a difference, a percentage or an average (rule 1). `AGENTS.md`
+("Summaries") describes the result.
+
+### Decisions
+
+- **The tool: `period` became a `range`, plus `group_by`, `compare_to` and `other`.** `summarize` is now `{range, group_by,
+  compare_to, other, direction, category, payment, description, text}`. `range` is always `{period, month, year, from, to}`: a named
+  period (the old seven, plus `weekend`, `last_weekend`, `last_year`), or `month` (a month number, year optional), `year`, or
+  `dates` (`from`/`to`). A field a period does not use is `0` or `""`, and a stray one is refused ("period this_month takes no
+  month"): a month number beside `this_month` means the model misread the question, and ignoring it would answer a different one.
+  Named periods stay as shortcuts, so "este mes" is still one token of the enum and the common questions did not get harder.
+- **The strict-tool limit is the grammar, not only the two counts.** B2 counted 24 optional parameters and 16 union types. Slice D
+  stays inside both (23 optional, 10 unions: `other` is required, and the unused fields are sentinels, not nullable). But the API
+  also refuses a tool list whose _compiled grammar is too large_ ("The compiled grammar is too large, which would cause performance
+  issues"), a limit nothing in the schema counts. It was measured by sending the real tool list, 1 token of output, one variant at a time:
+  - range + `group_by` + `compare_to` + a second typed range as an optional object (5 fields): refused;
+  - the same without the second range: accepted;
+  - a second range as two integers (`other_month`, `other_year`): accepted; as those plus two strings (`other_from`, `other_to`): refused;
+  - a second range as **one string**: accepted, and accepted again with one more string beside it.
+    So the list has room for about one more string field, and nothing else. The second range is therefore a short text, `other`,
+    that code parses (`parseOther`): a named period (`last_month`), `month:9` or `month:9:2025`, `year:2025`, or `dates:11-01..11-15`
+    (`""` unless `compare_to` is `range`). A text that is none of these comes back to the model as the reason. The alternative that
+    was weighed, a separate `compare` tool, would have added a whole second schema to the same grammar. **The next slice that needs a
+  field here has to remove one first** (the `text` fields and the nullable filters are the candidates).
+- **Dates are resolved by code, the way a person in Argentina reads them** (`src/range.ts`, pure, from the message's own time):
+  - Weeks are Monday to Sunday. "El finde" is the latest Saturday up to today and the Sunday after it: on a Saturday it is that day so
+    far, on a Sunday both days, from Monday to Friday the weekend just gone. "El finde pasado" is the latest weekend that is over.
+  - A period that is not over ends today: "esta semana", "este mes", "en lo que va del año", and an explicit end after today
+    ("del 1 al 30 de noviembre" on the 21st). The range shown is the range summed.
+  - "El 5" (`dd`) is this month's 5th unless that is still to come, then last month's; a day that month lacks (31 in November) goes
+    back to one that has it. "5 de octubre" (`mm-dd`) is the latest such day not in the future. "29 de febrero" is the last leap day
+    (2024 from 2026; the century rule is tested). A bare month, "octubre", is the latest October that has started: in November
+    it is this year's, in September last year's, and "diciembre" asked on 21 November is December of last year, which the prompt
+    tells the model to send as it is (a first run had it answer "todavía no llegamos a diciembre", s161).
+  - The start of a `dates` range is the latest such day up to today, and its end the first such day from it, cut at today when it has
+    not come: "del 1 al 15 de noviembre" asked on the 12th is the 1st to the 12th (a first version resolved the end first and sent it
+    to last November: found in review, tested). A range that wraps ("28 de diciembre al 3 de enero", "del 20 al 5") resolves its end
+    first and its start before it. The same month written backwards ("11-20" to "11-05") is refused.
+  - A range that has not started (a month or year in the future, days after today), a reversed one, or one over **731 days** (two
+    years, including one leap day) is refused. The reason is written for the model, with what to tell the person ("Eso todavía no
+    pasó.", with no number), and goes back through the normal refusal path, so the model words the answer and `checkSay` still
+    judges its text.
+  - A `dates` range that is exactly a calendar month or year is that kind (its "before" is the previous month).
+- **"Previous" is whole, and the range in progress says so.** `compare_to: previous` is the same-length range before for a day or a
+  custom range, the previous Monday-to-Sunday for a week, the previous weekend, **the previous whole calendar month** for a month,
+  and the previous year. So "¿gasté más que el mes pasado?" on 21 November compares 1–21 November with all of October, and says it:
+  `Noviembre (1–21, en curso)` against `Octubre (1–31)`. Comparing like with like (1–21 October) would answer a question nobody asked
+  as worded; it is the open question below. A comparison with a time grouping is refused ("a comparison cannot be grouped by day").
+- **SQL is the totals, always (rules 1 and 3).** `queryGroups` is the same filtered, live-only `matching` fragment as `queryTotals` plus
+  a group key: category; payment, folded for case and accents (`Visa` and `visa` are one group, shown as written, none is "Sin medio de
+  pago"); day; week (its Monday); month. Dates are cast to `timestamp` before `date_trunc`, which would otherwise go through the session
+  time zone. Direction and currency are always in the `GROUP BY`: ARS and USD, spending and income, never mixed. A reply's header
+  totals are their own query (`queryTotals`), not the sum of the listed groups, so a group list that is cut still has the right total.
+  A comparison is two such results; no migration.
+- **The difference and the percentage are code's, in integer cents** (`src/summary.ts`, `bigint`, no float). The percentage is the
+  difference over what was before, in tenths of a percent, rounded half away from zero (`+6,3%` for 1 cent on 16, `-6,3%` for -1 cent), shown
+  with the Argentine comma and no `,0` (`+20%`). A change of a cent on a large total rounds to `0%` and the amount beside it still says
+  it moved. With nothing before there is no percentage and no division: "No hay gastos en Octubre (1–31) para comparar."; with
+  nothing now it is a real `-100%`. A comparison of groups ranks by the range asked about, shows a group the other lacks against
+  `$0`, and shows no percentage when the other is zero.
+- **Rendering** (`src/render-summary.ts`, pure, through `composeReply`/`fitReply`): the range in words first ("Octubre (1–31)",
+  "Semana pasada (9–15 nov)", "Hoy (21 nov)", "Del 1 al 15 nov", a year only when it is not this one, "en curso" when the period is not
+  over), one block per direction and currency, the biggest 8 groups and "• … y N más", days, weeks or months in order, the newest 31 and
+  "• … y N anteriores". The model's `text` is checked as before; the rendered lines are sources for its numbers. The wording is plain on
+  purpose (Ticiano refines message shape later); this slice fixes correctness and clarity.
+- **The old wording changed.** "Hoy gastaste $15.500" is now "Hoy (21 nov) gastaste $15.500", and "Este mes gastaste" is "Noviembre
+  (1–21, en curso) gastaste": the days are always named, which is the point. About twenty assertions in existing tests and two scenarios (s079, s084)
+  were updated. `this_week` is cut at today, so a total no longer counts a movement dated after today (none can exist: a
+  date in the future is refused when logging); a test that seeded such movements changed accordingly.
+- **Review round (Opus 5.5, fresh context), fixed on the same PR.** A date range whose end had not come went a year back (above);
+  a year below 2000 in a full date reached `addDays` and threw inside `execute`, or queried another year (now "not a real day",
+  years padded to four digits); `fitReply` cut a summary of several currencies as if it were one list and could eat its own
+  "… y N más" (each direction and currency is now its own line and the markers are not bullets); the rules of a summary's days (the
+  range, `other`, "previous", no comparison by time) were written twice, in `checkCall` and in `execute`, and are now one pure
+  `planSummary` that both call; the time-group set, `GroupKey` and two date helpers were duplicated and are shared. Not changed:
+  comparing a period in progress with a whole one (open, below).
+- **Eval.** 16 scenarios, s146–s161 (10 dev, 6 test), new tag `summary`, graded on `reply.has` with the figures. The expected figures
+  were worked out by a script that does not use the product's code, from the same seed. The report prints latency by tag as before.
+  `evals/agent.ts` maps a range back to the named period it equals so the single-message cases keep grading `this_month` for "en noviembre".
+- **Audit.** A summarize entry in `tool_calls` carries `detail`: the days that were summed ("2026-11-01..2026-11-21 vs 2026-10-01..2026-10-31 by category").
+
+### Open
+
+- **Like with like.** Whether "¿gasté más que el mes pasado?" should compare the same days of last month (1–21 October) instead of
+  the whole of it. The reply names both ranges either way.
+- **Sliding windows** ("los últimos 7 días", "en los últimos 3 meses") are not a period. The prompt has the model send `dates` from
+  the 14-day calendar for up to two weeks, and the label shows the days; beyond that the model should use a month or ask.
+- **A second explicit range as days** works (`dates:11-01..11-15`) but is the least tested path with the model.
+- The grammar budget (above).

@@ -41,6 +41,11 @@ export const PERIODS = [...NAMED_PERIODS, 'month', 'year', 'dates'] as const
 /** How a summary splits its totals: not at all, by what was bought, by how it was paid, or by time. */
 export const GROUPS = ['none', 'category', 'payment', 'day', 'week', 'month'] as const
 
+/** The groups that are a span of time: in order, and the same key never repeats between two ranges. */
+export const TIME_GROUPS = ['day', 'week', 'month'] as const
+export const isTimeGroup = (by: string): by is (typeof TIME_GROUPS)[number] =>
+  (TIME_GROUPS as readonly string[]).includes(by)
+
 /** What a summary is compared with: nothing, the period before, or a second range the person named. */
 export const COMPARES = ['none', 'previous', 'range'] as const
 

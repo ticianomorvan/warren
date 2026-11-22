@@ -1,7 +1,6 @@
 import type { Action } from './agent'
 import type { AuditEntry } from './agent/loop'
 import { composeReply, type Say, type Step } from './agent/say'
-import type { RangeInput } from './agent/schema'
 import type { Sql } from './db'
 import {
   insertMovements,
@@ -13,7 +12,7 @@ import {
   supersede,
 } from './ledger'
 import { applyChanges, changedFields } from './movement'
-import { parseOther, previousRange, type Resolved, resolveRange } from './range'
+import { planSummary, type Resolved } from './range'
 import {
   REPLY_GONE,
   REPLY_SAY_FALLBACK,
@@ -186,21 +185,11 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         break
       }
       case 'summarize': {
-        const { range, group_by, compare_to, other, direction, category, payment, description } =
-          action.input
-        // `checkCall` already resolved these against the same day: a failure here is a bug, not a refusal.
-        const resolved = (spec: typeof range): Resolved => {
-          const r = resolveRange(spec, today)
-          if (!r.ok) throw new Error(`summarize: ${r.reason}`)
-          return r.range
-        }
-        const asked = resolved(range)
-        const before =
-          compare_to === 'previous'
-            ? previousRange(asked)
-            : compare_to === 'range'
-              ? resolved(parseOther(other) as RangeInput)
-              : null
+        const { group_by, direction, category, payment, description } = action.input
+        // `checkCall` already planned this against the same day: a failure here is a bug, not a refusal.
+        const plan = planSummary(action.input, today)
+        if (typeof plan === 'string') throw new Error(`summarize: ${plan}`)
+        const { asked, before } = plan
         const side = async (r: Resolved): Promise<Side> => ({
           range: r,
           ...(await summaryRows(
@@ -212,7 +201,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         })
         const now = await side(asked)
         lines.push(
-          renderSummary(
+          ...renderSummary(
             { direction, category, payment, description, groupBy: group_by },
             today,
             now,
