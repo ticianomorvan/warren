@@ -304,8 +304,16 @@ const ACCENTS = ["'áéíóúüñÁÉÍÓÚÜÑ'", "'aeiouunAEIOUUN'"] as const
 const folded = (column: string) =>
   `lower(translate(coalesce(${column}, ''), ${ACCENTS[0]}, ${ACCENTS[1]}))`
 
-/** The account's live movements that match every filter set, newest first, at most `MAX_FOUND`. */
-export function findMovements(sql: Sql, accountId: number, f: FindFilter) {
+/**
+ * The account's live movements that match every filter set, newest first, at most `MAX_FOUND` (the WhatsApp model's cap;
+ * `max` raises it for MCP pages) and, for a next page, only those with an id below `beforeId`.
+ */
+export function findMovements(
+  sql: Sql,
+  accountId: number,
+  f: FindFilter,
+  o: { max?: number; beforeId?: number } = {},
+) {
   const words = normalizeText(f.text ?? '')
     .split(/\s+/)
     .filter((w) => w.length >= 2)
@@ -314,6 +322,7 @@ export function findMovements(sql: Sql, accountId: number, f: FindFilter) {
   return sql<MovementRow[]>`
     SELECT ${columns(sql)} FROM movement
     WHERE account_id = ${accountId} AND ${sql.unsafe(LIVE)}
+      ${o.beforeId ? sql`AND id < ${o.beforeId}` : sql``}
       ${f.from ? sql`AND occurred_on >= ${f.from}::date` : sql``}
       ${f.to ? sql`AND occurred_on <= ${f.to}::date` : sql``}
       ${f.category ? sql`AND category = ${f.category}` : sql``}
@@ -324,7 +333,7 @@ export function findMovements(sql: Sql, accountId: number, f: FindFilter) {
           ? sql`AND ${sql.unsafe(folded("description || ' ' || replace(category, '_', ' ')"))} LIKE ALL (${words.map(like)}::text[])`
           : sql``
       }
-    ORDER BY id DESC LIMIT ${Math.min(Math.max(f.limit, 1), MAX_FOUND)}`
+    ORDER BY id DESC LIMIT ${Math.min(Math.max(f.limit, 1), o.max ?? MAX_FOUND)}`
 }
 
 /** One total of a summary: a direction, a currency and, when grouped, one group of it. Currencies and directions are never mixed. */

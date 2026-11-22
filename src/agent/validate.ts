@@ -8,7 +8,12 @@ const AMOUNT_RE = /^\d+(\.\d{1,2})?$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 export const isDecimalAmount = (amount: string) => AMOUNT_RE.test(amount) && Number(amount) > 0
-export const isIsoDate = (date: string) => DATE_RE.test(date)
+/** A real calendar day written yyyy-mm-dd ("2026-13-01" is not one: the database would refuse it). */
+export function isIsoDate(date: string): boolean {
+  if (!DATE_RE.test(date)) return false
+  const parsed = new Date(`${date}T00:00:00Z`)
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date
+}
 
 /** A real calendar date in ISO form, not after `today` (both are Argentine calendar days). */
 function dateProblem(date: string, today: string): string | null {
