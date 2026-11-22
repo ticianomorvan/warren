@@ -945,16 +945,16 @@ ms against targets of 2.0 s and 4.0 s. Nothing here changes what the agent decid
 
 ### What changed
 
-| Change | Where | Evidence |
-| --- | --- | --- |
-| Per-stage timings on every sent reply | `inbound_message.timings` (migration 010), `src/timings.ts`, `src/latency-report.ts`, `pnpm latency` | claim, reads, each model turn (call, searches after it, input/output/cache tokens, characters of text beside the calls), commit, send stamp, send; "other" is what is left |
-| Tools not strict | `tools.ts` | -0.2 to -0.33 s per call, above |
-| 1-hour TTL on the frozen prefix | `loop.ts` `CACHE_TTL`, also on the startup warm-up | 5m: write after 330 s, 0 read (MISS); 1h: 17,233 read (HIT), same request. Cost below |
-| The model is told when the list is everything | `prompt.ts`, `process.ts` | second-turn rate 7.1% to 4.0%; asks on short ledgers 2 turns to 1 |
-| One read for the account | `store.upsertAccount` (a SELECT, the insert only for a new person) | one round trip fewer per message; `reads_ms` will show it |
-| `summarize` no longer echoes the question into `text` | the tool description | echo in 46% of summarize calls (11 of 24) to 0 of 39; about 4 tokens, mostly a cleaner record |
-| `ask_user` always carries the value with after_answer `correct` | the tool description | first-turn refusal of s061 and kin 4 of 4 runs to 0 of 3 (with the complete-list line) |
-| Scenario runner | `maxModelTurns` on a turn (a speed expectation, reported, not a failure), second-turn causes and output tokens per action in the report; s162 to s165 | `evals/scenarios` |
+| Change                                                          | Where                                                                                                                                                 | Evidence                                                                                                                                                                   |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-stage timings on every sent reply                           | `inbound_message.timings` (migration 010), `src/timings.ts`, `src/latency-report.ts`, `pnpm latency`                                                  | claim, reads, each model turn (call, searches after it, input/output/cache tokens, characters of text beside the calls), commit, send stamp, send; "other" is what is left |
+| Tools not strict                                                | `tools.ts`                                                                                                                                            | -0.2 to -0.33 s per call, above                                                                                                                                            |
+| 1-hour TTL on the frozen prefix                                 | `loop.ts` `CACHE_TTL`, also on the startup warm-up                                                                                                    | 5m: write after 330 s, 0 read (MISS); 1h: 17,233 read (HIT), same request. Cost below                                                                                      |
+| The model is told when the list is everything                   | `prompt.ts`, `process.ts`                                                                                                                             | second-turn rate 7.1% to 4.0%; asks on short ledgers 2 turns to 1                                                                                                          |
+| One read for the account                                        | `store.upsertAccount` (a SELECT, the insert only for a new person)                                                                                    | one round trip fewer per message; `reads_ms` will show it                                                                                                                  |
+| `summarize` no longer echoes the question into `text`           | the tool description                                                                                                                                  | echo in 46% of summarize calls (11 of 24) to 0 of 39; about 4 tokens, mostly a cleaner record                                                                              |
+| `ask_user` always carries the value with after_answer `correct` | the tool description                                                                                                                                  | first-turn refusal of s061 and kin 4 of 4 runs to 0 of 3 (with the complete-list line)                                                                                     |
+| Scenario runner                                                 | `maxModelTurns` on a turn (a speed expectation, reported, not a failure), second-turn causes and output tokens per action in the report; s162 to s165 | `evals/scenarios`                                                                                                                                                          |
 
 Tried and dropped: a "write nothing before or between tool calls" line in the system prompt. The model does write English reasoning before a
 tool call on ambiguous messages (about 40 to 60 tokens: "There are two cafés ... the most recent is id=109"), but with the line it answered
@@ -968,11 +968,11 @@ Prices per million tokens: input 0.10, cache read 0.01, 5-minute write 0.125 (1.
 US$0.000172; 5-minute write US$0.002155; 1-hour write US$0.003448. The cache is shared by every person (the prefix is the same bytes), so it stays warm as
 long as anyone writes inside the TTL; the cases below are the worst one, a single person.
 
-| Gap between messages | 5-minute TTL | 1-hour TTL |
-| --- | --- | --- |
-| under 5 min | read, US$0.000172 | read, US$0.000172 |
-| 5 to 60 min (a person at one message per 10 to 30 min) | write every time, US$0.002155 | read, US$0.000172 |
-| over 60 min | write, US$0.002155 | write, US$0.003448 |
+| Gap between messages                                   | 5-minute TTL                  | 1-hour TTL         |
+| ------------------------------------------------------ | ----------------------------- | ------------------ |
+| under 5 min                                            | read, US$0.000172             | read, US$0.000172  |
+| 5 to 60 min (a person at one message per 10 to 30 min) | write every time, US$0.002155 | read, US$0.000172  |
+| over 60 min                                            | write, US$0.002155            | write, US$0.003448 |
 
 At one message every 10 to 30 minutes, the 1-hour TTL turns a miss on nearly every message into a read on nearly every message: US$0.00198 less on each,
 about 12x cheaper on the prefix and 7.6x on the whole call. It loses (by US$0.00129 a message) only for the message that follows a gap of more than an
@@ -986,17 +986,17 @@ Same 165 scenarios (161 before plus s162 to s165), real model and pipeline, per 
 side and not a prediction of Railway). Before is `origin/main`; the second column is the same code with only the timings added (it shows the
 run-to-run spread: a model call is not deterministic).
 
-| | Before (main) | Before, instrumented | After |
-| --- | --- | --- | --- |
-| Scenarios fully right | 160/161 (99.4%) | 158/161 (98.1%) | **164/165 (99.4%)**; dev 128/128, held-out test 36/37 |
-| Silent wrong changes / invented numbers | 0 / 0 | 0 / 0 | **0 / 0** |
-| Per turn p50 / p95 | 1,606 / 3,080 ms | 1,497 / 2,557 ms | **1,141 / 1,854 ms** |
-| Second model turn | 14 of 197 (7.1%) | 12 of 197 (6.1%) | **8 of 201 (4.0%)**; dev 6 of 157 (3.8%) vs 11 of 153 (7.2%) before |
-| Second-turn causes | n/a | `find_movements` 11, repaired text 1 | `find_movements` 5, repaired text 1, text without a tool 1, refused `summarize` 1 |
-| Output tokens per turn, mean | n/a | 163 | 159 |
-| Per action p50 (log / correct / delete / query / ask) | 1,595 / 1,516 / 1,403 / 1,857 / 1,566 ms | n/a | 1,095 / 1,159 / 1,015 / 1,352 / 1,157 ms |
-| Per action p95 (ask) | 3,245 ms | n/a | 1,509 ms |
-| Cost of the run | US$0.0676 | US$0.0675 | US$0.0689 |
+|                                                       | Before (main)                            | Before, instrumented                 | After                                                                             |
+| ----------------------------------------------------- | ---------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------- |
+| Scenarios fully right                                 | 160/161 (99.4%)                          | 158/161 (98.1%)                      | **164/165 (99.4%)**; dev 128/128, held-out test 36/37                             |
+| Silent wrong changes / invented numbers               | 0 / 0                                    | 0 / 0                                | **0 / 0**                                                                         |
+| Per turn p50 / p95                                    | 1,606 / 3,080 ms                         | 1,497 / 2,557 ms                     | **1,141 / 1,854 ms**                                                              |
+| Second model turn                                     | 14 of 197 (7.1%)                         | 12 of 197 (6.1%)                     | **8 of 201 (4.0%)**; dev 6 of 157 (3.8%) vs 11 of 153 (7.2%) before               |
+| Second-turn causes                                    | n/a                                      | `find_movements` 11, repaired text 1 | `find_movements` 5, repaired text 1, text without a tool 1, refused `summarize` 1 |
+| Output tokens per turn, mean                          | n/a                                      | 163                                  | 159                                                                               |
+| Per action p50 (log / correct / delete / query / ask) | 1,595 / 1,516 / 1,403 / 1,857 / 1,566 ms | n/a                                  | 1,095 / 1,159 / 1,015 / 1,352 / 1,157 ms                                          |
+| Per action p95 (ask)                                  | 3,245 ms                                 | n/a                                  | 1,509 ms                                                                          |
+| Cost of the run                                       | US$0.0676                                | US$0.0675                            | US$0.0689                                                                         |
 
 - Output tokens per action, before (instrumented) and after, mean per turn that called the model: log 149 to 154, correct 141 to 139, delete 93 to 96, undo 74 to
   74, query 257 to 261, ask 189 to 149, multi 225 to 221, other 113 to 84. They did not fall except where a second turn went away (ask, other); see "Where the time goes".
@@ -1016,12 +1016,12 @@ run-to-run spread: a model call is not deterministic).
 
 Live received to reply sent was p50 2,352 ms, p95 4,065 ms (the evals from here were p50 1,606, p95 3,080 per turn: the live number is about 0.75 s higher, the Graph send and the claim).
 
-| Change | Expected live saving |
-| --- | --- |
-| Tools not strict | p50 -0.2 to -0.3 s (every message makes at least one call) |
-| Fewer second turns | p50 ~0; asks on a short ledger 3.75 s to about 2.7 s; p95 -0.3 to -1 s |
-| 1-hour TTL | p50 -0.01 s; p95 -0.06 s; about 7x less spent on a missed message |
-| One account read, text echo, ask value | under 0.02 s together |
+| Change                                 | Expected live saving                                                   |
+| -------------------------------------- | ---------------------------------------------------------------------- |
+| Tools not strict                       | p50 -0.2 to -0.3 s (every message makes at least one call)             |
+| Fewer second turns                     | p50 ~0; asks on a short ledger 3.75 s to about 2.7 s; p95 -0.3 to -1 s |
+| 1-hour TTL                             | p50 -0.01 s; p95 -0.06 s; about 7x less spent on a missed message      |
+| One account read, text echo, ask value | under 0.02 s together                                                  |
 
 Estimate after: **p50 about 1.95 s (1.85 to 2.05), p95 about 3.3 s**, which meets the 2.0 s p50 target only just. The scenarios moved 0.47 s at p50 and 1.2 s at p95, of which about
 0.1 s is the spread between two runs of the same code. The orchestrator measures it live: run `pnpm latency --last 40` after deploying and read "Where the time goes" (the
