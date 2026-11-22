@@ -149,11 +149,11 @@ export async function whatsapp(app: App, from: string, text: string) {
   const wamid = `wamid.AUTH${Math.random().toString(36).slice(2)}`
   const before = app.calls.sent.length
   await post(app.base, messageBody(wamid, from, { text: { body: text } }))
-  await until(async () => ['done', 'ignored'].includes(String((await row(wamid))?.status))).catch(
-    async (e) => {
-      throw new Error(`${e.message}: ${JSON.stringify(await row(wamid))}`)
-    },
-  )
+  await until(async () =>
+    ['done', 'ignored', 'failed'].includes(String((await row(wamid))?.status)),
+  ).catch(async (e) => {
+    throw new Error(`${e.message}: ${JSON.stringify(await row(wamid))}`)
+  })
   return bodies(app.calls).slice(before)
 }
 

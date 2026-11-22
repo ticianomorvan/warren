@@ -755,7 +755,9 @@ describe.skipIf(!url)(
           `round ${round}: ${JSON.stringify([mcp, whatsappReply])}`,
         ).toBe(1)
         if (!mcpWon) expect(refusal(mcp)).toContain('already corrected or deleted')
-        if (!waWon) expect(whatsappReply[0]).toContain('ya fue corregido o borrado')
+        // WhatsApp loses either at the commit ("ya fue corregido o borrado"), or earlier: the movement it was shown was
+        // replaced before its model read the list, so the id it sends is no longer one it was shown (the message fails).
+        if (!waWon) expect(whatsappReply[0]).toMatch(/ya fue corregido o borrado|No pude procesar/)
         // One new row; the old one is replaced once.
         const after = await sql`SELECT count(*)::int AS n FROM movement`
         expect(Number(after[0]?.n) - Number(before[0]?.n)).toBe(1)
