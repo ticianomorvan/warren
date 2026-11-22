@@ -35,12 +35,14 @@ const csp = (nonce: string) =>
   `base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
 
 /** What a client calls itself, safe to show and to put in a WhatsApp text: no control or formatting characters, short. */
-export const cleanName = (s: string) =>
-  s
-    .replace(/[\p{Cc}\p{Cf}*_~`<>]/gu, '')
+export function cleanName(s: string): string {
+  const name = s
+    .replace(/\p{Cc}/gu, ' ')
+    .replace(/[\p{Cf}*_~`<>]/gu, '')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 40)
+  return name.length > 40 ? `${name.slice(0, 39).trimEnd()}…` : name
+}
 
 /** The `Cookie` header's value for `name`. */
 function cookie(req: IncomingMessage, name: string): string | undefined {

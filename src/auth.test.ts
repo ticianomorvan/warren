@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { getMigrations } from 'better-auth/db/migration'
 import { describe, expect, it } from 'vitest'
+import { cleanName } from './auth/routes'
 import { forgetAll, replyCall, script } from './command-fixtures'
 import { loadConfig } from './config'
 import { REPLY_LINK } from './render'
@@ -649,6 +650,16 @@ describe('the schema', () => {
       sql`INSERT INTO auth_user (name, email, "emailVerified", warren_account_id)
         VALUES ('x', 'x@users.invalid', true, 999)`,
     ).rejects.toThrow()
+  })
+})
+
+describe("a client's name", () => {
+  it('is cut and stripped before it is shown or sent on WhatsApp', () => {
+    expect(cleanName('Claude')).toBe('Claude')
+    expect(cleanName('  *Claude*\n<b>Pro</b> ')).toBe('Claude bPro/b')
+    const long = cleanName('Claude para Escritorio con Extensiones de Productividad Personal')
+    expect(long.length).toBeLessThanOrEqual(40)
+    expect(long.endsWith('…')).toBe(true)
   })
 })
 

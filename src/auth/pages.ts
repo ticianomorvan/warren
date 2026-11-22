@@ -63,6 +63,10 @@ p { margin: 0 0 14px; text-wrap: pretty; }
 .bad .dot { background: var(--warn); }
 @keyframes pulse { 50% { opacity: .25; } }
 @media (prefers-reduced-motion: reduce) { .dot { animation: none; } .btn { transition: none; } }
+p.tight { margin-top: 14px; }
+.closed .live { display: none; }
+.closed .status { margin-top: 0; }
+p.foot { margin: 14px 0 0; }
 .number { font-weight: 600; white-space: nowrap; }
 ul.scopes { list-style: none; margin: 0 0 18px; padding: 0; }
 ul.scopes li { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
@@ -141,7 +145,7 @@ const SIGN_IN_SCRIPT = `
       const res = await fetch('/sign-in/status', { credentials: 'same-origin', cache: 'no-store' });
       const { state } = await res.json();
       if (state === 'confirmed') return complete();
-      if (state === 'closed') { finished = true; return say('Este código venció. Volvé a Claude y tocá conectar de nuevo.', 'bad'); }
+      if (state === 'closed') { finished = true; document.body.classList.add('closed'); return say('Este código venció. Volvé a Claude y tocá conectar de nuevo.', 'bad'); }
       say(state === 'asked' ? 'Warren te preguntó por WhatsApp. Respondé “sí” para conectar.' : 'Esperando tu mensaje…');
     } catch {}
     setTimeout(poll, 2000);
@@ -158,13 +162,13 @@ export function signInPage(v: SignInView): string {
     'Conectar con Warren',
     `<div class="card">
 <h1>Conectá ${esc(v.client)} con Warren</h1>
-<p>Para confirmar que sos vos, mandale este mensaje a Warren por WhatsApp:</p>
-<span class="code" aria-label="Mensaje: vincular ${esc(v.code.split('').join(' '))}">vincular<b>${esc(v.code)}</b></span>
-<a class="btn primary" href="${esc(v.waLink)}" rel="noopener">Abrir WhatsApp</a>
-<button class="btn secondary" id="copy" type="button" data-text="${esc(message)}" hidden>Copiar mensaje</button>
-<p class="muted" style="margin-top:14px">¿Estás en la compu? Mandalo desde tu celular al <span class="number">${esc(v.displayNumber)}</span>.</p>
+<p class="live">Para confirmar que sos vos, mandale este mensaje a Warren por WhatsApp:</p>
+<span class="code live" aria-label="Mensaje: vincular ${esc(v.code.split('').join(' '))}">vincular<b>${esc(v.code)}</b></span>
+<a class="btn primary live" href="${esc(v.waLink)}" rel="noopener">Abrir WhatsApp</a>
+<button class="btn secondary live" id="copy" type="button" data-text="${esc(message)}" hidden>Copiar mensaje</button>
+<p class="muted tight live">¿Estás en la compu? Mandalo desde tu celular al <span class="number">${esc(v.displayNumber)}</span>.</p>
 <div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">Esperando tu mensaje…</span></div>
-<p class="muted" style="margin:14px 0 0">El código vence a los ${v.minutes} minutos. Si no fuiste vos quien pidió conectar, cerrá esta página.</p>
+<p class="muted foot live">El código vence a los ${v.minutes} minutos. Si no fuiste vos quien pidió conectar, cerrá esta página.</p>
 </div>`,
     v.nonce,
     SIGN_IN_SCRIPT,
@@ -231,7 +235,7 @@ export function consentPage(v: ConsentView): string {
 <button class="btn primary" type="button" data-accept="yes">Permitir</button>
 <button class="btn secondary" type="button" data-accept="no">Cancelar</button>
 <p class="err" id="err" role="alert" hidden></p>
-<p class="muted" style="margin:14px 0 0">Si no empezaste esta conexión vos, tocá Cancelar.</p>
+<p class="muted foot">Si no empezaste esta conexión vos, tocá Cancelar.</p>
 </div>`,
     v.nonce,
     CONSENT_SCRIPT,
