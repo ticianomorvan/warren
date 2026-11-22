@@ -117,7 +117,7 @@ export const REPLY_GONE =
 const REPLY_HELP_DISCONNECT =
   'Si conectaste a Claude u otro agente y querés cortarle el acceso, escribime "desconectar".'
 const REPLY_HELP =
-  'Mandame un gasto o un ingreso y lo anoto. Por ejemplo: "café 3500 con la visa" o "cobré el sueldo 850.000".\nTambién te aviso de lo que me pidas: "recordame pagar la Visa el 10" o "todos los lunes recordame la pastilla". "¿Qué recordatorios tengo?" los lista y "BAJA" los cancela todos.'
+  'Mandame un gasto o un ingreso y lo anoto. Por ejemplo: "café 3500 con la visa" o "cobré el sueldo 850.000".\nTambién te aviso de lo que me pidas: "recordame pagar la Visa el 10" o "todos los lunes recordame la pastilla". "¿Qué recordatorios tengo?" los lista, y pedime que cancele el que quieras o todos.'
 
 /**
  * An amount in Argentine form: `.` between thousands, `,` before decimals only when they are not
@@ -343,11 +343,6 @@ export const renderReminderBrief = (r: ReminderRow, today: string) =>
 export const renderReminderCancelled = (r: ReminderRow, today: string) =>
   `⏰ Cancelé el recordatorio: ${renderReminderBrief(r, today)}`
 
-/** "BAJA": how many were cancelled, and how to bring them back. */
-export const renderBaja = (n: number) =>
-  `⏰ Cancelé ${n === 1 ? 'tu recordatorio' : `tus ${n} recordatorios`}. Si fue sin querer, escribí «deshacer» y vuelve${n === 1 ? '' : 'n'}.`
-export const REPLY_BAJA_NONE = 'No tenés recordatorios para cancelar.'
-
 /** Every live reminder, the next to come first: a bulleted list, which `fitReply` collapses when it is long. */
 export const renderReminders = (rows: ReminderRow[], today: string) =>
   rows.length === 0
@@ -376,10 +371,6 @@ export function reminderReply(
       return done.kind === 'gone'
         ? { line: REPLY_REMINDER_GONE, outcome: 'gone' }
         : { line: renderReminderCancelled(done.reminder, today), outcome: 'applied' }
-    case 'cancel_all_reminders':
-      return done.cancelled.length === 0
-        ? { line: REPLY_BAJA_NONE, outcome: 'nothing' }
-        : { line: renderBaja(done.cancelled.length), outcome: 'applied' }
   }
 }
 

@@ -20,7 +20,6 @@ export function actionLabel(actions: Action[]): string {
     list_facts: 'reply',
     set_reminder: 'remind',
     cancel_reminder: 'remind',
-    cancel_all_reminders: 'remind',
     list_reminders: 'reply',
     summarize: 'summarize',
     ask_user: 'ask',

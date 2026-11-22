@@ -1,13 +1,17 @@
 import type { z } from 'zod'
 import type { FindFilter } from '../ledger'
+import { normalizeText } from '../movement'
 import { planSummary } from '../range'
+import { isOnce } from '../reminders/describe'
 import { checkReminder } from '../reminders/guard'
+import { nextOccurrence } from '../reminders/schedule'
 import {
   REPLY_FACT_CONTACT,
   REPLY_FACT_SECRET,
   REPLY_REMINDER_FAR,
   REPLY_REMINDER_PAST,
 } from '../render'
+import { argentinaToday } from '../time'
 import { checkFact, checkFactValues, normalizeKey } from './memory'
 import { hasLongNumber, hasNumberWord } from './say'
 import {
@@ -224,6 +228,18 @@ function valueGuards(p: Parsed, today: string, now: Date, message?: string): Che
   }
 }
 
+/**
+ * Whether the message gives a time of today ("hoy a las 9", "a las 8 de hoy"), and not another day beside it. Only then is a
+ * reminder on any other day a move the person did not ask for ("hoy gasté 3500, recordame el viernes ..." names no time of today).
+ */
+function namesTodayAtATime(message: string): boolean {
+  const folded = normalizeText(message)
+  return (
+    (/\bhoy a las? \d/.test(folded) || /\ba las? \d[\d:.]*(?: ?hs?)? de hoy\b/.test(folded)) &&
+    !/\b(?:manana|pasado)\b/.test(folded)
+  )
+}
+
 /** What a refused reminder is answered with: code's own line, the person is told and the model is not asked to fix it. */
 const refusedReminder = (why: 'secret' | 'contact' | 'past' | 'far'): Checked => ({
   kind: 'action',
@@ -318,8 +334,24 @@ export function checkCall(name: string, input: unknown, guard: Guard): Checked {
       guard.remembered?.add(at)
       return { kind: 'action', action: { tool, input: { ...checked.fact, text: f.text } } }
     }
-    case 'set_reminder':
-      return valueGuards(parsed, guard.today, guard.now, guard.message ?? '')
+    case 'set_reminder': {
+      const checked = valueGuards(parsed, guard.today, guard.now, guard.message ?? '')
+      // "Hoy a las 9" said when 9 has gone: the person named today, so the reminder is not set for another day, whoever moved it
+      // (the model sending tomorrow, or a one-time schedule that rolls forward). They are told and asked.
+      if (checked.kind === 'action' && checked.action.tool === 'set_reminder') {
+        const { schedule } = checked.action.input
+        const first = nextOccurrence(schedule, guard.now)
+        if (
+          namesTodayAtATime(guard.message ?? '') &&
+          isOnce(schedule) &&
+          first &&
+          argentinaToday(first) !== guard.today
+        ) {
+          return refusedReminder('past')
+        }
+      }
+      return checked
+    }
     case 'cancel_reminder': {
       const checked = valueGuards(parsed, guard.today, guard.now)
       const id = (data as ToolInput<'cancel_reminder'>).id

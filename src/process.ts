@@ -26,7 +26,7 @@ import {
   REPLY_NON_TEXT,
   REPLY_VOICE,
 } from './render'
-import { answerAction, bajaRequest, disconnectRequest, linkCode, undoRequest } from './resolve'
+import { answerAction, disconnectRequest, linkCode, undoRequest } from './resolve'
 import type { Claim, Store } from './store'
 import { argentinaTime, argentinaToday } from './time'
 import type { Timings, TurnTiming } from './timings'
@@ -335,9 +335,7 @@ export function createProcessor(o: ProcessorOptions) {
           ? null
           : code
             ? ({ tool: 'link_ask', input: { code } } as const)
-            : // "BAJA" stops every reminder whatever is open: an opt-out does not wait for an answer ("deshacer" brings them back).
-              (bajaRequest(text) ??
-              answerAction(text, conversation.question) ??
+            : (answerAction(text, conversation.question) ??
               (conversation.question
                 ? null
                 : (undoRequest(text) ?? (o.signIn ? disconnectRequest(text) : null))))

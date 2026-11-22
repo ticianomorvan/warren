@@ -15,7 +15,7 @@ import { nextOccurrence } from './reminders/schedule'
 export type ReminderUndone =
   /** The batch set it: it is cancelled now. */
   | { kind: 'reminder_removed'; reminder: ReminderRow }
-  /** The batch cancelled it (one by one, or all with BAJA): it is back, with its next date worked out from now. */
+  /** The batch cancelled it (one, or several in one message): it is back, with its next date worked out from now. */
   | { kind: 'reminder_restored'; reminder: ReminderRow }
 
 /** The reminders a batch left behind and whether each still stands as the batch left it. Nothing is written yet. */

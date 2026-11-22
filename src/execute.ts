@@ -84,7 +84,6 @@ const CHANGES = new Set([
   'forget_all_confirmed',
   'set_reminder',
   'cancel_reminder',
-  'cancel_all_reminders',
 ])
 
 /**
@@ -267,8 +266,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         break
       }
       case 'set_reminder':
-      case 'cancel_reminder':
-      case 'cancel_all_reminders': {
+      case 'cancel_reminder': {
         const done = await applyReminderCall(
           tx,
           { accountId: i.accountId, batchId: i.inboundId, now: i.now },
