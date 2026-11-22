@@ -905,3 +905,137 @@ the split and the filters; it never computes a total, a difference, a percentage
   the 14-day calendar for up to two weeks, and the label shows the days; beyond that the model should use a month or ask.
 - **A second explicit range as days** works (`dates:11-01..11-15`) but is the least tested path with the model.
 - The grammar budget (above).
+
+## Speed pass notes (2026-11-22)
+
+Branch `agent-speed` on top of summaries (#45). The goal was the live answer time: received to reply sent p50 2,352 ms and p95 4,065
+ms against targets of 2.0 s and 4.0 s. Nothing here changes what the agent decides; rules 1 to 4 hold, and the model is still Haiku 5.5.
+
+### Where the time goes (measured, not guessed)
+
+- **A model call is a fixed cost of about 0.8 s (not strict) to 1.2 s (strict), and the output is nearly free.** Same warm request, same
+  17,240-token cached prefix, `evals/cache-probe.ts strict --n 10` (interleaved, from a Mac in Argentina): `hola` (24 output tokens) p50 1,170 ms;
+  a log (132 tokens) p50 1,400 ms. That is about 2 ms per output token, so cutting 30 tokens is worth under 0.1 s. Cutting the cached prefix by a
+  third (17k to 11.7k tokens) moved a call by 0 to 0.2 s. The tool schema's fields, `"text": null` and the sentinel fields are not where the time is.
+- **Strict tools cost 0.2 to 0.33 s a call.** The same probe with `strict: true` on every tool (what shipped) against none:
+  `hola` p50 1,170 vs 842 ms (mean 1,304 vs 967), log p50 1,400 vs 1,185 ms (mean 1,433 vs 1,224). It is the biggest single lever, on every call.
+  Strictness was never a correctness guard: `checkCall` parses every input with the zod schema and checks every value
+  (amounts, dates, ids, the numbers in the model's words), and refuses a bad one with its reason. In the final full run (strict off, 174 dev turns) no
+  model input was refused for its shape (the dev audit has only a repaired text and a text without a tool); one `summarize` call was refused in the held-out
+  test split, whose reason is not printed (a range the guard refuses, or a shape: not known). The cost of the change: an input that does not fit (a category outside the list, a missing key) is now a refused call and a second turn,
+  where strict made it impossible. Watch `second-turn causes` in the scenario report and the audit's `invalid input` in `tool_calls`.
+  The strict-mode limits in the slice B2 and D notes (24 optional parameters, 16 unions, the grammar size) no longer bind: a field can be added, or
+  `ask_user.changes` made required, without removing another first.
+- **A cache miss costs money, not time.** `evals/cache-probe.ts pairs`, 10 cold and warm pairs (a fresh nonce in front of the frozen prompt, so the
+  whole prefix is written, then the same request again): cold p50 1,448 ms, warm 1,358 ms (the same pair: +63 ms mean, +91 ms median); time to first
+  token 1,100 vs 1,079 ms; cost per call US$0.00228 cold vs 0.00030 warm (7.6x). With the 1-hour TTL, 4 pairs: cold 1,502 ms, warm 1,565 ms (noise: a
+  slow warm call). So the live message at 22:42:43 that took 2,615 ms with `cacheRead 0` was mostly the ordinary spread of a call, not the miss.
+- **The second model turn was the live "ask" problem, and it was `find_movements` on a ledger with nothing more to find.** In the instrumented baseline run
+  (the code of `main` plus the timings), 11 of the 12 turns with a second model call were a `find_movements` search (the twelfth, a repaired text), and
+  five of them were dev scenarios with 5 movements in total (s057, s060, s061, s063, s066): "borrá lo del almuerzo" on a ledger of five searches,
+  finds nothing, and then asks. The list the model sees holds the 10
+  newest, so with fewer than 10 it is everything the person has, and the search could not find anything the model had not seen. A person who has just started
+  has a short ledger, which is exactly who the live test messages came from. The context now says so (`ContextInput.complete`: 1 to 9 movements; not for an empty
+  list, whose rule is unchanged), and tells the model what "nothing fits" means without a search: "el X fue N" is a new expense, a change or a
+  delete is a question. A first version of the line said only "follow the rules for when to ask", and "el almuerzo fue 5000" became a question instead of a
+  log (s165): the wording above is the second. A ledger of 10 or more still searches for an older item (s075 to s077 stay two turns, as they must).
+  The other causes are unchanged and rarer: a text the numbers check sends back (`log_movements:repair`, one per run), and a first `ask_user` with after_answer
+  `correct` and no `changes` (s061 and kin: refused in 4 of 4 runs before, 0 of 3 full-wording runs after the two prompt edits, the `ask_user` description
+  and the complete-list line; the two are not separated).
+
+### What changed
+
+| Change | Where | Evidence |
+| --- | --- | --- |
+| Per-stage timings on every sent reply | `inbound_message.timings` (migration 010), `src/timings.ts`, `src/latency-report.ts`, `pnpm latency` | claim, reads, each model turn (call, searches after it, input/output/cache tokens, characters of text beside the calls), commit, send stamp, send; "other" is what is left |
+| Tools not strict | `tools.ts` | -0.2 to -0.33 s per call, above |
+| 1-hour TTL on the frozen prefix | `loop.ts` `CACHE_TTL`, also on the startup warm-up | 5m: write after 330 s, 0 read (MISS); 1h: 17,233 read (HIT), same request. Cost below |
+| The model is told when the list is everything | `prompt.ts`, `process.ts` | second-turn rate 7.1% to 4.0%; asks on short ledgers 2 turns to 1 |
+| One read for the account | `store.upsertAccount` (a SELECT, the insert only for a new person) | one round trip fewer per message; `reads_ms` will show it |
+| `summarize` no longer echoes the question into `text` | the tool description | echo in 46% of summarize calls (11 of 24) to 0 of 39; about 4 tokens, mostly a cleaner record |
+| `ask_user` always carries the value with after_answer `correct` | the tool description | first-turn refusal of s061 and kin 4 of 4 runs to 0 of 3 (with the complete-list line) |
+| Scenario runner | `maxModelTurns` on a turn (a speed expectation, reported, not a failure), second-turn causes and output tokens per action in the report; s162 to s165 | `evals/scenarios` |
+
+Tried and dropped: a "write nothing before or between tool calls" line in the system prompt. The model does write English reasoning before a
+tool call on ambiguous messages (about 40 to 60 tokens: "There are two cafés ... the most recent is id=109"), but with the line it answered
+with text and no tool call 1 to 2 times in every 7 scenarios (a whole extra turn, 0 of 4 runs without it), and output tokens per ask did not fall (148 vs 152). Not shipped.
+Also not done: shrinking the schema (`text: null`, the summarize sentinels), because a token costs 2 ms; and a bigger recent list, which would remove
+the search for the 11th to 25th newest movement but changes what "borrá el 2" is a position in. Both are in Open.
+
+### TTL cost trade-off (Haiku 5.5, 17,240-token prefix)
+
+Prices per million tokens: input 0.10, cache read 0.01, 5-minute write 0.125 (1.25x), 1-hour write 0.20 (2x), output 0.50. Prefix per call: read
+US$0.000172; 5-minute write US$0.002155; 1-hour write US$0.003448. The cache is shared by every person (the prefix is the same bytes), so it stays warm as
+long as anyone writes inside the TTL; the cases below are the worst one, a single person.
+
+| Gap between messages | 5-minute TTL | 1-hour TTL |
+| --- | --- | --- |
+| under 5 min | read, US$0.000172 | read, US$0.000172 |
+| 5 to 60 min (a person at one message per 10 to 30 min) | write every time, US$0.002155 | read, US$0.000172 |
+| over 60 min | write, US$0.002155 | write, US$0.003448 |
+
+At one message every 10 to 30 minutes, the 1-hour TTL turns a miss on nearly every message into a read on nearly every message: US$0.00198 less on each,
+about 12x cheaper on the prefix and 7.6x on the whole call. It loses (by US$0.00129 a message) only for the message that follows a gap of more than an
+hour, so it pays whenever at least 40% of the gaps are shorter than an hour but longer than five minutes. The deploy's warm-up writes it once (US$0.0034). A keep-alive
+that re-sends the prefix every 4 minutes would cost more per day than it saves at this volume, and the 1-hour TTL needs no scheduler. The latency gain is small (a miss is
+about +0.06 s), so this is mainly a cost change.
+
+### Results
+
+Same 165 scenarios (161 before plus s162 to s165), real model and pipeline, per turn from post to stored reply (a Mac in Argentina, so a floor on the network
+side and not a prediction of Railway). Before is `origin/main`; the second column is the same code with only the timings added (it shows the
+run-to-run spread: a model call is not deterministic).
+
+| | Before (main) | Before, instrumented | After |
+| --- | --- | --- | --- |
+| Scenarios fully right | 160/161 (99.4%) | 158/161 (98.1%) | **164/165 (99.4%)**; dev 128/128, held-out test 36/37 |
+| Silent wrong changes / invented numbers | 0 / 0 | 0 / 0 | **0 / 0** |
+| Per turn p50 / p95 | 1,606 / 3,080 ms | 1,497 / 2,557 ms | **1,141 / 1,854 ms** |
+| Second model turn | 14 of 197 (7.1%) | 12 of 197 (6.1%) | **8 of 201 (4.0%)**; dev 6 of 157 (3.8%) vs 11 of 153 (7.2%) before |
+| Second-turn causes | n/a | `find_movements` 11, repaired text 1 | `find_movements` 5, repaired text 1, text without a tool 1, refused `summarize` 1 |
+| Output tokens per turn, mean | n/a | 163 | 159 |
+| Per action p50 (log / correct / delete / query / ask) | 1,595 / 1,516 / 1,403 / 1,857 / 1,566 ms | n/a | 1,095 / 1,159 / 1,015 / 1,352 / 1,157 ms |
+| Per action p95 (ask) | 3,245 ms | n/a | 1,509 ms |
+| Cost of the run | US$0.0676 | US$0.0675 | US$0.0689 |
+
+- Output tokens per action, before (instrumented) and after, mean per turn that called the model: log 149 to 154, correct 141 to 139, delete 93 to 96, undo 74 to
+  74, query 257 to 261, ask 189 to 149, multi 225 to 221, other 113 to 84. They did not fall except where a second turn went away (ask, other); see "Where the time goes".
+- `pnpm eval --split test` (31 held-out cases): 31/31, 0 silent, p50 1,106 ms, p95 2,161 ms. The full `pnpm eval --split all` was not repeated (the model budget
+  of US$0.60 was spent): before it was 148/152 (97.4%), 0 silent amounts and targets, p50 1,507 ms, p95 2,549 ms, mean output 157 tokens, US$0.0472.
+  The eval measures one message from a 10-movement list, so it does not see the complete-list change; it does see strict off and the prompt edits, and the test split held.
+- Held-out test scenarios have one unnecessary question in the last run (0 in the baseline, 1 in the run between); the model is nondeterministic and read the same
+  36/37 before strict was turned off. Not looked at (held out).
+- Mutations (one at a time, the whole suite run, restored after each): **21 of 21 killed**, after tightening four tests that let a timing mutant live
+  (the search time added over two searches, a second call timed from its own start, the commit, send and claim times, each with a delayed fake). The
+  mutants: the complete flag at `<=`, on an empty ledger, and never; the account insert returning nothing on a conflict; the timings overwritten instead of merged;
+  the search time reset per call; the call time taken from the start of the loop; output tokens dropped; a 5-minute TTL; the 1-hour write priced as a
+  5-minute one or counted twice; `media_ms` always set; the commit, send and claim times zeroed; a cache miss read as a hit; the later calls
+  including the first; "other" ignoring the send; the percentile off by one; strict back on; the complete line removed.
+
+### Expected live effect
+
+Live received to reply sent was p50 2,352 ms, p95 4,065 ms (the evals from here were p50 1,606, p95 3,080 per turn: the live number is about 0.75 s higher, the Graph send and the claim).
+
+| Change | Expected live saving |
+| --- | --- |
+| Tools not strict | p50 -0.2 to -0.3 s (every message makes at least one call) |
+| Fewer second turns | p50 ~0; asks on a short ledger 3.75 s to about 2.7 s; p95 -0.3 to -1 s |
+| 1-hour TTL | p50 -0.01 s; p95 -0.06 s; about 7x less spent on a missed message |
+| One account read, text echo, ask value | under 0.02 s together |
+
+Estimate after: **p50 about 1.95 s (1.85 to 2.05), p95 about 3.3 s**, which meets the 2.0 s p50 target only just. The scenarios moved 0.47 s at p50 and 1.2 s at p95, of which about
+0.1 s is the spread between two runs of the same code. The orchestrator measures it live: run `pnpm latency --last 40` after deploying and read "Where the time goes" (the
+model call, the claim and the send should each now be separate lines; "other" is what is left).
+
+### Open
+
+- **The floor is the model call.** 0.8 s a call without strict, with 24 or 132 output tokens alike, from Argentina; from Railway the network part will be smaller, and
+  the stored `model_ms` per turn says by how much. Nothing in the prompt, the schema or the output shortens it; a bigger lever is a faster model
+  (the benchmark settled on Haiku) or fast mode where the model has one. Haiku 5.5 does not list it.
+- **Older items.** A ledger of 10 or more still takes a search turn (about 1.3 s) for an item beyond the 10th newest. A longer list (20 or 25) would remove most of those searches for a few
+  hundred tokens of uncached input; it changes the meaning of "borrá el 2" (the position in a longer list), so it needs its own scenarios first.
+- **A text without a tool call** is still a whole extra turn (the loop says "answer only by calling a tool" and tries again). Its rate here was 1 in 201, on messages that
+  are a bare answer; `timings.turns[].text_chars` shows it live.
+- **The grammar budget** (slice D's "the next slice has to remove a field first") no longer binds; the sentinel fields (`month`, `year`, `from`, `to`, `other`) can become one optional string when someone wants the tokens (about 20 per summarize, 0.05 s).
+- Not done, as the brief allowed: the DB reads were already parallel with the typing call (`reads_ms` and `claimed_ms` are measured now, so a slow query would show); the
+  first-signal path was not touched.
