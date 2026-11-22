@@ -11,15 +11,20 @@ export function connect(
   return postgres(url, { onnotice: () => {}, ...options })
 }
 
-const dir = new URL('../migrations/', import.meta.url)
+/** The v1 migrations, until the slices that replace them land. */
+const legacyDir = new URL('../migrations/', import.meta.url)
+/** The new schema (`001_init.sql`, `002_auth.sql`). */
+export const schemaDir = new URL('./schema/', import.meta.url)
 
 /**
  * Applies each `NNN_name.sql` once, in order, under an advisory lock. Safe to run on every start.
  *
+ * `dir` is the folder of `NNN_name.sql` files: the v1 ones by default, `schemaDir` for the new schema.
+ *
  * The advisory locks in use (the first key; the second, where there is one, says whose): 7203001 the migrations,
  * 7203002 an account's undo, 7203003 an account's facts, 7203004 the sign-in pages one address opens.
  */
-export async function migrate(sql: Sql): Promise<void> {
+export async function migrate(sql: Sql, dir: URL = legacyDir): Promise<void> {
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort()
   await sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(7203001)`

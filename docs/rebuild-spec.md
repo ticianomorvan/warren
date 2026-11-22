@@ -288,6 +288,18 @@ All of them land on branch `rebuild`, in one PR, built by sequential Sonnet 5.5 
 - **CI:** `check` job runs `pnpm check`; a `postgres` job runs `pnpm test` with `PG_TEST_URL` on a `postgres:17` service. `test/boot.test.ts` starts the app through `createWarren` and checks `/health`.
 - **biome** ignores `docs/rebuild/` and `docs/rebuild-spec.md` (generated outputs and the spec).
 
+### As built (R1)
+
+- **Files:** `src/core/schema/001_init.sql` and `002_auth.sql`; `test/migrations.test.ts`. The runner is v1's: `migrate(sql, dir = legacy)` in `src/core/db.ts` (same `schema_migration` table and advisory lock 7203001); `schemaDir` is the new folder. `createTestDatabase({migrations})` takes `schemaDir` or `false` (an empty database). Nothing in the app uses the new schema yet; `useDatabase` still migrates v1. The slice that switches the app over passes `schemaDir` there and deletes `src/migrations/`, `src/migrations.test.ts` and the v1 branch of `migrate`.
+- **Checked:** PGlite 0.5.16 is PostgreSQL 18.6 and ships plpgsql, so the append-only trigger runs on both (migrations.test asserts it on PGlite and on `postgres:17`). `scale(amount) <= 2` works on both. `jsonb - text[]` works on both.
+- **Trigger is AFTER ROW, not BEFORE:** in a BEFORE trigger the stored generated column `movement.search` is not computed in NEW, so every update looked changed. Raising in an AFTER trigger aborts the statement the same. One function, `append_only(allowed columns...)`: no DELETE, an UPDATE may touch only the listed columns, and `ended_in`/`ended_at` cannot change once set. It guards `turn` and `mcp_request` (nothing may change), `movement` and `fact` (the ended pair) and `reminder` (the ended pair and `next_due_at`). A FK from a child row fires first on a DELETE of a referenced turn, so that error is the FK's.
+- **`search`:** `lower(translate(description || ' ' || replace(category,'_',' '), 'áéíóúüñÁÉÍÓÚÜÑ','aeiouunAEIOUUN'))`, exactly v1's fold, immutable, `GENERATED ... STORED`. `payment` has no folded column: v1 folds it at query time and the next slice may keep doing so. No index on `search` (v1 had none; `LIKE '%w%'`).
+- **Entity ids** come from one sequence per store (`movement_entity_seq` etc., `OWNED BY` the column): the first version takes the default, a new version passes `entity_id` explicitly. `logged_at` is when the entity was first logged (a correction passes it in its INSERT).
+- **`reminder_send`** is keyed by `reminder_entity_id` (no FK: it is not unique in `reminder`) and gained `account_id` so the daily cap counts a person's sends without a join. `UNIQUE (reminder_entity_id, due_at)` is the at-most-once guard.
+- **`wa_message`:** the v1 `body` is `text` (also a voice note's transcript), `payload`/`updated_at`/`command`/`parsed`/`action`/`model_turns`/`model_ms` are gone (`label` is on `turn`; turns and model time live in `audit`/`timings`); `error` stays. `reply.inbound_id` is `wa_message_id`. `mcp_request.turn_id` is NOT NULL: a call that changed nothing leaves no row, as in v1.
+- **`002_auth.sql`** is v1's `012_auth.sql` (better-auth 1.7.26 plus jwt, mcp and cimd, unchanged; `getMigrations(...)` reports nothing missing, asserted in `migrations.test`) with `link_request` and a comment on each table. `account.id` stays `bigserial`; `account_address` replaces `account.wa_id` (primary key `(channel, address)`, channel only `whatsapp` for now).
+- **Open:** the v1 real-Postgres race test `concurrency.test.ts > facts > an undo racing a forget` failed in 1 of 3 full runs here (passed on rerun); it is v1 code the rebuild replaces.
+
 ## Decisions (Ticiano, 2026-11-22)
 
 1. Rebuild from scratch on main, autonomously, with no manual testing in the middle.

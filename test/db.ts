@@ -20,16 +20,23 @@ export interface TestDatabase {
  * A migrated database of its own. On PGlite (default) an in-process server behind a socket. With
  * PG_TEST_URL set, a fresh schema on that Postgres (dropped on close), so test files running in
  * parallel never see each other's rows. `max` is the connection pool: PGlite shares one session
- * between connections, so only a real Postgres gets more than one.
+ * between connections, so only a real Postgres gets more than one. `migrations` picks the folder (v1's by default,
+ * `schemaDir` for the new schema) or `false` for an empty database.
  */
-export async function createTestDatabase(o: { max?: number } = {}): Promise<TestDatabase> {
+export async function createTestDatabase(
+  o: { max?: number; migrations?: URL | false } = {},
+): Promise<TestDatabase> {
+  const up = async (sql: Sql) => {
+    if (o.migrations === false) return
+    await migrate(sql, o.migrations)
+    await migrate(sql, o.migrations) // idempotent
+  }
   if (PG_TEST_URL) {
     const schema = `t_${randomUUID().replaceAll('-', '').slice(0, 12)}`
     const admin = connect(PG_TEST_URL, { max: 1 })
     await admin.unsafe(`CREATE SCHEMA ${schema}`)
     const sql = connect(PG_TEST_URL, { max: o.max ?? 1, connection: { search_path: schema } })
-    await migrate(sql)
-    await migrate(sql) // idempotent
+    await up(sql)
     return {
       sql,
       close: async () => {
@@ -44,8 +51,7 @@ export async function createTestDatabase(o: { max?: number } = {}): Promise<Test
   await socket.start()
   const port = (socket as unknown as { server: { address(): AddressInfo } }).server.address().port
   const sql = connect(`postgres://postgres:postgres@127.0.0.1:${port}/postgres`, { max: 1 })
-  await migrate(sql)
-  await migrate(sql) // idempotent
+  await up(sql)
   return {
     sql,
     close: async () => {
