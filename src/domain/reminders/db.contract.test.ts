@@ -23,8 +23,8 @@ describe('a stored reminder whose schedule no longer parses', () => {
   it('lists the live ones, the next to come first, and not a finished one-off', async () => {
     const a = await newAccount(sql)
     await turn(sql, a, [
-      remind('lejos', { month_day: 25 }),
-      remind('cerca', { month_day: 10 }),
+      remind('lejos', { month_day: 10 }),
+      remind('cerca', { month_day: 25 }),
       remind('hecho', { month_day: 11 }),
     ])
     await sql`UPDATE reminder SET next_due_at = NULL WHERE what = 'hecho'`
