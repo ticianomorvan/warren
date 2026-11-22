@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { answerAction, answerNumber, linkCode, type PendingQuestion } from './resolve'
+import {
+  answerAction,
+  answerNumber,
+  disconnectRequest,
+  linkCode,
+  type PendingQuestion,
+} from './resolve'
 
 describe('answerNumber', () => {
   it('reads a message that is only the pick of one of the options shown', () => {
@@ -181,5 +187,31 @@ describe('linkCode', () => {
     expect(linkCode('vincular K7M2Q')).toBeNull()
     expect(linkCode('vincular K7M2QX por favor')).toBeNull()
     expect(linkCode('café 3500 vincular K7M2QX')).toBeNull()
+  })
+})
+
+describe('disconnectRequest', () => {
+  it('reads a typed message that is only "desconectar", with or without Claude, and nothing with more in it', () => {
+    for (const yes of [
+      'desconectar',
+      'Desconectá',
+      'desconectá a Claude',
+      'Desconectar Claude.',
+      'por favor desconectar todo',
+      'desconectame',
+      'desconectar las conexiones',
+    ]) {
+      expect(disconnectRequest(yes), yes).toEqual({ tool: 'mcp_disconnect', input: {} })
+    }
+    for (const no of [
+      'desconectar y borrar todo',
+      'no desconectar',
+      'café desconectar',
+      'conectar',
+      'desconectar el wifi',
+      '',
+    ]) {
+      expect(disconnectRequest(no), no).toBeNull()
+    }
   })
 })

@@ -17,10 +17,11 @@ These hold in every change. A change that breaks one is wrong, whatever else it 
    the record of every change from a template, with no further model turn. The model may add a short text
    of its own, but it never writes a number code didn't give it (`src/agent/say.ts` checks every number;
    a text that fails is dropped) and never replaces the code-rendered record of a change. It never picks a
-   target in code's place: an id it sends must be one it was shown, the sender's, and live.
+   target in code's place: an id it sends must be one it was shown, the sender's, and live. Over MCP the client's agent is the agent and sees
+   no "shown to the model" list, so the rule there is the part that never depended on it: the id is the account's and live (locked, under `applyCall`), and the stale-state guards still apply.
 3. **Corrections never overwrite a movement, deletes never remove one, and neither does an undo.** A correction is a new
    row that supersedes the old one (`superseded_by`); a delete stamps `deleted_at` and `deleted_by`. Only movements that
-   are neither count (the recent list, query totals). An undo is made of the same moves: undoing a log is a delete,
+   are neither count (the recent list, query totals). An undo is made of the same moves, and spans channels (a batch is an `inbound_message` row of either `whatsapp` or `mcp`, and `warren_undo_last` or a typed "deshacer" takes the newest of both): undoing a log is a delete,
    undoing a correction is a new row with the old values that supersedes the correction, undoing a delete is a new row
    (`restores` names the deleted one). No row is edited, removed or un-deleted, and the undo is itself a recorded batch.
 4. **Secrets live only in the gitignored `.env`.** Never in code, logs, eval output or commits.
@@ -43,14 +44,15 @@ src/time.ts   The Argentine calendar day and clock, and date arithmetic
 src/range.ts  Pure: a summary's range (a named period, a month, a year or explicit days) resolved to Argentine days, the range before it, and the refusals (not started, reversed, over two years)
 src/summary.ts  Pure: the difference and the percentage of two totals, in integer cents (`bigint`), never a float or a division by zero
 src/render-summary.ts  Pure: the reply to a summary (the range in words, totals, groups, comparisons), from SQL results only
-src/auth/     The OAuth server and WhatsApp sign-in for MCP (slice 5.1, `docs/mcp-spec.md`): config.ts (better-auth on our postgres.js through Kysely:
+src/auth/     (also disconnect.ts: "desconectar") The OAuth server and WhatsApp sign-in for MCP (slice 5.1, `docs/mcp-spec.md`): config.ts (better-auth on our postgres.js through Kysely:
               jwt + mcp + cimd, CIMD-only from claude.ai/claude.com, 15-min audience-bound JWT, strict refresh rotation), plugin.ts (the one endpoint that makes a session,
               for an account that confirmed on WhatsApp), link.ts (`link_request` SQL: the page's side, and `askLink`/`confirmLink`/`declineLink` that run in the commit transaction), routes.ts
               (/sign-in, /sign-in/status, /oauth/consent, /api/auth/*, /.well-known/*, /mcp's 401 challenge; only on PUBLIC_URL's host), pages.ts (the two HTML pages),
               print-schema.ts (what better-auth wants as SQL; `012_auth.sql` is that, `auth_*`)
 src/mcp/      Warren over MCP (slice 5.2, `docs/mcp-spec.md`): door.ts (every `/mcp` request: the token's signature, issuer, audience `${PUBLIC_URL}/mcp`, expiry, `azp`, type `at+jwt`, then
               `sub` → `auth_user` → account → its WhatsApp id still allowed; else a 401 challenge, 503 when the database is down; authentication only, each tool asks for its own scope), endpoint.ts (`createMcpHandler`, a new stateless `McpServer` per request,
-              `toNodeHandler`, every failure caught), tools.ts (the three read tools and their closed-able output schemas)
+              `toNodeHandler`, every failure caught), tools.ts (the three read tools and their closed-able output schemas), write.ts (one MCP write: a settled `inbound_message` row of channel `mcp` and `applyCall` in one transaction; the request id's replay),
+              write-tools.ts (the six write tools)
 src/run-summary.ts  Plans, sums and renders a summary: the one path under WhatsApp's `summarize` and MCP's `warren_summarize`
 src/server.ts Entry point: config, migrate, warm-up, startup sweep, 30 s sweep, HTTP server (`pnpm start`)
 src/app.ts    node:http routes: GET /health, GET+POST /webhook (signature, dedupe, persist, 200)
@@ -65,6 +67,7 @@ src/resolve.ts  Pure: `answerNumber`/`answerAction`, the bare answer to a questi
 src/undo.ts   Undo of the sender's last write batch (agent slice C): which batch, the stale-state guard, the append-only reversal; runs inside the commit transaction
 src/redact.ts Pure: what a message that holds a secret leaves behind (a placeholder for its text, scrubbed audit and calls; agent slice F)
 src/undo-facts.ts  The facts half of an undo (slice F): what the batch stored or forgot, whether each still stands as it was left, and the reversal
+src/apply.ts  `applyCall(tx, {accountId, inboundId, today}, call)`: the six writes (log, correct, delete, undo, remember, forget) as data (an `Outcome`), the one path under WhatsApp's `execute` and MCP's write tools: the movement locked and checked to be the account's and live, the facts' advisory lock
 src/execute.ts  Runs a message's actions inside the commit transaction and returns the reply to store
 src/process.ts  Per message: ignored vs reply; for text, typing + agent together, the 10 s interim note, the 30 s
               deadline, the commit point, the at-most-once send; drain on shutdown; the sweep
@@ -187,6 +190,11 @@ wrong changes. Its test split is held out like the other: never print or tune on
   WhatsApp-only `text`, plus descriptions) and run its guards (`checkCall`), so a refusal is the same reason the model is given, as an `isError` result. Amounts are decimal strings plus `display` (`formatMoney`); `warren_summarize` also returns
   the `renderSummary` text and the exact differences from `summary.ts`; "today" is the Argentine day. Output schemas are open (a field added later breaks no client); the tests hold the real output to a closed copy (`outputSchemas(true)`).
   A session JWT or an ID token is not an access token (its `typ` is not `at+jwt`). Scope is each tool's (`requireScopes`, a 403 `insufficient_scope` with the challenge), an `Origin` must be ours or claude.ai/claude.com, free text is at most 200 characters. `checkCall` is two layers: `checkInput` (the value guards, shared with MCP) and the conversation's. The allow-list is the one WhatsApp answers by, read at every request. Nothing returned and no token is logged.
+- **MCP writes and "desconectar" (slice 5.3; `docs/mcp-spec.md`).** The six write tools (`warren_log_movements`, `_correct_movement`, `_delete_movement`, `_undo_last`, `_remember_fact`, `_forget_fact`; never forget-all) need `ledger:write`
+  per tool and run `checkInput` (the value guards), then one transaction: an `inbound_message` row (`channel = 'mcp'`, `kind = 'tool'`, `wamid = 'mcp:<request_id or a uuid>'`, the account's `wa_id`, status `done`, `action`, a code-rendered `reply_text`, the result the client got in
+  `payload`) and `applyCall`. A call that changes nothing (a refusal, a no-op) rolls the row back. A retried `request_id` returns the first answer; one used by another tool or another person is refused. What is stored of a call that holds a secret (`sensitive`) keeps no inputs.
+  `inbound_message.channel` is `whatsapp` or `mcp`: the claim and the sweep, the conversation window and the question to answer, and the latency report read only `whatsapp`; the undo reads both (that is how it spans channels). A typed "desconectar" (also "desconectá a Claude"),
+  only when no question is open and with no model call, runs `disconnectAccount` inside the commit transaction: refresh tokens revoked, consents and sessions removed, `account.mcp_revoked_at` stamped, which the door compares with a token's `iat` so a live token dies on its next call.
 - Optional `HELP_CONTACT` adds a human contact line to the help reply; unset adds nothing.
 - **Photos (agent B2).** An `image` webhook message keeps its media id and caption in `inbound_message`
   (`payload`, `body`); the bytes are never stored. `graph.fetchImage` looks the id up, checks the declared size

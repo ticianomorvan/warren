@@ -220,6 +220,13 @@ export const REPLY_LINK = {
   declined: 'Está bien, no conecté nada.',
 }
 
+/** "desconectar": what was cut. */
+export const REPLY_DISCONNECT = {
+  none: 'No tenés ninguna conexión activa con Claude u otro agente.',
+  done: (n: number) =>
+    `Listo, desconecté ${n === 1 ? '1 conexión' : `${n} conexiones`}: ya no pueden ver ni anotar nada. Para volver a conectar, empezá de nuevo desde Claude.`,
+}
+
 export const REPLY_UNDO_NOTHING = 'No tengo nada para deshacer.'
 export const REPLY_UNDO_EXPIRED =
   'Lo último que hice fue hace más de 24 horas y ya no lo deshago solo. Decime qué querés corregir o borrar.'

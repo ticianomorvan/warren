@@ -6,6 +6,7 @@ import type { Sql } from '../db'
 import { log } from '../log'
 import type { Door } from './door'
 import { registerReadTools } from './tools'
+import { registerWriteTools } from './write-tools'
 
 const INSTRUCTIONS =
   "Warren keeps a person's personal-finance ledger for Argentina: spending and income logged from WhatsApp, in ARS and USD. " +
@@ -32,17 +33,18 @@ export function createMcpEndpoint(o: {
   const handler = createMcpHandler(
     (ctx) => {
       const info = ctx.authInfo
-      const accountId = (info?.extra as { accountId?: unknown } | undefined)?.accountId
-      if (typeof accountId !== 'number') throw new Error('no account from the door')
+      const extra = info?.extra as { accountId?: unknown; waId?: unknown } | undefined
+      const { accountId, waId } = extra ?? {}
+      if (typeof accountId !== 'number' || typeof waId !== 'string') {
+        throw new Error('no account from the door')
+      }
       const server = new McpServer(
         { name: 'warren', version: '0.1.0' },
         { instructions: INSTRUCTIONS },
       )
-      registerReadTools(server, {
-        sql: o.sql,
-        accountId,
-        now,
-      })
+      const context = { sql: o.sql, accountId, waId, now }
+      registerReadTools(server, context)
+      registerWriteTools(server, context)
       return server
     },
     {

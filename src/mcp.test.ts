@@ -1,19 +1,8 @@
-import { createPrivateKey, sign } from 'node:crypto'
-import { symmetricDecrypt } from 'better-auth/crypto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { z } from 'zod'
-import { mcpUrl } from './auth/config'
-import {
-  type App,
-  CLIENT_ID,
-  type Connected,
-  claims,
-  mint,
-  WA_A,
-  WA_B,
-  withClaude,
-} from './auth-test-kit'
-import { decodeCursor, encodeCursor, outputSchemas } from './mcp/tools'
+import { type App, type Connected, claims, mint, WA_A, WA_B, withClaude } from './auth-test-kit'
+import { decodeCursor, encodeCursor } from './mcp/tools'
+import * as kit from './mcp-test-kit'
+import { accountOf, type Json, ok, type Row, refusal, seed } from './mcp-test-kit'
 import { sql, useDatabase } from './test-harness'
 
 /**
@@ -28,142 +17,7 @@ useDatabase(url ? { url, max: 12, schema: 'mcp_test' } : undefined)
 const NOW = new Date('2026-11-18T15:30:00.000Z')
 const WA_C = '5491100000003'
 
-// ---- JSON-RPC over HTTP
-
-// biome-ignore lint/suspicious/noExplicitAny: a test reads JSON-RPC answers loosely
-type Json = any
-
-type Rpc = { status: number; headers: Headers; body: Record<string, Json> | null }
-
-/** The answer is JSON or, for a legacy client, one SSE `message` event: both read the same. */
-async function readBody(res: Response): Promise<Record<string, Json> | null> {
-  const text = await res.text()
-  if (!text) return null
-  if (res.headers.get('content-type')?.includes('text/event-stream')) {
-    const data = text
-      .split('\n')
-      .filter((l) => l.startsWith('data:'))
-      .map((l) => l.slice(5).trim())
-      .at(-1)
-    return data ? JSON.parse(data) : null
-  }
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { raw: text }
-  }
-}
-
-let app: App
-let id = 0
-
-async function rpc(
-  bearer: string | null,
-  method: string,
-  params: unknown = {},
-  extra: Record<string, string> = {},
-) {
-  const res = await fetch(`${app.base}/mcp`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-      ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
-      ...extra,
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params }),
-  })
-  return { status: res.status, headers: res.headers, body: await readBody(res) } satisfies Rpc
-}
-
-type ToolResult = {
-  isError?: boolean
-  structuredContent?: Json
-  content: { type: string; text: string }[]
-}
-const call = async (
-  bearer: string,
-  name: string,
-  args: Record<string, unknown> = {},
-): Promise<ToolResult> => {
-  const r = await rpc(bearer, 'tools/call', { name, arguments: args })
-  expect(r.status, JSON.stringify(r.body)).toBe(200)
-  expect(r.body?.error, JSON.stringify(r.body)).toBeUndefined()
-  return r.body?.result as ToolResult
-}
-
-const closed = outputSchemas(true)
-/** A good result: held to the closed copy of its schema, and its text is the same data as its structured content. */
-function ok<K extends keyof typeof closed>(
-  result: ToolResult,
-  schema: K,
-): z.infer<(typeof closed)[K]> {
-  expect(result.isError, JSON.stringify(result)).toBeFalsy()
-  const parsed = closed[schema].parse(result.structuredContent)
-  expect(JSON.parse(result.content[0]?.text ?? 'null')).toEqual(parsed)
-  return parsed as z.infer<(typeof closed)[K]>
-}
-const refusal = (result: ToolResult) => {
-  expect(result.isError).toBe(true)
-  expect(result.structuredContent).toBeUndefined()
-  return result.content[0]?.text ?? ''
-}
-
 // ---- Data
-
-async function accountOf(wa: string): Promise<number> {
-  const [row] = await sql`SELECT id::int AS id FROM account WHERE wa_id = ${wa}`
-  return Number(row?.id)
-}
-
-interface Row {
-  on: string
-  amount: string
-  currency?: 'ARS' | 'USD'
-  direction?: 'in' | 'out'
-  description: string
-  category?: string
-  payment?: string | null
-  at?: string
-  state?: 'live' | 'deleted' | 'replaced'
-}
-
-let seeds = 0
-async function seed(
-  wa: string,
-  rows: Row[],
-  facts: { kind: string; key: string; value: string }[] = [],
-) {
-  const account = await accountOf(wa)
-  const [inbound] = await sql`
-    INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status)
-    VALUES (${`seed.${wa}.${++seeds}`}, ${wa}, 'text', 'seed', '{}'::jsonb, 'done') RETURNING id`
-  const ids: number[] = []
-  for (const [position, r] of rows.entries()) {
-    const [m] = await sql`
-      INSERT INTO movement (account_id, inbound_message_id, position, direction, amount, currency, occurred_on,
-        description, category, payment, confidence, created_at, deleted_at, deleted_by)
-      VALUES (${account}, ${inbound?.id}, ${position}, ${r.direction ?? 'out'}, ${r.amount}, ${r.currency ?? 'ARS'},
-        ${r.on}, ${r.description}, ${r.category ?? 'otros'}, ${r.payment ?? null}, 'high',
-        ${new Date(`${r.on}T${r.at ?? '10:00'}:00-03:00`)},
-        ${r.state === 'deleted' ? new Date() : null}, ${r.state === 'deleted' ? inbound?.id : null})
-      RETURNING id::int AS id`
-    ids.push(Number(m?.id))
-    if (r.state === 'replaced') {
-      const [next] = await sql`
-        INSERT INTO movement (account_id, inbound_message_id, position, direction, amount, currency, occurred_on,
-          description, category, payment, confidence)
-        VALUES (${account}, ${inbound?.id}, ${rows.length + position}, 'out', '1', 'ARS', ${r.on}, 'corrected', 'otros', null, 'high')
-        RETURNING id::int AS id`
-      await sql`UPDATE movement SET superseded_by = ${next?.id} WHERE id = ${m?.id}`
-      await sql`UPDATE movement SET deleted_at = now(), deleted_by = ${inbound?.id} WHERE id = ${next?.id}`
-    }
-  }
-  if (facts.length > 0) {
-    await sql`INSERT INTO fact ${sql(facts.map((f) => ({ ...f, account_id: account, inbound_message_id: inbound?.id })))}`
-  }
-  return ids
-}
 
 /** A has 40 live movements: 30 of October, 9 of November (ARS, out) and one income in USD; B has its own. */
 const A_ROWS: Row[] = [
@@ -233,8 +87,18 @@ const asAmount = (c: bigint) =>
   c % 100n === 0n ? `${c / 100n}` : `${c / 100n}.${String(c % 100n).padStart(2, '0')}`
 const LIVE_A = A_ROWS.filter((r) => !r.state)
 
+let app: App
+const rpc = (
+  bearer: string | null,
+  method: string,
+  params: unknown = {},
+  extra: Record<string, string> = {},
+) => kit.rpc(app, bearer, method, params, extra)
+const call = (bearer: string, name: string, args: Record<string, unknown> = {}) =>
+  kit.call(app, bearer, name, args)
 let a: Connected
 let b: Connected
+const forge = (over: Parameters<typeof kit.forge>[2] = {}) => kit.forge(app, a.userId, over)
 /** The allow-list, one array shared by WhatsApp and the door: a test may take someone off it. */
 let allowed: string[]
 
@@ -249,37 +113,6 @@ beforeEach(async () => {
 afterEach(() => app.close())
 
 // ---- The door
-
-/** A token as better-auth signs it, with any claim or header changed: the real signing key, taken out of the table. */
-async function forge(
-  over: {
-    claims?: Record<string, unknown>
-    header?: Record<string, unknown>
-    sub?: string
-    dropClaims?: string[]
-  } = {},
-) {
-  const [key] =
-    await sql`SELECT id, "privateKey" AS private FROM auth_jwks ORDER BY "createdAt" DESC LIMIT 1`
-  const secret = (await (app.auth as NonNullable<typeof app.auth>).$context).secretConfig
-  const jwk = JSON.parse(await symmetricDecrypt({ key: secret, data: JSON.parse(key?.private) }))
-  const now = Math.floor(Date.now() / 1000)
-  const payload: Record<string, unknown> = {
-    iss: app.base,
-    aud: mcpUrl(app.base),
-    sub: over.sub ?? a.userId,
-    azp: CLIENT_ID,
-    scope: 'ledger:read ledger:write',
-    iat: now,
-    exp: now + 900,
-    ...over.claims,
-  }
-  for (const k of over.dropClaims ?? []) delete payload[k]
-  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
-  const input = `${b64({ alg: 'EdDSA', typ: 'at+jwt', kid: key?.id, ...over.header })}.${b64(payload)}`
-  const signature = sign(null, Buffer.from(input), createPrivateKey({ key: jwk, format: 'jwk' }))
-  return `${input}.${signature.toString('base64url')}`
-}
 
 describe('the door', () => {
   it('a real token passes; a forged one signed with the same key and the same claims passes too (so the variants below test one thing each)', async () => {
@@ -453,23 +286,39 @@ describe('the protocol', () => {
     expect(r.body?.result.instructions).toContain('never add, convert or round')
   })
 
-  it('tools/list: exactly the three read tools, read-only, closed to the world, with an output schema and words a client reads', async () => {
+  const READS = ['warren_find_movements', 'warren_list_facts', 'warren_summarize']
+  // destructive: true for what takes something out of the live record, false for what only adds.
+  const WRITES: Record<string, boolean> = {
+    warren_log_movements: false,
+    warren_correct_movement: true,
+    warren_delete_movement: true,
+    warren_undo_last: true,
+    warren_remember_fact: false,
+    warren_forget_fact: true,
+  }
+
+  it('tools/list: three read tools and six write tools, annotated, closed to the world, each with an output schema and words a client reads', async () => {
     const r = await rpc(a.access_token, 'tools/list')
     const tools = r.body?.result.tools as Json[]
-    expect(tools.map((t) => t.name).sort()).toEqual([
-      'warren_find_movements',
-      'warren_list_facts',
-      'warren_summarize',
-    ])
+    expect(tools.map((t) => t.name).sort()).toEqual([...READS, ...Object.keys(WRITES)].sort())
+    // Not offered: forgetting everything (the person's own "sí" on WhatsApp), and anything else of the agent's.
+    expect(tools.some((t) => /forget_all|reply|help|ask/.test(t.name))).toBe(false)
     for (const t of tools) {
-      expect(t.annotations).toMatchObject({
-        readOnlyHint: true,
-        destructiveHint: false,
-        openWorldHint: false,
-      })
+      const write = t.name in WRITES
+      expect(t.annotations, t.name).toMatchObject(
+        write
+          ? {
+              readOnlyHint: false,
+              destructiveHint: WRITES[t.name],
+              idempotentHint: false,
+              openWorldHint: false,
+            }
+          : { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      )
       expect(t.outputSchema, t.name).toBeTruthy()
       expect(t.outputSchema.additionalProperties, t.name).not.toBe(false) // open, for a field added later
       expect(t.description.length, t.name).toBeGreaterThan(80)
+      if (write) expect(Object.keys(t.inputSchema.properties), t.name).toContain('request_id')
     }
     const find = tools.find((t) => t.name === 'warren_find_movements')
     expect(find.description).toContain('quote the amounts')
@@ -501,7 +350,7 @@ describe('the protocol', () => {
 
   it('a tool that does not exist is a protocol error', async () => {
     const r = await rpc(a.access_token, 'tools/call', {
-      name: 'warren_log_movements',
+      name: 'warren_forget_everything',
       arguments: {},
     })
     expect(r.body?.error ?? r.body?.result?.isError).toBeTruthy()

@@ -3,12 +3,14 @@ import type { AuditEntry } from './agent/loop'
 import { MAX_FACTS } from './agent/memory'
 import { composeReply, type Say, type Step } from './agent/say'
 import { applyCall, undoDetail, undoLine } from './apply'
+import { disconnectAccount } from './auth/disconnect'
 import { askLink, confirmLink, declineLink } from './auth/link'
 import type { Sql } from './db'
 import { allLiveFacts, forgetAll } from './facts'
 import { liveByIds, newestLiveId } from './ledger'
 import { scrubAudit } from './redact'
 import {
+  REPLY_DISCONNECT,
   REPLY_FACT_GONE,
   REPLY_FACT_SECRET,
   REPLY_GONE,
@@ -90,6 +92,7 @@ export function actionLabel(actions: Action[]): string {
     link_ask: 'link',
     link_confirm: 'link',
     link_decline: 'link',
+    mcp_disconnect: 'disconnect',
     list_facts: 'reply',
     summarize: 'summarize',
     ask_user: 'ask',
@@ -271,6 +274,12 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         const closed = await declineLink(tx, action.input.link_id, i.accountId)
         lines.push(REPLY_LINK.declined)
         steps.push({ tool: action.tool, outcome: closed ? 'applied' : 'gone' })
+        break
+      }
+      case 'mcp_disconnect': {
+        const cut = await disconnectAccount(tx, i.accountId)
+        lines.push(cut === 0 ? REPLY_DISCONNECT.none : REPLY_DISCONNECT.done(cut))
+        steps.push({ tool: action.tool, outcome: cut === 0 ? 'nothing' : 'applied' })
         break
       }
       case 'list_facts':

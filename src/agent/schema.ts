@@ -228,8 +228,17 @@ export type LinkAsk = { tool: 'link_ask'; input: { code: string } }
 export type LinkConfirm = { tool: 'link_confirm'; input: { link_id: number } }
 export type LinkDecline = { tool: 'link_decline'; input: { link_id: number } }
 
-/** What code runs by itself: a notice, a confirmed forget, or a step of a sign-in. A model call never comes to these except a refused secret, which is a notice. */
-export type CodeAction = Notice | ConfirmedForget | LinkAsk | LinkConfirm | LinkDecline
+/** "desconectar": cuts every MCP connection of the sender (refresh tokens, consents, live access tokens). Code's own, typed text only. */
+export type McpDisconnect = { tool: 'mcp_disconnect'; input: Record<string, never> }
+
+/** What code runs by itself: a notice, a confirmed forget, a step of a sign-in, or a disconnect. A model call never comes to these except a refused secret, which is a notice. */
+export type CodeAction =
+  | Notice
+  | ConfirmedForget
+  | LinkAsk
+  | LinkConfirm
+  | LinkDecline
+  | McpDisconnect
 
 /** What runs at the commit point: the model's terminal calls, or an action of code's own. */
 export type Action = ModelAction | CodeAction

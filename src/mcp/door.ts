@@ -11,7 +11,7 @@ import { isAllowed } from '../process'
 
 /** What the door says about a request: who it is, or the answer to send instead. */
 export type Admitted =
-  | { ok: true; authInfo: AuthInfo & { extra: { accountId: number } } }
+  | { ok: true; authInfo: AuthInfo & { extra: { accountId: number; waId: string } } }
   | { ok: false; response: Response }
 
 export type Door = (req: IncomingMessage) => Promise<Admitted>
@@ -55,7 +55,8 @@ function tokenType(authorization: string | null): string {
  * signature, issuer, audience (`${publicUrl}/mcp`), expiry and `azp` in-process; its own DPoP handling stays on and refuses
  * what it cannot prove (this server issues bearer tokens only, so a client has none). Then ours: the token's type is `at+jwt`
  * (a session JWT or an ID token is not an access token; `requireMcpAuth` does not offer jose's `typ` option, so the header is read
- * here), and its `sub` is a user that stands for an account whose WhatsApp id is still allowed. Our own refusals are one 401 with
+ * here), and its `sub` is a user that stands for an account whose WhatsApp id is still allowed and that has not cut its
+ * connections since the token was issued (`mcp_revoked_at`, set by "desconectar"). Our own refusals are one 401 with
  * the `WWW-Authenticate` challenge whatever the reason, so a token teaches nothing; better-auth's carry their own error
  * description, which tells a client what it already knows. A database that cannot answer is a 503, not a reason to sign in again.
  * The account id leaves here, in `authInfo.extra`, and nowhere else: no tool takes it from its input. Tokens are never logged.
@@ -95,10 +96,11 @@ export function createDoor(o: DoorOptions): Door {
     if (typ !== 'at+jwt' && typ !== 'application/at+jwt') return refused(request, 'token type')
     const sub = claims.sub
     if (typeof sub !== 'string' || !UUID.test(sub)) return refused(request, 'subject')
-    let person: { id: string; wa_id: string } | undefined
+    let person: { id: string; wa_id: string; revoked: number | null } | undefined
     try {
-      ;[person] = await o.sql<{ id: string; wa_id: string }[]>`
-        SELECT a.id, a.wa_id FROM auth_user u JOIN account a ON a.id = u.warren_account_id
+      ;[person] = await o.sql<{ id: string; wa_id: string; revoked: number | null }[]>`
+        SELECT a.id, a.wa_id, extract(epoch FROM a.mcp_revoked_at)::float8 AS revoked
+        FROM auth_user u JOIN account a ON a.id = u.warren_account_id
         WHERE u.id = ${sub}::uuid`
     } catch (error) {
       // The database is down, which is not the client's fault: it must not be sent to sign in.
@@ -111,6 +113,13 @@ export function createDoor(o: DoorOptions): Door {
     }
     if (!person) return refused(request, 'unknown user')
     if (!isAllowed(o.allowed, person.wa_id)) return refused(request, 'not allowed')
+    // "desconectar": a token issued at or before the person cut their connections is dead, though its signature and expiry are good.
+    if (
+      person.revoked !== null &&
+      !(typeof claims.iat === 'number' && claims.iat > Math.floor(person.revoked))
+    ) {
+      return refused(request, 'disconnected')
+    }
     const scopes = typeof claims.scope === 'string' ? claims.scope.split(' ') : []
     return {
       ok: true,
@@ -119,7 +128,7 @@ export function createDoor(o: DoorOptions): Door {
         token: '',
         clientId: String(claims.azp ?? ''),
         scopes,
-        extra: { accountId: Number(person.id) },
+        extra: { accountId: Number(person.id), waId: person.wa_id },
       },
     }
   }
