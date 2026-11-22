@@ -4,6 +4,11 @@ import { keepAliveFetch } from '../http'
 const PERMANENT = new Set([100, 131026, 131030, 131047, 131051])
 const RETRYABLE = new Set([4, 80007, 130429, 131048, 131056, 190])
 
+/** Meta's code for "outside the 24 h window": a reminder sent as text is sent again as the template. */
+export const OUTSIDE_WINDOW = 131047
+/** The language the reminder template (`REMINDER_TEMPLATE`) is approved in. */
+export const TEMPLATE_LANGUAGE = 'es_AR'
+
 export class GraphError extends Error {
   constructor(
     /** HTTP status of the response (200 when the body was unusable). */

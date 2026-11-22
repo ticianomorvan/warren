@@ -1,6 +1,7 @@
 import { isAllowed } from '../access'
 import type { Sql } from '../core/db'
 import { log } from '../log'
+import { OUTSIDE_WINDOW } from './graph'
 import type { InboundMessage, StatusUpdate } from './payload'
 
 /**
@@ -10,9 +11,6 @@ import type { InboundMessage, StatusUpdate } from './payload'
  */
 
 const seconds = (n: number | undefined) => (n === undefined ? null : new Date(n * 1000))
-
-/** Meta's code for "outside the 24 h window": a reminder sent as text is sent again as the template. */
-const OUTSIDE_WINDOW = 131047
 
 /** The account of a WhatsApp id, created the first time it is asked for. */
 export async function accountFor(sql: Sql, waId: string): Promise<number> {

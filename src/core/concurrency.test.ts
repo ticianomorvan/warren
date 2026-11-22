@@ -3,6 +3,7 @@ import {
   cafe,
   cancel,
   forget,
+  hours,
   liveFactList,
   liveMovements,
   liveReminderList,
@@ -15,6 +16,8 @@ import {
   undo,
 } from '../../test/core'
 import { realPostgres, sql, useDatabase } from '../../test/db'
+import { fakeGraph } from '../../test/fakes'
+import { createReminderSender } from '../domain/reminders/send'
 import { schemaDir } from './db'
 
 /**
@@ -132,18 +135,29 @@ describe.skipIf(!realPostgres)('real Postgres: races on one account', () => {
     }
   })
 
-  it('an undo racing the sweep that finishes a one-off: the undo is applied or blocked, never failed', async () => {
+  it('an undo racing the real sender that finishes a one-off: the set is taken back and nothing is sent, or it is sent and the undo is blocked', async () => {
     for (let run = 0; run < RUNS; run++) {
       const a = await newAccount(sql)
+      await sql`INSERT INTO account_address (account_id, channel, address) VALUES (${a}, 'whatsapp', '5491100000000')`
       await turn(sql, a, [remind('llamar', { day: 'tomorrow', time: '10:00' })])
-      // The sweep takes the row lock and ends the one-off, without the account lock.
-      const sweep = sql.begin(async (tx) => {
-        await tx`SELECT 1 FROM reminder WHERE entity_id = 1 FOR UPDATE`
-        await tx`UPDATE reminder SET next_due_at = NULL WHERE entity_id = 1`
+      // The sender takes the reminder's row lock and finishes the one-off, without the account lock.
+      const graph = fakeGraph()
+      const sender = createReminderSender({
+        sql,
+        graph: graph.graph,
+        allowed: ['*'],
+        template: 'warren_reminder',
+        now: () => hours(26),
       })
-      const [, undid] = await Promise.all([sweep, turn(sql, a, [undo], { at: minutes(1) })])
+      const [, undid] = await Promise.all([
+        sender.sweep(),
+        turn(sql, a, [undo], { at: minutes(1) }),
+      ])
       const status = undid.done[0]?.outcome?.status
       expect(['applied', 'blocked'], `run ${run}`).toContain(status)
+      // Whichever came first: it was sent exactly when the undo found it already sent.
+      expect(graph.calls.attempts, `run ${run}`).toBe(status === 'blocked' ? 1 : 0)
+      expect(await liveReminderList(sql), `run ${run}`).toEqual([])
       await sql`TRUNCATE mcp_request, reminder_send, reminder, fact, movement, reply, wa_message, turn, account_address, account RESTART IDENTITY CASCADE`
     }
   })

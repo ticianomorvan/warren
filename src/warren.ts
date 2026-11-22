@@ -6,6 +6,7 @@ import { createLinks } from './auth/link'
 import { type AuthRoutes, createAuthRoutes } from './auth/routes'
 import type { Config } from './config'
 import type { Sql } from './core/db'
+import { createReminderSender, type ReminderSender } from './domain/reminders/send'
 import { log } from './log'
 import type { Transcriber } from './transcribe'
 import type { Graph } from './whatsapp/graph'
@@ -40,10 +41,12 @@ export interface WarrenDeps {
 export interface Warren {
   ingest: Ingest
   worker: Worker
+  /** Sends the reminders that are due; `sweep` runs it on the tick. */
+  reminders: ReminderSender
   server: Server
   /** Another worker over the same pieces, for tests that swap the model mid-run (an old instance beside a new one). */
   makeWorker: (client?: Anthropic) => Worker
-  /** One pass of everything that runs on a timer: the messages left pending. */
+  /** One pass of everything that runs on a timer: the messages left pending and the reminders that are due. */
   sweep: () => Promise<void>
   /** Stops taking work and lets what is in flight finish (a deploy, or the end of a test). */
   stop: (graceMs?: number) => Promise<void>
@@ -96,17 +99,31 @@ export function createWarren(deps: WarrenDeps): Warren {
       ...(deps.deadlineMs !== undefined ? { deadlineMs: deps.deadlineMs } : {}),
     })
   const worker = makeWorker()
+  const reminders = createReminderSender({
+    sql,
+    graph: deps.graph,
+    allowed: config.ALLOWED_WA_IDS,
+    template: config.REMINDER_TEMPLATE,
+    ...(deps.clock ? { now: deps.clock } : {}),
+  })
   const server = createApp({ ingest, config, worker, auth })
   return {
     ingest,
     worker,
+    reminders,
     server,
     makeWorker,
     sweep: async () => {
-      await worker.sweep().catch((err) => log('sweep_error', { error: String(err) }, 'error'))
+      // Independent: a failing reminder sweep never holds back the messages, nor the other way round.
+      await Promise.all([
+        worker.sweep().catch((err) => log('sweep_error', { error: String(err) }, 'error')),
+        reminders
+          .sweep()
+          .catch((err) => log('reminder_sweep_error', { error: String(err) }, 'error')),
+      ])
     },
     stop: async (graceMs = 10_000) => {
-      await worker.stop(graceMs)
+      await Promise.all([worker.stop(graceMs), reminders.stop(graceMs)])
     },
   }
 }
