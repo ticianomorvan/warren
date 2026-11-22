@@ -4,6 +4,7 @@ import { checkInput } from '../agent/calls'
 import { CATEGORIES, FACT_KINDS, MAX_MOVEMENTS } from '../agent/schema'
 import type { WriteCall } from '../apply'
 import { argentinaToday } from '../time'
+import { UNDO_WINDOW_HOURS } from '../undo'
 import {
   done,
   fail,
@@ -122,7 +123,9 @@ export function registerWriteTools(server: McpServer, c: ToolContext) {
         },
         presentMovement,
       )
-      return written.ok ? done(written.output) : fail(written.reason)
+      return written.ok
+        ? done({ ...written.output, replayed: written.replayed })
+        : fail(written.reason)
     } catch (error) {
       return unavailable(`warren_${name}`, error)
     }
@@ -192,7 +195,7 @@ export function registerWriteTools(server: McpServer, c: ToolContext) {
       title: 'Undo the last change',
       description:
         'Takes back the newest change of the person, whichever channel made it (this connection or WhatsApp): everything one ' +
-        `request logged, corrected, deleted, remembered or forgot, as one step, within ${24} hours. Refuses when something it ` +
+        `request logged, corrected, deleted, remembered or forgot, as one step, within ${UNDO_WINDOW_HOURS} hours. Refuses when something it ` +
         'touched was changed since, and says what. Calling it again takes back the one before. ' +
         WRITES,
       inputSchema: z.object({ request_id: requestId }),

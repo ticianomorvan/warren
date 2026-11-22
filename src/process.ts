@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { actionLabel } from './action-label'
 import {
   type Action,
   AgentError,
@@ -13,7 +14,7 @@ import {
   windowReplies,
 } from './agent'
 import { sensitive } from './agent/memory'
-import { actionLabel, execute } from './execute'
+import { execute } from './execute'
 import { RECENT_LIMIT } from './ledger'
 import { log } from './log'
 import { isSecretNotice, scrubAudit, scrubCalls } from './redact'
@@ -437,7 +438,7 @@ export function createProcessor(o: ProcessorOptions) {
               window,
               heard,
               redact,
-              render: { helpContact: o.helpContact },
+              render: { helpContact: o.helpContact, disconnect: o.signIn === true },
             }),
         })
       } catch (err) {

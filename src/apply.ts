@@ -1,4 +1,4 @@
-import type { Action, Movement, RecentMovement } from './agent/schema'
+import type { Action, FactKind, Movement, RecentMovement } from './agent/schema'
 import type { Sql } from './db'
 import {
   type FactRow,
@@ -10,8 +10,7 @@ import {
 } from './facts'
 import { insertMovements, lockLive, type MovementRow, softDelete, supersede } from './ledger'
 import { applyChanges, type ChangedField, changedFields } from './movement'
-import type { UndoLine } from './render'
-import { type Undone, type UndoOutcome, undoLast } from './undo'
+import { type UndoOutcome, undoLast } from './undo'
 
 /** The six calls that change what Warren keeps, whoever sends them: the agent over WhatsApp or a client over MCP. */
 export type WriteCall = Extract<
@@ -40,9 +39,7 @@ export interface ApplyContext {
   /** The person. From the verified sender or the verified token, never from the call. */
   accountId: number
   /** The batch: the `inbound_message` row this call's changes are linked to (the message, or an MCP request's row). */
-  inboundId: number
-  /** The Argentine day: not used by the writes themselves, the caller renders with it. */
-  today: string
+  batchId: number
   /** The position of the first row this call inserts in its batch: a message may log, correct and log again. Default 0. */
   position?: number
 }
@@ -51,7 +48,7 @@ export interface ApplyContext {
 export type Outcome =
   | { tool: 'log_movements'; kind: 'applied'; movements: Movement[]; ids: number[]; rows: number }
   /** The movement is not the person's, or no longer live: a message that ran meanwhile changed it. Nothing was written. */
-  | { tool: 'correct_movement'; kind: 'gone'; rows: 0 }
+  | { tool: 'correct_movement'; kind: 'gone'; id: number; rows: 0 }
   | { tool: 'correct_movement'; kind: 'unchanged'; old: MovementRow; rows: 0 }
   | {
       tool: 'correct_movement'
@@ -63,11 +60,12 @@ export type Outcome =
       changed: ChangedField[]
       rows: 1
     }
-  | { tool: 'delete_movement'; kind: 'gone'; rows: 0 }
+  | { tool: 'delete_movement'; kind: 'gone'; id: number; rows: 0 }
   | { tool: 'delete_movement'; kind: 'applied'; old: MovementRow; rows: 0 }
   | { tool: 'undo_last'; undo: UndoOutcome; rows: 0 }
-  | { tool: 'remember_fact'; stored: Remembered; rows: 0 }
-  | { tool: 'forget_fact'; gone: FactRow[]; rows: 0 }
+  | { tool: 'remember_fact'; stored: Remembered; kind: FactKind; key: string; rows: 0 }
+  /** `gone` is what was forgotten; `id` and `key` are what was asked for (0 and "" when unused), for the refusal when nothing was. */
+  | { tool: 'forget_fact'; gone: FactRow[]; id: number; key: string; rows: 0 }
 
 /**
  * Runs one write inside a transaction that already holds the batch's row, and says what it did. The one write path of both
@@ -78,13 +76,13 @@ export type Outcome =
  * Nothing in this function knows of a conversation or a reply.
  */
 export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Promise<Outcome> {
-  const { accountId, inboundId } = ctx
+  const { accountId, batchId } = ctx
   switch (call.tool) {
     case 'log_movements': {
       const { movements } = call.input
       const ids = await insertMovements(tx, {
         accountId,
-        inboundId,
+        inboundId: batchId,
         movements,
         firstPosition: ctx.position ?? 0,
       })
@@ -92,13 +90,13 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
     }
     case 'correct_movement': {
       const old = await lockLive(tx, accountId, call.input.id)
-      if (!old) return { tool: call.tool, kind: 'gone', rows: 0 }
+      if (!old) return { tool: call.tool, kind: 'gone', id: call.input.id, rows: 0 }
       const next = applyChanges(old, call.input.changes)
       const changed = changedFields(old, next)
       if (changed.length === 0) return { tool: call.tool, kind: 'unchanged', old, rows: 0 }
       const id = await supersede(tx, {
         accountId,
-        inboundId,
+        inboundId: batchId,
         old,
         next,
         position: ctx.position ?? 0,
@@ -107,17 +105,23 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
     }
     case 'delete_movement': {
       const old = await lockLive(tx, accountId, call.input.id)
-      if (!old) return { tool: call.tool, kind: 'gone', rows: 0 }
-      await softDelete(tx, old.id, inboundId)
+      if (!old) return { tool: call.tool, kind: 'gone', id: call.input.id, rows: 0 }
+      await softDelete(tx, old.id, batchId)
       return { tool: call.tool, kind: 'applied', old, rows: 0 }
     }
     case 'undo_last':
-      return { tool: call.tool, undo: await undoLast(tx, { accountId, inboundId }), rows: 0 }
+      return {
+        tool: call.tool,
+        undo: await undoLast(tx, { accountId, inboundId: batchId }),
+        rows: 0,
+      }
     case 'remember_fact': {
       const { kind, key, value } = call.input
       return {
         tool: call.tool,
-        stored: await rememberFact(tx, { accountId, inboundId, kind, key, value }),
+        stored: await rememberFact(tx, { accountId, inboundId: batchId, kind, key, value }),
+        kind,
+        key,
         rows: 0,
       }
     }
@@ -128,30 +132,9 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       const found = await findLive(tx, accountId, id > 0 ? { id } : { key }, { lock: true })
       const gone: FactRow[] = []
       for (const fact of found) {
-        if (await forgetFact(tx, fact.id, inboundId)) gone.push(fact)
+        if (await forgetFact(tx, fact.id, batchId)) gone.push(fact)
       }
-      return { tool: call.tool, gone, rows: 0 }
+      return { tool: call.tool, gone, id, key, rows: 0 }
     }
   }
-}
-
-/** An undone movement as the record shows it: what it is after the undo, and what a restored correction was before. */
-export function undoLine(u: Undone): UndoLine {
-  if (u.kind === 'fact_removed' || u.kind === 'fact_restored' || u.kind === 'fact_reverted')
-    return u
-  if (u.kind === 'corrected') {
-    return { kind: u.kind, movement: u.to, from: u.from, changed: changedFields(u.from, u.to) }
-  }
-  return { kind: u.kind, movement: u.movement }
-}
-
-/** What an undo did, for an audit entry: which batch and what became of each row. */
-export function undoDetail(undo: UndoOutcome): string | undefined {
-  if (undo.kind === 'undone') {
-    return `undid batch ${undo.batch}: ${undo.items.map((u) => `${u.kind} ${'fact' in u ? u.fact.id : 'movement' in u ? u.movement.id : u.from.id}`).join(', ')}`
-  }
-  if (undo.kind === 'stale') {
-    return `stale: ${[...undo.moved, ...undo.facts].map((m) => m.id).join(', ')}`
-  }
-  return undefined
 }

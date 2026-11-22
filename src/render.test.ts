@@ -91,6 +91,17 @@ describe('renderHelp', () => {
     const withContact = renderHelp({ helpContact: 'ayuda@heywarren.app' })
     expect(withContact).toBe(`${plain}\nSi necesitás hablar con una persona: ayuda@heywarren.app`)
   })
+
+  it("tells how to cut an agent's access only where connecting one is on", () => {
+    expect(renderHelp()).not.toContain('desconectar')
+    const on = renderHelp({ disconnect: true })
+    expect(on).toBe(
+      `${renderHelp()}\nSi conectaste a Claude u otro agente y querés cortarle el acceso, escribime "desconectar".`,
+    )
+    expect(renderHelp({ disconnect: true, helpContact: 'x@y.z' })).toBe(
+      `${on}\nSi necesitás hablar con una persona: x@y.z`,
+    )
+  })
 })
 
 describe('fitReply', () => {

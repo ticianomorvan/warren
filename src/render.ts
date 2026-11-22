@@ -1,8 +1,9 @@
 import type { Movement, RecentMovement } from './agent'
 import type { FactRow } from './facts'
 import type { MovementRow } from './ledger'
-import type { ChangedField } from './movement'
+import { type ChangedField, changedFields } from './movement'
 import { addDays } from './time'
+import type { Undone } from './undo'
 import type { MediaProblem } from './whatsapp/graph'
 
 export const REPLY_NON_TEXT = 'Por ahora solo entiendo texto y fotos.'
@@ -109,6 +110,9 @@ export const REPLY_INTERIM = 'Sigo con esto, ya te respondo.'
 export const REPLY_FAILED = 'No pude procesar tu mensaje. Probá de nuevo en un rato.'
 export const REPLY_GONE =
   'Ese movimiento ya fue corregido o borrado. Fijate cómo quedó y mandame de nuevo qué querés cambiar.'
+/** The help's line about cutting an agent's access: only where connecting an agent is on. */
+const REPLY_HELP_DISCONNECT =
+  'Si conectaste a Claude u otro agente y querés cortarle el acceso, escribime "desconectar".'
 const REPLY_HELP =
   'Mandame un gasto o un ingreso y lo anoto. Por ejemplo: "café 3500 con la visa" o "cobré el sueldo 850.000".'
 
@@ -247,6 +251,16 @@ export type UndoLine =
   | { kind: 'fact_restored'; fact: FactRow }
   | { kind: 'fact_reverted'; fact: FactRow; was: string }
 
+/** An undone movement as the record shows it: what it is after the undo, and what a restored correction was before. */
+export function undoLine(u: Undone): UndoLine {
+  if (u.kind === 'fact_removed' || u.kind === 'fact_restored' || u.kind === 'fact_reverted')
+    return u
+  if (u.kind === 'corrected') {
+    return { kind: u.kind, movement: u.to, from: u.from, changed: changedFields(u.from, u.to) }
+  }
+  return { kind: u.kind, movement: u.movement }
+}
+
 type MovementUndo = Extract<UndoLine, { movement: RecentMovement }>
 
 /**
@@ -376,6 +390,8 @@ function listOptions(candidates: Numbered[], today: string): string {
 }
 
 export interface RenderOptions {
+  /** Connecting an agent over MCP is on: the help tells how to cut it ("desconectar"). */
+  disconnect?: boolean
   /** A human contact line added to the help reply. */
   helpContact?: string
 }
@@ -389,7 +405,6 @@ export function renderLog(movements: Movement[], today: string): string {
 
 /** The canned help text: the only reply the model does not write, for "ayuda" and greetings. */
 export function renderHelp(o: RenderOptions = {}): string {
-  return o.helpContact
-    ? `${REPLY_HELP}\nSi necesitás hablar con una persona: ${o.helpContact}`
-    : REPLY_HELP
+  const help = o.disconnect ? `${REPLY_HELP}\n${REPLY_HELP_DISCONNECT}` : REPLY_HELP
+  return o.helpContact ? `${help}\nSi necesitás hablar con una persona: ${o.helpContact}` : help
 }

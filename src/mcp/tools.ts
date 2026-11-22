@@ -109,7 +109,7 @@ export function outputSchemas(strict: boolean) {
         .describe('Empty unless the summary was compared.'),
       summary: z.string().describe('The same summary as Warren writes it on WhatsApp, in Spanish.'),
     }),
-    ...writeOutputs(obj, movement, money),
+    ...writeOutputs(obj, movement),
     facts: obj({
       facts: z.array(
         obj({
@@ -125,7 +125,7 @@ export function outputSchemas(strict: boolean) {
 }
 
 /** What every change returns: its batch (null when nothing was written), the record Warren renders and how to take it back. */
-const writeBase = (_obj: typeof z.looseObject) => ({
+const writeBase = {
   batch: z
     .number()
     .int()
@@ -136,14 +136,15 @@ const writeBase = (_obj: typeof z.looseObject) => ({
     .string()
     .nullable()
     .describe('How to take the change back; null when nothing was written.'),
-})
+  replayed: z
+    .boolean()
+    .describe(
+      'True when this is the answer to an earlier call with the same request_id: nothing was written now.',
+    ),
+}
 
-function writeOutputs(
-  obj: typeof z.looseObject,
-  movement: ReturnType<typeof z.looseObject>,
-  _money: Record<string, unknown>,
-) {
-  const base = writeBase(obj)
+function writeOutputs(obj: typeof z.looseObject, movement: ReturnType<typeof z.looseObject>) {
+  const base = writeBase
   const factView = obj({
     id: z.number().int(),
     kind: z.enum(FACT_KINDS),

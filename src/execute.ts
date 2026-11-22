@@ -2,7 +2,7 @@ import type { Action } from './agent'
 import type { AuditEntry } from './agent/loop'
 import { MAX_FACTS } from './agent/memory'
 import { composeReply, type Say, type Step } from './agent/say'
-import { applyCall, undoDetail, undoLine } from './apply'
+import { applyCall } from './apply'
 import { disconnectAccount } from './auth/disconnect'
 import { askLink, confirmLink, declineLink } from './auth/link'
 import type { Sql } from './db'
@@ -35,9 +35,11 @@ import {
   renderStale,
   renderUnchanged,
   renderUndo,
+  undoLine,
 } from './render'
 import { runSummary } from './run-summary'
 import type { Executed } from './store'
+import { undoDetail } from './undo'
 
 export interface ExecuteInput {
   accountId: number
@@ -75,33 +77,6 @@ const CHANGES = new Set([
   'forget_fact',
   'forget_all_confirmed',
 ])
-
-/** The label `inbound_message.action` and the latency report use: one tool, or `multi`. */
-export function actionLabel(actions: Action[]): string {
-  const [only] = actions
-  if (!only || actions.length > 1) return 'multi'
-  const label = {
-    log_movements: 'log',
-    correct_movement: 'correct',
-    delete_movement: 'delete',
-    undo_last: 'undo',
-    remember_fact: 'remember',
-    forget_fact: 'forget',
-    forget_all_facts: 'forget',
-    forget_all_confirmed: 'forget',
-    link_ask: 'link',
-    link_confirm: 'link',
-    link_decline: 'link',
-    mcp_disconnect: 'disconnect',
-    list_facts: 'reply',
-    summarize: 'summarize',
-    ask_user: 'ask',
-    reply: 'reply',
-    help: 'reply',
-    notice: 'reply',
-  } as const
-  return label[only.tool]
-}
 
 /**
  * Runs a message's actions against the ledger, in order, and returns the one reply to store. It runs
@@ -145,7 +120,7 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
         // The writes are `applyCall`'s, the one path under both channels; this composes the reply from what it did.
         const done = await applyCall(
           tx,
-          { accountId: i.accountId, inboundId: i.inboundId, today, position },
+          { accountId: i.accountId, batchId: i.inboundId, position },
           action,
         )
         position += done.rows
@@ -216,14 +191,14 @@ export async function execute(tx: Sql, i: ExecuteInput): Promise<Executed> {
                     ? 'unchanged'
                     : 'applied',
             })
-            const call = action as Extract<Action, { tool: 'remember_fact' }>
-            details.set(index, `${stored.kind}: ${call.input.kind} ${call.input.key}`)
+            details.set(index, `${stored.kind}: ${done.kind} ${done.key}`)
             break
           }
           case 'forget_fact': {
-            const { id, key } = (action as Extract<Action, { tool: 'forget_fact' }>).input
             for (const fact of done.gone) lines.push(renderForgot(fact))
-            if (done.gone.length === 0) lines.push(id > 0 ? REPLY_FACT_GONE : renderForgotNone(key))
+            if (done.gone.length === 0) {
+              lines.push(done.id > 0 ? REPLY_FACT_GONE : renderForgotNone(done.key))
+            }
             steps.push({ tool: done.tool, outcome: done.gone.length > 0 ? 'applied' : 'gone' })
             break
           }

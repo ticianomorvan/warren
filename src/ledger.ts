@@ -136,6 +136,44 @@ export interface LastBatch {
 }
 
 /**
+ * What makes an `inbound_message` row a batch an undo can reach (`alias` is its name in the query): it was committed, so its
+ * `action` and `reply_text` are set, and it is not itself an undo. The two columns are set together and only by the commit of a
+ * WhatsApp message (`store.commit`) or of an MCP request (`settleBatchRow`); no other path makes a batch, and `lastBatch` reads
+ * exactly this.
+ */
+export const batchRow = (sql: Sql, alias: string) => {
+  const row = sql.unsafe(alias)
+  return sql`${row}.action IS NOT NULL AND ${row}.reply_text IS NOT NULL AND ${row}.undoes IS NULL`
+}
+
+/**
+ * Settles the row of an MCP request into a batch: the one place an MCP row gets its `action` and `reply_text`, together, in the
+ * transaction that made the changes. Until then the row is no batch, so a request that fails or is rolled back leaves none.
+ */
+export async function settleBatchRow(
+  sql: Sql,
+  id: number,
+  o: {
+    action: string
+    replyText: string
+    command: unknown
+    toolCalls: unknown
+    /** What the client was given, and what a retry of the request gets back. */
+    payload: unknown
+    /** The redaction placeholder when the call held a secret, else nothing. */
+    body: string | null
+  },
+): Promise<void> {
+  await sql`
+    UPDATE inbound_message
+    SET action = ${o.action}, reply_text = ${o.replyText},
+        command = ${sql.json(o.command as never)}, tool_calls = ${sql.json(o.toolCalls as never)},
+        payload = ${sql.json(o.payload as never)}, body = ${o.body},
+        model_turns = 0, updated_at = now()
+    WHERE id = ${id}`
+}
+
+/**
  * The newest batch of the account before the message `inboundId` (the one asking to undo): a committed
  * message from the sender that inserted or deleted a movement of the account, or stored or forgot a fact, that is not itself an undo
  * and that no undo reverted. An undone batch is skipped, so a second "deshacer" reaches the one before.
@@ -150,7 +188,7 @@ export async function lastBatch(
     JOIN account a ON a.id = ${o.accountId}
     JOIN inbound_message i ON i.wa_id = a.wa_id AND i.id < cur.id
     WHERE cur.id = ${o.inboundId}
-      AND i.action IS NOT NULL AND i.reply_text IS NOT NULL AND i.undoes IS NULL
+      AND ${batchRow(sql, 'i')}
       AND (EXISTS (SELECT 1 FROM movement m WHERE m.inbound_message_id = i.id AND m.account_id = a.id)
         OR EXISTS (SELECT 1 FROM movement m WHERE m.deleted_by = i.id AND m.account_id = a.id)
         OR EXISTS (

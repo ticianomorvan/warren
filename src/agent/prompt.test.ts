@@ -6,6 +6,12 @@ import { contextFacts, movementFact, renderContext, SYSTEM_PROMPT } from './prom
 import { CATEGORIES } from './schema'
 
 describe('SYSTEM_PROMPT', () => {
+  it('tells the model it has no tool to cut an agent\'s access: the person sends exactly "desconectar"', () => {
+    expect(SYSTEM_PROMPT).toMatch(
+      /you have no tool for it, so reply that to disconnect they send exactly "desconectar"/,
+    )
+  })
+
   it('is frozen: it carries no date and nothing per request', () => {
     expect(SYSTEM_PROMPT).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)
     expect(SYSTEM_PROMPT).toContain('3.500')

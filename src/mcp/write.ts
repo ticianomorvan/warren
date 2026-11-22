@@ -1,11 +1,11 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { actionLabel } from '../action-label'
 import type { AuditEntry } from '../agent/loop'
 import { MAX_FACTS, sensitive } from '../agent/memory'
-import { applyCall, type Outcome, undoDetail, undoLine, type WriteCall } from '../apply'
+import { applyCall, type Outcome, type WriteCall } from '../apply'
 import type { Sql } from '../db'
-import { actionLabel } from '../execute'
 import type { FactRow } from '../facts'
-import { type MovementRow, newestLiveId, rowsByIds } from '../ledger'
+import { type MovementRow, newestLiveId, rowsByIds, settleBatchRow } from '../ledger'
 import { REDACTED_BODY, scrubAudit, scrubCalls } from '../redact'
 import {
   renderCorrection,
@@ -16,8 +16,9 @@ import {
   renderRemembered,
   renderUnchanged,
   renderUndo,
+  undoLine,
 } from '../render'
-import { UNDO_WINDOW_HOURS } from '../undo'
+import { UNDO_WINDOW_HOURS, undoDetail } from '../undo'
 
 /** What the client is told about how to take a change back. */
 export const UNDO_HINT =
@@ -60,6 +61,22 @@ function strings(value: unknown): string[] {
   return []
 }
 
+/** JSON with the keys of every object in order: the same call always writes the same text. */
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+/** What identifies a call: its tool and its checked input. A request id may only ever stand for one of these. */
+const callHash = (call: WriteCall) =>
+  createHash('sha256')
+    .update(stable({ tool: call.tool, input: call.input }))
+    .digest('hex')
+
 /** Thrown inside the transaction to undo the batch row of a call that changed nothing. */
 class NothingChanged extends Error {
   constructor(readonly written: Written) {
@@ -92,8 +109,9 @@ const refuse = (reason: string): Presented => ({
  * One MCP write (docs/mcp-spec.md, Design 4): a settled `inbound_message` row for the batch (`channel = 'mcp'`, `wamid =
  * 'mcp:<request id>'`, the account's wa_id) and `applyCall`, in one transaction, so a movement or fact row has a batch to point
  * at and an undo from either channel sees it unchanged. A call that changes nothing (a refusal, a no-op) leaves no row behind. A
- * request id seen before returns the first answer and writes nothing. What is stored of the call goes through the same secret rule
- * as a WhatsApp message's: a call that holds a secret keeps no inputs in its audit.
+ * request id seen before returns the first answer (for the same call only: the same tool and checked input) and writes nothing.
+ * The same secret rule as a WhatsApp message's: a call that holds a secret keeps no raw inputs (its stored command, its audit and
+ * its body are scrubbed). The rendered record in `reply_text` and the result in `payload` stay, as the reply and the movement row do.
  */
 export async function writeAsMcp(r: WriteRequest, present: PresentMovement): Promise<Written> {
   const wamid = `mcp:${r.requestId ?? randomUUID()}`
@@ -103,17 +121,13 @@ export async function writeAsMcp(r: WriteRequest, present: PresentMovement): Pro
     return await r.sql.begin(async (raw) => {
       const tx = raw as unknown as Sql
       const [row] = await tx<{ id: number }[]>`
-        INSERT INTO inbound_message (wamid, wa_id, kind, payload, status, channel, action)
-        VALUES (${wamid}, ${r.waId}, 'tool', '{}'::jsonb, 'done', 'mcp', ${label})
+        INSERT INTO inbound_message (wamid, wa_id, kind, payload, status, channel)
+        VALUES (${wamid}, ${r.waId}, 'tool', '{}'::jsonb, 'done', 'mcp')
         ON CONFLICT (wamid) DO NOTHING
         RETURNING id::int AS id`
       if (!row) return replay(tx, wamid, r)
       const newest = await newestLiveId(tx, r.accountId)
-      const outcome = await applyCall(
-        tx,
-        { accountId: r.accountId, inboundId: row.id, today: r.today },
-        r.call,
-      )
+      const outcome = await applyCall(tx, { accountId: r.accountId, batchId: row.id }, r.call)
       const p = await presentOutcome(tx, r, outcome, row.id, newest, present)
       if (!p.changed) throw new NothingChanged(p.written)
       if (!p.written.ok) throw new Error('a refusal never makes a batch')
@@ -128,15 +142,14 @@ export async function writeAsMcp(r: WriteRequest, present: PresentMovement): Pro
           action: 0,
         },
       ]
-      await tx`
-        UPDATE inbound_message
-        SET reply_text = ${p.record},
-            command = ${tx.json((redact ? scrubCalls([r.call]) : [r.call]) as never)},
-            tool_calls = ${tx.json((redact ? scrubAudit(audit) : audit) as never)},
-            payload = ${tx.json({ tool: r.call.tool, result: p.written.output } as never)},
-            body = ${redact ? REDACTED_BODY : null},
-            model_turns = 0, updated_at = now()
-        WHERE id = ${row.id}`
+      await settleBatchRow(tx, row.id, {
+        action: label,
+        replyText: p.record,
+        command: redact ? scrubCalls([r.call]) : [r.call],
+        toolCalls: redact ? scrubAudit(audit) : audit,
+        payload: { tool: r.call.tool, input_hash: callHash(r.call), result: p.written.output },
+        body: redact ? REDACTED_BODY : null,
+      })
       return p.written
     })
   } catch (error) {
@@ -145,17 +158,20 @@ export async function writeAsMcp(r: WriteRequest, present: PresentMovement): Pro
   }
 }
 
-/** The first answer to a request id, when it is the same caller's and the same tool's. */
+/** The first answer to a request id, when the call is the same one: the same person, the same tool, the same checked input. */
 async function replay(tx: Sql, wamid: string, r: WriteRequest): Promise<Written> {
-  const [prior] = await tx<{ wa_id: string; payload: { tool?: string; result?: View } }[]>`
-    SELECT wa_id, payload FROM inbound_message WHERE wamid = ${wamid}`
+  const [prior] = await tx<
+    { wa_id: string; payload: { tool?: string; input_hash?: string; result?: View } }[]
+  >`SELECT wa_id, payload FROM inbound_message WHERE wamid = ${wamid}`
   if (
     !prior ||
     prior.wa_id !== r.waId ||
     prior.payload.tool !== r.call.tool ||
+    prior.payload.input_hash !== callHash(r.call) ||
     !prior.payload.result
   ) {
-    // Another person's id, another tool's, or a request that never wrote: never an answer made of someone else's data.
+    // Another person's id, another tool's, the same tool with other values, or a request that never wrote: never an answer
+    // made of someone else's data, and never the answer to a different question.
     return {
       ok: false,
       reason: 'request_id was already used for a different call: send a new one.',
@@ -186,7 +202,7 @@ async function presentOutcome(
       return done({ movements: rows.map(show) }, renderLog(outcome.movements, today), 'applied')
     }
     case 'correct_movement': {
-      if (outcome.kind === 'gone') return refuse(GONE(r.call))
+      if (outcome.kind === 'gone') return refuse(gone(outcome.id))
       if (outcome.kind === 'unchanged') {
         const record = renderUnchanged(outcome.old, today)
         return {
@@ -225,7 +241,7 @@ async function presentOutcome(
       )
     }
     case 'delete_movement': {
-      if (outcome.kind === 'gone') return refuse(GONE(r.call))
+      if (outcome.kind === 'gone') return refuse(gone(outcome.id))
       return done(
         { deleted: show(outcome.old) },
         renderDeletion(outcome.old, today, outcome.old.id === newest),
@@ -307,11 +323,10 @@ async function presentOutcome(
     }
     case 'forget_fact': {
       if (outcome.gone.length === 0) {
-        const { id, key } = r.call.input as { id: number; key: string }
         return refuse(
-          id > 0
-            ? `Fact ${id} was not found, or was already forgotten. List what Warren remembers with warren_list_facts.`
-            : `Warren has nothing remembered under "${key}".`,
+          outcome.id > 0
+            ? `Fact ${outcome.id} was not found, or was already forgotten. List what Warren remembers with warren_list_facts.`
+            : `Warren has nothing remembered under "${outcome.key}".`,
         )
       }
       return done(
@@ -323,5 +338,5 @@ async function presentOutcome(
   }
 }
 
-const GONE = (call: WriteCall) =>
-  `Movement ${(call.input as { id: number }).id} was not found, or was already corrected or deleted. Look it up again with warren_find_movements.`
+const gone = (id: number) =>
+  `Movement ${id} was not found, or was already corrected or deleted. Look it up again with warren_find_movements.`

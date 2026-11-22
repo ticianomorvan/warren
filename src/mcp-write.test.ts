@@ -5,16 +5,18 @@ import {
   CLIENT_ID,
   type Connected,
   claims,
+  connect,
   mint,
   openSignIn,
   pkce,
+  REDIRECT,
   token,
   WA_A,
   WA_B,
   whatsapp,
   withClaude,
 } from './auth-test-kit'
-import { ask, correct } from './command-fixtures'
+import { ask, correct, helpCall, script } from './command-fixtures'
 import * as kit from './mcp-test-kit'
 import { accountOf, call, ok, refusal } from './mcp-test-kit'
 import { REPLY_DISCONNECT } from './render'
@@ -34,6 +36,7 @@ let app: App
 let a: Connected
 let b: Connected
 let allowed: string[]
+const WA_C = '5491100000003'
 const rpc = (
   bearer: string | null,
   method: string,
@@ -58,7 +61,7 @@ const log = (...movements: Record<string, unknown>[]) => ({
 })
 
 async function boot(model?: ReturnType<typeof fakeModel>) {
-  allowed = [WA_A, WA_B]
+  allowed = [WA_A, WA_B, WA_C]
   ;({ app } = await withClaude({ allowed, now: () => NOW, ...(model ? { model } : {}) }))
   a = await mint(app, WA_A)
   b = await mint(app, WA_B)
@@ -146,6 +149,8 @@ describe('warren_log_movements', () => {
     expect(JSON.stringify(row?.command)).not.toContain('contraseña')
     expect(JSON.stringify(row?.tool_calls)).not.toContain('contraseña')
     expect(row?.body).toBe('[dato sensible, no guardado]')
+    // No raw inputs are kept; the rendered record (what the reply and the movement row hold anyway) is.
+    expect(row?.reply_text).toContain('contraseña')
   })
 })
 
@@ -476,10 +481,74 @@ describe('request_id', () => {
     const request_id = REQ()
     const first = await tool(a.access_token, 'warren_log_movements', { ...log(cafe), request_id })
     const again = await tool(a.access_token, 'warren_log_movements', { ...log(cafe), request_id })
-    expect(ok(again, 'log')).toEqual(ok(first, 'log'))
+    expect(ok(again, 'log')).toEqual({ ...ok(first, 'log'), replayed: true })
+    expect(ok(first, 'log').replayed).toBe(false)
     expect(await live(WA_A)).toHaveLength(1)
     expect(await mcpRows()).toHaveLength(1)
     expect((await mcpRows())[0]?.wamid).toBe(`mcp:${request_id}`)
+  })
+
+  it('the same id with other values is refused, writes nothing, and never answers with the first call', async () => {
+    const request_id = REQ()
+    const first = ok(
+      await tool(a.access_token, 'warren_log_movements', { ...log(cafe), request_id }),
+      'log',
+    )
+    // The client reused a uuid for another call: "nafta 20000", not the café.
+    const nafta = { ...cafe, description: 'nafta', amount: '20000', category: 'combustible' }
+    const refused = refusal(
+      await tool(a.access_token, 'warren_log_movements', { ...log(nafta), request_id }),
+    )
+    expect(refused).toContain('already used for a different call')
+    expect(refused).not.toContain('café')
+    expect((await live(WA_A)).map((m) => m.description)).toEqual(['café']) // nafta was never logged
+    expect(await mcpRows()).toHaveLength(1)
+    // Any one value is another call.
+    for (const other of [
+      { ...cafe, amount: '3501' },
+      { ...cafe, date: '2026-11-17' },
+      { ...cafe, payment: 'visa' },
+    ]) {
+      expect(
+        refusal(await tool(a.access_token, 'warren_log_movements', { ...log(other), request_id })),
+      ).toContain('different call')
+    }
+    // The same call, with its fields written in another order, is the same call.
+    const reordered = {
+      payment: 'efectivo',
+      category: 'restaurantes',
+      description: 'café',
+      date: '2026-11-18',
+      currency: 'ARS',
+      amount: '3500',
+      direction: 'out',
+    }
+    const again = ok(
+      await tool(a.access_token, 'warren_log_movements', { ...log(reordered), request_id }),
+      'log',
+    )
+    expect(again).toEqual({ ...first, replayed: true })
+    // The same goes for the other tools: a correction of another movement is another call.
+    const id = first.movements[0]?.id as number
+    const rid = REQ()
+    ok(
+      await tool(a.access_token, 'warren_correct_movement', {
+        id,
+        changes: { amount: '3800' },
+        request_id: rid,
+      }),
+      'correct',
+    )
+    expect(
+      refusal(
+        await tool(a.access_token, 'warren_correct_movement', {
+          id,
+          changes: { amount: '3900' },
+          request_id: rid,
+        }),
+      ),
+    ).toContain('different call')
+    expect((await live(WA_A)).map((m) => m.amount)).toEqual(['3800'])
   })
 
   it('a burst of the same request writes once', async () => {
@@ -686,6 +755,38 @@ describe('"desconectar"', () => {
     expect(row).toMatchObject({ action: 'disconnect', model_turns: 0 })
   })
 
+  it('an authorization code issued just before the cut cannot be exchanged after it', async () => {
+    const c = browser(app.base)
+    const { verifier, challenge } = pkce()
+    // The consent was given and the client holds a code, not yet exchanged.
+    const back = await connect(app, c, { challenge, from: WA_C })
+    const code = back.searchParams.get('code') ?? ''
+    expect(code).not.toBe('')
+    expect(
+      await sql`SELECT 1 FROM auth_verification WHERE value LIKE '%authorization_code%'`,
+    ).toHaveLength(1)
+    expect((await whatsapp(app, WA_C, 'desconectar'))[0]).toBe(REPLY_DISCONNECT.done(1))
+    expect(
+      await sql`SELECT 1 FROM auth_verification WHERE value LIKE '%authorization_code%'`,
+    ).toHaveLength(0)
+    const exchanged = await token(c, {
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: REDIRECT,
+      client_id: CLIENT_ID,
+      code_verifier: verifier,
+      resource: `${app.base}/mcp`,
+    })
+    expect(exchanged.status).toBe(400)
+    expect(((await exchanged.json()) as { error: string }).error).toBe('invalid_grant')
+  })
+
+  it('the help tells how, where connecting an agent is on', async () => {
+    app.close()
+    await boot(script(helpCall))
+    expect((await whatsapp(app, WA_A, 'ayuda'))[0]).toContain('escribime "desconectar"')
+  })
+
   it('also by "desconectá a Claude", and says when there was nothing to cut', async () => {
     expect((await whatsapp(app, WA_A, 'desconectá a Claude'))[0]).toBe(REPLY_DISCONNECT.done(1))
     expect((await whatsapp(app, WA_A, 'Desconectar.'))[0]).toBe(REPLY_DISCONNECT.none)
@@ -746,7 +847,7 @@ describe.skipIf(!url)(
             id: target,
             changes: { amount: '4200' },
           }),
-          whatsapp(app, WA_A, `corregí el ${round}`),
+          whatsapp(app, WA_A, `corregí el ${round}`, { allowFailed: true }),
         ])
         const mcpWon = !mcp.isError
         const waWon = (whatsappReply[0] ?? '').startsWith('✓ Corregido')

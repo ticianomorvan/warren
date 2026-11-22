@@ -258,6 +258,7 @@ export function createStore(sql: Sql, o: StoreOptions) {
      * Returns the stored reply, or null, with nothing written, when the claim was lost, the point
      * was already passed, or a failure notice was already started.
      */
+    // `action` and `reply_text` are set together below: that is what makes the message a batch an undo can reach (`batchRow`, ledger.ts).
     async commit(c: Claim, m: Commit): Promise<string | null> {
       return sql.begin(async (tx) => {
         const held = await tx`
