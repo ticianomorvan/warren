@@ -93,6 +93,12 @@ describe('checkFact', () => {
     expect(why('category', 'comida', 'supermercado', 'cobro el 5')).toMatch(/key must be words/)
   })
 
+  it('the key is whole words of the message, not a piece of a longer word', () => {
+    expect(why('note', 'ana', 'mi hermana', 'compré una banana')).toMatch(/key must be words/)
+    expect(why('note', 'ana', 'mi hermana', 'mi hermana se llama ana')).toBeNull()
+    expect(why('alias', 'visa', 'crédito visa', 'pagué con la visa')).toBeNull()
+  })
+
   it('never keeps what looks like a secret, whichever field or message holds it', () => {
     expect(why('note', 'tarjeta', '4509 9535 6623 3704', 'mi tarjeta es 4509 9535 6623 3704')).toBe(
       'secret',
@@ -168,6 +174,8 @@ describe('what looks like a secret, both ways', () => {
     '422222222222', // 12 digits: not a card
     '4509 9535 6623', // 12 digits
     'pago 12 cuotas',
+    'cuotas 15.000 20.000 5.000', // three amounts, 14 digits between them
+    'alquiler 150.000 expensas 20.000 luz 5.000',
     'vence el 2026-11-20',
     'pago la PlayStation5 en cuotas', // mixed case and digits, but no cue
     'uso la visa',
@@ -202,6 +210,7 @@ describe('what looks like a secret, both ways', () => {
     'cobro el 5',
     'uso la visa para el súper 9500',
     'la visa es la del galicia',
+    'cuotas 15.000 20.000 5.000', // separate amounts are not one long number
   ]
   it.each(sensitiveMessages)('a message "%s" is sensitive', (text) =>
     expect(sensitive(text)).toBe(true),

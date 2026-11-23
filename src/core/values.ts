@@ -23,9 +23,12 @@ export const normalizeText = (value: string) =>
     .toLowerCase()
     .trim()
 
-/** A canonical decimal string, so "3500" and "3500.00" compare equal. */
+/** A canonical decimal string, so "3500", "3500.00" and "03500" compare equal. */
 export const canonicalAmount = (amount: string) =>
-  amount.includes('.') ? amount.replace(/0+$/, '').replace(/\.$/, '') : amount
+  (amount.includes('.') ? amount.replace(/0+$/, '').replace(/\.$/, '') : amount).replace(
+    /^0+(?=\d)/,
+    '',
+  )
 
 /** A value the movement table cannot hold, or a rule the model broke. Never repaired: the model is told. */
 export type Issue = { path: string; message: string }
@@ -34,9 +37,10 @@ const AMOUNT_RE = /^\d+(\.\d{1,2})?$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 export const isDecimalAmount = (amount: string) => AMOUNT_RE.test(amount) && Number(amount) > 0
-/** A real calendar day written yyyy-mm-dd ("2026-13-01" and "2026-02-30" are not: the database would refuse them). */
+/** A real calendar day written yyyy-mm-dd, from the year 2000 ("2026-13-01" and "2026-02-30" are not days: the database would refuse them). */
 export function isIsoDate(date: string): boolean {
-  if (!DATE_RE.test(date)) return false
+  // From the year 2000, like `range.ts`: "0000-01-01" is a day the calendar has, but no one's movement.
+  if (!DATE_RE.test(date) || date < '2000-01-01') return false
   const parsed = new Date(`${date}T00:00:00Z`)
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date
 }

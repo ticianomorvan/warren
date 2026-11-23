@@ -92,7 +92,15 @@ export function checkFact(input: FactInput, message: string): FactCheck {
   const why = (message: string): FactCheck => ({ ok: false, message })
   // The person's own words: the key, or for an alias either side (the other may be in your terms: "la visa" is "crédito visa").
   const said = normalizeKey(message)
-  const inMessage = (words: string) => words !== '' && said.includes(words)
+  // Whole words, a plural allowed ("cafe" is in "los cafés"): the key "ana" is not in "compré una banana".
+  const inMessage = (words: string) =>
+    words !== '' &&
+    new RegExp(
+      `(?:^| )${words
+        .split(' ')
+        .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('(?:es|s)? ')}(?:es|s)?(?= |$)`,
+    ).test(said)
   const traced =
     input.kind === 'alias' ? inMessage(key) || inMessage(normalizeKey(value)) : inMessage(key)
   if (!traced) {

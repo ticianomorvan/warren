@@ -14,8 +14,19 @@ const STORED_WORDS = /\b(?:codigos?|cajero|numero de tarjeta)\b/
 /** Words for an id that is a secret only with its digits: a DNI, a bank account number. "pagué por cbu 15000" is not one. */
 const ID_WORDS = /\b(?:dni|cbu|cvu)\b/
 
-/** 13 or more digits, joined by at most a space, a dot, a dash, a slash or an underscore (a card: 13 to 19; a CBU or CVU: 22). */
-const LONG_DIGITS = /(?:\d(?: ?[./_-] ?| )?){13,}/
+/** 13 or more digits in a row: a card, a CBU or CVU (22). */
+const PLAIN_DIGITS = /(?<!\d)\d{13,}/
+/**
+ * Groups of 4 to 6 digits, then more of 3 to 6, joined by one space, dot, dash, slash or underscore: a card as it is written
+ * (`4509 9535 6623 3704`, `3782 822463 10005`). Separate amounts (`15.000 20.000 5.000`) start with groups of 1 to 3 digits, so they
+ * never chain.
+ */
+const GROUPED_DIGITS = /(?<!\d)\d{4,6}(?:(?: ?[./_-] ?| )\d{3,6})+(?!\d)/g
+
+/** Whether the text holds a card or CBU number: 13 or more digits, plain or grouped like one. */
+const hasLongDigits = (folded: string) =>
+  PLAIN_DIGITS.test(folded) ||
+  [...folded.matchAll(GROUPED_DIGITS)].some((m) => m[0].replace(/\D/g, '').length >= 13)
 /** A DNI: 7 or 8 digits, plain or grouped by dots or spaces (`12345678`, `12.345.678`, `1.234.567`, `12 345 678`). */
 const DNI = /(?<![\d.,])\d{1,2}[ .]?\d{3}[ .]?\d{3}(?![\d]|[.,]\d)/g
 /** What makes such a number an amount: a money sign before it, or a unit after it. */
@@ -50,7 +61,7 @@ const looksPassword = (text: string, folded: string) =>
  */
 export function looksSecret(text: string, stored = true): boolean {
   const folded = fold(text)
-  if (CREDENTIAL_WORDS.test(folded) || LONG_DIGITS.test(folded) || looksPassword(text, folded)) {
+  if (CREDENTIAL_WORDS.test(folded) || hasLongDigits(folded) || looksPassword(text, folded)) {
     return true
   }
   if (stored) {
@@ -75,7 +86,7 @@ export function looksSecret(text: string, stored = true): boolean {
 export function holdsSecretValue(text: string): boolean {
   const folded = fold(text)
   return (
-    LONG_DIGITS.test(folded) ||
+    hasLongDigits(folded) ||
     looksPassword(text, folded) ||
     dniShaped(folded) ||
     ((CREDENTIAL_WORDS.test(folded) || STORED_WORDS.test(folded) || ID_WORDS.test(folded)) &&

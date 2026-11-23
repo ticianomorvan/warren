@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { Movement } from './commands'
-import { checkChanges, checkCount, checkLog, hasChanges, issueText } from './values'
+import {
+  canonicalAmount,
+  checkChanges,
+  checkCount,
+  checkLog,
+  hasChanges,
+  issueText,
+} from './values'
 
 const today = '2026-11-20'
 const movement: Movement = {
@@ -28,6 +35,17 @@ describe('amount check', () => {
   )
 })
 
+describe('canonicalAmount', () => {
+  it('compares equal whatever the zeros', () => {
+    expect(canonicalAmount('3500')).toBe('3500')
+    expect(canonicalAmount('3500.00')).toBe('3500')
+    expect(canonicalAmount('03500')).toBe('3500')
+    expect(canonicalAmount('0003500.50')).toBe('3500.5')
+    expect(canonicalAmount('0.50')).toBe('0.5')
+    expect(canonicalAmount('0')).toBe('0')
+  })
+})
+
 describe('date check', () => {
   it('accepts today and earlier days', () => {
     expect(check({ date: '2026-11-20' })).toEqual([])
@@ -38,6 +56,12 @@ describe('date check', () => {
     expect(check({ date: '2026-11-21' })[0]?.message).toBe('date is after today')
     expect(check({ date: '20/11/2026' })[0]?.message).toBe('date is not yyyy-mm-dd')
     expect(check({ date: '2026-02-30' })[0]?.message).toBe('date does not exist')
+  })
+
+  it('rejects the year 0 and other days before 2000, as the ranges do', () => {
+    expect(check({ date: '0000-01-01' })[0]?.message).toBe('date does not exist')
+    expect(check({ date: '1999-12-31' })[0]?.message).toBe('date does not exist')
+    expect(check({ date: '2000-01-01' })).toEqual([])
   })
 })
 
