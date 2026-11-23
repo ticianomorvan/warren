@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { verifyOAuthQueryParams } from '@better-auth/oauth-provider'
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node'
+import { whatsappAddress } from '../access'
 import type { Sql } from '../core/db'
 import type { Auth } from './config'
 import { LINK_TTL_MINUTES, type Links } from './link'
@@ -81,12 +82,11 @@ const OAUTH_PATH = /^\/(?:api\/auth(?:\/|$)|\.well-known\/)/
 
 /**
  * The browser-facing half of the authorization server (docs/history/mcp-spec.md, Design 2 and 3): better-auth's own
- * endpoints and `.well-known` documents, the sign-in page and its status, and the consent page. All of it answers on `publicUrl`'s host and nowhere else, so
+ * endpoints and `.well-known` documents, the sign-in page and its status, and the consent page. `app.ts` hands it requests on `publicUrl`'s host only, so
  * tokens and metadata name one issuer; the webhook is not here and answers on any host.
  */
 export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
   const { auth, sql, links, publicUrl } = o
-  const publicHost = new URL(publicUrl).host
   const secureCookie = publicUrl.startsWith('https:')
   const betterAuth = toNodeHandler(auth)
   const waNumber = o.displayNumber.replace(/\D/g, '')
@@ -190,16 +190,17 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
       redirectHost = new URL(params.get('redirect_uri') ?? '').host
     } catch {}
     // Who the sign-in is for, so a person whose code was hijacked sees a number that is not theirs.
-    const [account] = await sql<{ wa_id: string }[]>`
-      SELECT address AS wa_id FROM account_address
-      WHERE channel = 'whatsapp' AND account_id = ${Number((session.user as { warrenAccountId?: unknown }).warrenAccountId)}`
+    const address = await whatsappAddress(
+      sql,
+      Number((session.user as { warrenAccountId?: unknown }).warrenAccountId),
+    )
     sendHtml(
       res,
       200,
       consentPage({
         nonce,
         client: await clientLabel(clientId),
-        account: account ? maskNumber(account.wa_id) : '',
+        account: address ? maskNumber(address) : '',
         redirectHost,
         scopes: (params.get('scope') ?? '').split(' ').filter(Boolean),
       }),
@@ -215,10 +216,6 @@ export function createAuthRoutes(o: AuthRoutesOptions): AuthRoutes {
       path === '/sign-in/cancel' ||
       path === '/oauth/consent'
     if (!isPage && !OAUTH_PATH.test(path)) return false
-    if (req.headers.host !== publicHost) {
-      res.writeHead(404, { 'content-type': 'text/plain' }).end()
-      return true
-    }
     if (path === '/sign-in' && req.method === 'GET') await signIn(req, res, url)
     else if (path === '/sign-in/status' && req.method === 'GET') await signInStatus(req, res)
     else if (path === '/sign-in/cancel' && req.method === 'POST') await signInCancel(req, res)

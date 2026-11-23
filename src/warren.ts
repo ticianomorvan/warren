@@ -40,6 +40,8 @@ export interface WarrenDeps {
   interimMs?: number
   deadlineMs?: number
   clock?: () => Date
+  /** The host of `/mcp` and the OAuth server; default `config.auth`'s. A function, so a test can bind it after it listens. */
+  publicHost?: () => string
   /** The deploy's identity, shown by `/health` so the cutover and the probe can tell which version answers. */
   build?: string
 }
@@ -126,6 +128,11 @@ export function createWarren(deps: WarrenDeps): Warren {
     config,
     worker,
     ...(deps.build ? { build: deps.build } : {}),
+    ...(deps.publicHost
+      ? { publicHost: deps.publicHost }
+      : config.auth
+        ? { publicHost: () => new URL(config.auth?.publicUrl ?? '').host }
+        : {}),
     ...(auth ? { auth } : {}),
     ...(mcp ? { mcp } : {}),
   })

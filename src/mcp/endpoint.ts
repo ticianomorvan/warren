@@ -1,8 +1,8 @@
 import { toNodeHandler } from '@modelcontextprotocol/node'
-import { createMcpHandler, McpServer, originValidationResponse } from '@modelcontextprotocol/server'
+import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import type { Sql } from '../core/db'
 import { log } from '../log'
-import { originHostnames } from './clients'
+import { allowedOrigins } from './clients'
 import type { Door } from './door'
 import { registerTools } from './tools'
 
@@ -14,10 +14,19 @@ const INSTRUCTIONS =
 /** The most a request body may hold: a tool call is a few hundred bytes. */
 const MAX_BODY = 256 * 1024
 
+/** The origin an `Origin` header spells, or the header as it is when it is no URL (`null`), which no allowed origin equals. */
+const originOf = (origin: string) => {
+  try {
+    return new URL(origin).origin
+  } catch {
+    return origin
+  }
+}
+
 const errorName = (error: unknown) => (error instanceof Error ? error.name : 'unknown')
 
 /**
- * `/mcp` (docs/history/mcp-spec.md, Design 5) as one web handler, mounted on node by the SDK's own adapter: the host and the origin first,
+ * `/mcp` (docs/history/mcp-spec.md, Design 5) as one web handler, mounted on node by the SDK's own adapter: the origin first,
  * then the door, then a stateless MCP server, a new one for each request, whose tools can only reach the account the door named
  * (it travels in `authInfo`, which the door makes and the handler passes on: nothing of the request is mutated). A failure
  * inside answers 500 and is logged by name; none reaches the process.
@@ -25,12 +34,11 @@ const errorName = (error: unknown) => (error instanceof Error ? error.name : 'un
 export function createMcpEndpoint(o: {
   door: Door
   sql: Sql
-  /** `https://heywarren.app`: the only host `/mcp` answers on. */
+  /** `https://heywarren.app`: ours is one of the origins a page may call from (`app.ts` answers on its host only). */
   publicUrl: string
   now?: () => Date
 }) {
-  const publicHost = new URL(o.publicUrl).host
-  const hostnames = originHostnames(o.publicUrl)
+  const origins = allowedOrigins(o.publicUrl)
   const handler = createMcpHandler(
     (ctx) => {
       const accountId = (ctx.authInfo?.extra as { accountId?: unknown } | undefined)?.accountId
@@ -50,10 +58,11 @@ export function createMcpEndpoint(o: {
   return toNodeHandler(
     {
       fetch: async (request) => {
-        if (new URL(request.url).host !== publicHost) return new Response(null, { status: 404 })
-        // A browser page of anyone else's site must not reach this with a token it holds: only ours and the clients' origins.
-        const refused = originValidationResponse(request, hostnames)
-        if (refused) return refused
+        // A browser page of anyone else's site must not reach this with a token it holds: only ours and the clients' exact origins
+        // (the SDK's `originValidationResponse` compares hostnames, so `http://claude.ai` and `:8443` would pass it).
+        const origin = request.headers.get('origin')
+        if (origin !== null && !origins.has(originOf(origin)))
+          return Response.json({ error: 'origin_not_allowed' }, { status: 403 })
         const admitted = await o.door(request)
         if (!admitted.ok) return admitted.response
         return handler.fetch(request, { authInfo: admitted.authInfo })

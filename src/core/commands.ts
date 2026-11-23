@@ -177,6 +177,8 @@ export interface McpBlock {
   scope: 'ledger:read' | 'ledger:write'
   /** The tool removes or ends something (an MCP annotation). */
   destructive?: true
+  /** The input as an MCP client sends it, where it differs from the model's (v1: `confidence` is optional, `high` by default). */
+  input?: z.ZodObject
   /** What the tool returns, beside the text. */
   output: z.ZodType
   /** Fields only an MCP client sends (a page, a request id), added to the input. */
@@ -401,6 +403,14 @@ export const COMMANDS = {
       description:
         'Logs up to 10 movements (spending or income) for the person. The person can undo it from WhatsApp ("deshacer").',
       scope: LEDGER_WRITE,
+      input: z.object({
+        movements: z
+          .array(
+            MovementSchema.extend({ confidence: MovementSchema.shape.confidence.default('high') }),
+          )
+          .min(1)
+          .max(10),
+      }),
       output: OUTPUTS.log_movements,
       extra: { request_id: RequestId },
     },

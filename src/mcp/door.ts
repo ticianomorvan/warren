@@ -2,14 +2,14 @@ import { requireMcpAuth } from '@better-auth/mcp'
 import { createResourceServerChallenge } from '@better-auth/oauth-provider'
 import type { AuthInfo } from '@modelcontextprotocol/server'
 import { APIError } from 'better-auth/api'
-import { isAllowed } from '../access'
+import { isAllowed, whatsappAddress } from '../access'
 import { type Auth, mcpUrl, SCOPES } from '../auth/config'
 import type { Sql } from '../core/db'
 import { log } from '../log'
 
 /** What the door says about a request: who it is, or the answer to send instead. */
 export type Admitted =
-  | { ok: true; authInfo: AuthInfo & { extra: { accountId: number; waId: string } } }
+  | { ok: true; authInfo: AuthInfo & { extra: { accountId: number } } }
   | { ok: false; response: Response }
 
 export type Door = (request: Request) => Promise<Admitted>
@@ -94,14 +94,15 @@ export function createDoor(o: DoorOptions): Door {
     if (typ !== 'at+jwt' && typ !== 'application/at+jwt') return refused(request, 'token type')
     const sub = claims.sub
     if (typeof sub !== 'string' || !UUID.test(sub)) return refused(request, 'subject')
-    let person: { id: string; wa_id: string; revoked: number | null } | undefined
+    let person: { id: number; wa_id: string; revoked: number | null } | undefined
     try {
-      ;[person] = await o.sql<{ id: string; wa_id: string; revoked: number | null }[]>`
-        SELECT a.id, ad.address AS wa_id, extract(epoch FROM a.mcp_revoked_at)::float8 AS revoked
+      const [row] = await o.sql<{ id: number; revoked: number | null }[]>`
+        SELECT a.id::int, extract(epoch FROM a.mcp_revoked_at)::float8 AS revoked
         FROM auth_user u
         JOIN account a ON a.id = u.warren_account_id
-        JOIN account_address ad ON ad.account_id = a.id AND ad.channel = 'whatsapp'
         WHERE u.id = ${sub}::uuid`
+      const address = row ? await whatsappAddress(o.sql, row.id) : null
+      if (row && address) person = { ...row, wa_id: address }
     } catch (error) {
       // The database is down, which is not the client's fault: it must not be sent to sign in.
       log(
@@ -128,7 +129,7 @@ export function createDoor(o: DoorOptions): Door {
         token: '',
         clientId: String(claims.azp ?? ''),
         scopes,
-        extra: { accountId: Number(person.id), waId: person.wa_id },
+        extra: { accountId: person.id },
       },
     }
   }

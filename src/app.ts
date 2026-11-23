@@ -17,6 +17,11 @@ export interface AppOptions {
   auth?: AuthRoutes
   /** `/mcp`: the MCP endpoint (its door, origin check and tools). Without it the path does not exist. */
   mcp?: (req: IncomingMessage, res: ServerResponse) => Promise<void>
+  /**
+   * The host `/mcp` and the OAuth server answer on (`PUBLIC_URL`'s): a request for them on another host gets 404, so tokens and metadata name one
+   * issuer. A function because a test binds it once its server listens. The webhook answers on any host.
+   */
+  publicHost?: () => string
   /** Which deploy this is (the commit and the deployment id, space apart). `/health` says it in `x-warren-build`; v1 sent none. */
   build?: string
 }
@@ -102,8 +107,9 @@ export function createApp(o: AppOptions): Server {
     }
     if (url.pathname === '/webhook' && req.method === 'GET') return verify(url, res)
     if (url.pathname === '/webhook' && req.method === 'POST') return receive(req, res)
-    if (url.pathname === '/mcp' && o.mcp) return o.mcp(req, res)
-    if (o.auth && (await o.auth(req, res, url))) return
+    const onPublicHost = !o.publicHost || req.headers.host === o.publicHost()
+    if (url.pathname === '/mcp' && o.mcp) return onPublicHost ? o.mcp(req, res) : send(res, 404)
+    if (o.auth && onPublicHost && (await o.auth(req, res, url))) return
     send(res, 404)
   }
 

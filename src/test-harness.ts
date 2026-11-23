@@ -68,6 +68,7 @@ export async function setup(
     client: model.client,
     transcriber: opts.transcriber,
     signIn: opts.auth !== undefined,
+    publicHost: () => new URL(base).host,
     maxAttempts: 3,
     staleMs: opts.staleMs ?? 60_000,
     // Made-up message times (2025, 2026): the clock is before all of them, so a message's own time is "now" for a reminder.

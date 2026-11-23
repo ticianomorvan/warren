@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto'
+import { whatsappAddress } from '../access'
 import type { Sql } from '../core/db'
 import { ipKey } from './ip'
 import type { SessionLinks } from './plugin'
@@ -88,19 +89,22 @@ export function createLinks(sql: Sql): Links {
     },
 
     async state(secret) {
-      const [row] = await sql<{ state: LinkState; wa_id: string | null }[]>`
+      const [row] = await sql<{ state: LinkState; account_id: number | null }[]>`
         SELECT CASE
           WHEN l.used_at IS NOT NULL OR l.expires_at <= now() THEN 'closed'
           WHEN l.confirmed_at IS NOT NULL THEN 'confirmed'
           WHEN l.asked_at IS NOT NULL THEN 'asked'
           ELSE 'waiting' END AS state,
-          CASE WHEN l.confirmed_at IS NOT NULL AND l.used_at IS NULL AND l.expires_at > now()
-            THEN (SELECT address FROM account_address WHERE account_id = l.account_id AND channel = 'whatsapp') END AS wa_id
+          l.account_id::int AS account_id
         FROM link_request l
         WHERE l.secret_hash = ${hashSecret(secret)}`
-      return row
-        ? { state: row.state, ...(row.wa_id ? { waId: row.wa_id } : {}) }
-        : { state: 'closed' }
+      if (!row) return { state: 'closed' }
+      // Whose account it is is told only while the sign-in is confirmed and open.
+      const waId =
+        row.state === 'confirmed' && row.account_id !== null
+          ? await whatsappAddress(sql, row.account_id)
+          : null
+      return { state: row.state, ...(waId ? { waId } : {}) }
     },
 
     async cancel(secret) {

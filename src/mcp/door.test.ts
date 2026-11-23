@@ -142,6 +142,10 @@ describe('the door', () => {
     expect((await withOrigin('https://evil.example')).status).toBe(403)
     expect((await withOrigin('null')).status).toBe(403)
     expect((await withOrigin('http://localhost:3000')).status).toBe(403)
+    // The SDK's own check compares hostnames only: the scheme and the port are ours to compare.
+    expect((await withOrigin('http://claude.ai')).status).toBe(403)
+    expect((await withOrigin('https://claude.ai:8443')).status).toBe(403)
+    expect((await withOrigin('https://claude.ai.evil.example')).status).toBe(403)
     for (const ok of [app.base, 'https://claude.ai', 'https://claude.com']) {
       expect((await withOrigin(ok)).status, ok).toBe(200)
     }

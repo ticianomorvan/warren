@@ -17,6 +17,7 @@ import type { Sql } from '../core/db'
 import { declineLine, REPLY } from '../core/describe'
 import { money } from '../core/es'
 import { checkValues } from '../core/guards'
+import { sensitive } from '../core/secrets'
 import type { Undone } from '../core/history'
 import { commit } from '../core/turn'
 import { allLiveFacts, type FactRow } from '../domain/facts'
@@ -75,6 +76,33 @@ export const fail = (code: string, message: string): Result => ({
 const unavailable = (tool: string, error: unknown) => {
   log('mcp_tool_failed', { tool, error: error instanceof Error ? error.name : 'unknown' }, 'error')
   return fail('unavailable', 'Warren could not read your data right now. Try again in a moment.')
+}
+
+// ---- What a client may send: v1's bounds (a text, a day, an amount), so a request body that fits `MAX_BODY` cannot fill a row.
+
+const MAX_TEXT = 200
+const MAX_SHORT = 20
+/** The fields that are a day or an amount; every other text is a description, a payment, words to find, a fact or a reminder. */
+const SHORT = new Set(['amount', 'date', 'from', 'to'])
+const MAX_TERMS = 10
+
+/** Every string an input holds, with the name of the field it is in. */
+function* strings(value: unknown, key = ''): Generator<[string, string]> {
+  if (typeof value === 'string') yield [key, value]
+  else if (Array.isArray(value)) for (const v of value) yield* strings(v, key)
+  else if (value && typeof value === 'object')
+    for (const [k, v] of Object.entries(value)) yield* strings(v, k)
+}
+
+/** Why an input is too long for what it is, or null. */
+function oversize(tool: Tool, input: unknown): string | null {
+  for (const [key, text] of strings(input)) {
+    const max = SHORT.has(key) ? MAX_SHORT : MAX_TEXT
+    if (text.length > max) return `${key} is too long: at most ${max} characters`
+    if (tool === 'find_movements' && key === 'text' && text.trim().split(/\s+/).length > MAX_TERMS)
+      return `text has too many words: at most ${MAX_TERMS}`
+  }
+  return null
 }
 
 // ---- The cursor of a page: the movement (entity id) the next page starts below, opaque to the client.
@@ -201,6 +229,8 @@ const readOnly = {
 
 async function find(c: ToolContext, input: Record<string, unknown>) {
   const { limit = DEFAULT_PAGE, cursor, ...filter } = input as { limit?: number; cursor?: string }
+  const long = oversize('find_movements', filter)
+  if (long) return fail('invalid', long)
   const now = c.now()
   const checked = checkValues('find_movements', filter, { today: argentinaToday(now), now })
   if (checked.kind !== 'read') {
@@ -230,6 +260,8 @@ async function find(c: ToolContext, input: Record<string, unknown>) {
 }
 
 async function summarizeTool(c: ToolContext, input: Record<string, unknown>) {
+  const long = oversize('summarize', input)
+  if (long) return fail('invalid', long)
   const now = c.now()
   const today = argentinaToday(now)
   const checked = checkValues('summarize', input, { today, now })
@@ -374,6 +406,8 @@ async function write(
   raw: Record<string, unknown>,
 ): Promise<Result> {
   const { request_id: requestId, ...input } = raw as { request_id?: string }
+  const long = oversize(tool, input)
+  if (long) return fail('invalid', long)
   const now = c.now()
   const today = argentinaToday(now)
   const checked = checkValues(tool, input, { today, now })
@@ -384,60 +418,58 @@ async function write(
   const call = checked.call
   const hash = callHash(call)
   let presented: Result | undefined
-  try {
-    const committed = await commit(c.sql, {
-      accountId: c.accountId,
-      channel: 'mcp',
-      now,
-      calls: [call],
-      requireChange: true,
-      guard: async (tx: Sql): Promise<{ stop: Result } | undefined> => {
-        // A reminder is sent to WhatsApp: an account with no address there would hold one that is never sent.
-        if (call.tool === 'set_reminder' && !(await whatsappAddress(tx, c.accountId))) {
-          return { stop: fail('no_whatsapp_address', REPLY.noWhatsappAddress) }
-        }
-        if (requestId === undefined) return undefined
-        const [prior] = await tx<{ input_hash: string; result: Record<string, unknown> }[]>`
+  const committed = await commit(c.sql, {
+    accountId: c.accountId,
+    channel: 'mcp',
+    now,
+    calls: [call],
+    requireChange: true,
+    // A secret in what the client sent is stored nowhere: the turn keeps no input, as with a WhatsApp message (`redact.ts`).
+    scrub: sensitive([...strings(input)].map(([, v]) => v).join(' ')),
+    guard: async (tx: Sql): Promise<{ stop: Result } | undefined> => {
+      // A reminder is sent to WhatsApp: an account with no address there would hold one that is never sent.
+      if (call.tool === 'set_reminder' && !(await whatsappAddress(tx, c.accountId))) {
+        return { stop: fail('no_whatsapp_address', REPLY.noWhatsappAddress) }
+      }
+      if (requestId === undefined) return undefined
+      const [prior] = await tx<{ input_hash: string; result: Record<string, unknown> }[]>`
           SELECT input_hash, result FROM mcp_request WHERE account_id = ${c.accountId} AND request_id = ${requestId}`
-        if (!prior) return undefined
-        // The same call gets its first answer; another call under the same id gets neither that answer nor a write.
-        return {
-          stop:
-            prior.input_hash === hash
-              ? done({ ...prior.result, replayed: true })
-              : fail(
-                  'request_id_reused',
-                  'request_id was already used for a different call: send a new one.',
-                ),
-        }
-      },
-      compose: (_tx, results, record) => {
-        const only = results[0]
-        if (!only?.line) throw new Error('an MCP write has one outcome')
-        return { reply: record ?? only.line }
-      },
-      after: async (tx, turn) => {
-        const [only] = turn.done
-        if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
-        presented = presentWrite(only.outcome, only.line, turn.id, today)
-        if (requestId !== undefined) {
-          await tx`
+      if (!prior) return undefined
+      // The same call gets its first answer; another call under the same id gets neither that answer nor a write.
+      return {
+        stop:
+          prior.input_hash === hash
+            ? done({ ...prior.result, replayed: true })
+            : fail(
+                'request_id_reused',
+                'request_id was already used for a different call: send a new one.',
+              ),
+      }
+    },
+    compose: (_tx, results, record) => {
+      const only = results[0]
+      if (!only?.line) throw new Error('an MCP write has one outcome')
+      return { reply: record ?? only.line }
+    },
+    after: async (tx, turn) => {
+      const [only] = turn.done
+      if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
+      presented = presentWrite(only.outcome, only.line, turn.id, today)
+      if (requestId !== undefined) {
+        await tx`
             INSERT INTO mcp_request (account_id, request_id, input_hash, turn_id, result)
             VALUES (${c.accountId}, ${requestId}, ${hash}, ${turn.id}, ${tx.json(presented.structuredContent as never)})`
-        }
-      },
-    })
-    if (committed === null) return fail('unavailable', 'nothing was written')
-    if ('stop' in committed) return committed.stop
-    if ('unchanged' in committed) {
-      const [only] = committed.unchanged
-      if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
-      return presentWrite(only.outcome, only.line, null, today)
-    }
-    return presented ?? fail('unavailable', 'nothing was written')
-  } catch (error) {
-    return unavailable(`warren_${tool}`, error)
+      }
+    },
+  })
+  if (committed === null) return fail('unavailable', 'nothing was written')
+  if ('stop' in committed) return committed.stop
+  if ('unchanged' in committed) {
+    const [only] = committed.unchanged
+    if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
+    return presentWrite(only.outcome, only.line, null, today)
   }
+  return presented ?? fail('unavailable', 'nothing was written')
 }
 
 /** One call of a tool, as the server runs it: a failure of the database is an error result without detail, never a crash. */
@@ -462,7 +494,7 @@ export function registerTools(server: McpServer, c: ToolContext) {
     const block = 'mcp' in entry ? (entry.mcp as McpBlock | undefined) : undefined
     if (!block) continue
     const isWrite = entry.kind === 'write'
-    const inputSchema = (entry.input as z.ZodObject).extend(block.extra ?? {})
+    const inputSchema = (block.input ?? (entry.input as z.ZodObject)).extend(block.extra ?? {})
     server.registerTool(
       `warren_${name}`,
       {

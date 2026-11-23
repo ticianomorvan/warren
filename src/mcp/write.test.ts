@@ -55,6 +55,65 @@ describe('warren_log_movements', () => {
     expect(await sql`SELECT 1 FROM wa_message`).toHaveLength(waBefore)
   })
 
+  it('takes a movement without `confidence` (v1 filled in high itself)', async () => {
+    const { confidence: _, ...bare } = movement()
+    const r = ok(await write('log_movements', { movements: [bare] }), 'log_movements')
+    expect(r.movements).toHaveLength(1)
+    const [row] = await sql`SELECT confidence FROM movement`
+    expect(row?.confidence).toBe('high')
+  })
+
+  it('refuses a text, a day or an amount longer than v1 allowed, whatever the body size', async () => {
+    refused(
+      await write('log_movements', { movements: [movement({ description: 'x'.repeat(200_000) })] }),
+      'invalid',
+    )
+    refused(
+      await write('log_movements', { movements: [movement({ payment: 'y'.repeat(201) })] }),
+      'invalid',
+    )
+    refused(
+      await write('log_movements', { movements: [movement({ amount: '1'.repeat(21) })] }),
+      'invalid',
+    )
+    refused(
+      await write('remember_fact', { kind: 'note', key: 'k', value: 'v'.repeat(201) }),
+      'invalid',
+    )
+    refused(
+      await call(app, a.access_token, 'warren_find_movements', { text: 'z'.repeat(201) }),
+      'invalid',
+    )
+    refused(
+      await call(app, a.access_token, 'warren_find_movements', {
+        text: 'a1 b1 c1 d1 e1 f1 g1 h1 i1 j1 k1',
+      }),
+      'invalid',
+    )
+    expect(await live()).toHaveLength(0)
+    // The same text inside the limit is fine.
+    ok(
+      await write('log_movements', { movements: [movement({ description: 'x'.repeat(200) })] }),
+      'log_movements',
+    )
+  })
+
+  it('keeps no input of a turn that held a secret (as a WhatsApp message with one would), and keeps it otherwise', async () => {
+    ok(await write('log_movements', { movements: [movement()] }), 'log_movements')
+    ok(
+      await write('log_movements', {
+        movements: [movement({ description: 'clave: hunter2 del wifi' })],
+      }),
+      'log_movements',
+    )
+    const rows = await sql<
+      { calls: { input?: unknown }[] }[]
+    >`SELECT calls FROM turn WHERE channel = 'mcp' ORDER BY id`
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.calls[0]?.input).toBeDefined()
+    expect(rows[1]?.calls[0]?.input).toBeUndefined()
+  })
+
   it('refuses what a table cannot hold, with the reason, and writes nothing', async () => {
     refused(
       await write('log_movements', { movements: [movement({ date: addDays(TODAY, 3) })] }),
