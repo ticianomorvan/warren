@@ -1,5 +1,6 @@
 /**
- * Reads a v1 database (tag `v1-final`) and writes the new schema.
+ * Reads a v1 database (tag `v1-final`) and writes the new schema. A one-time tool, deleted after the live check
+ * (docs/design.md, "Ops").
  *
  *   V1_DATABASE_URL=<v1 url> DATABASE_URL=<new url> tsx scripts/import-v1.ts [--verify-only] [--days 30]
  *

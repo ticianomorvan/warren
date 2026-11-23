@@ -48,7 +48,7 @@ function tokenType(authorization: string | null): string {
 }
 
 /**
- * The door of `/mcp` (docs/history/mcp-spec.md, Design 5), run on every request before anything else, and only authentication: who is
+ * The door of `/mcp` (docs/design.md, "MCP and auth"), run on every request before anything else, and only authentication: who is
  * asking, never what they may do (each tool asks for its own scope). better-auth's `requireMcpAuth` checks the token's
  * signature, issuer, audience (`${publicUrl}/mcp`), expiry and `azp` in-process; its own DPoP handling stays on and refuses
  * what it cannot prove (this server issues bearer tokens only, so a client has none). Then ours: the token's type is `at+jwt`

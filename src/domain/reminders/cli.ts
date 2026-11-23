@@ -3,7 +3,7 @@ import { reminderTemplate } from '../../config'
 import { createGraph, TEMPLATE_LANGUAGE } from '../../whatsapp/graph'
 
 /**
- * Ops scripts for the reminder template (docs/history/reminders-spec.md). Secrets come from the gitignored `.env` and are never printed.
+ * Ops scripts for the reminder template (docs/design.md, "Reminders"). Secrets come from the gitignored `.env` and are never printed.
  *   pnpm template:status [name]          the template's category and status at Meta (read only); REMINDER_TEMPLATE unless a name is given
  *   pnpm reminder:try-template <wa_id>   sends the template once to that number (a real message)
  * `reminder:add` (a v1 testing aid that inserted a reminder by hand) is gone: a reminder is set through a turn like any other.

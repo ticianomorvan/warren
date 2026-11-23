@@ -12,7 +12,7 @@ What each row counts, per run over all scenarios (dev and the held-out test spli
 - Model turns per message, p50: the median count of model calls over the messages that called the model.
 - Cost: the model spend of the run (not the voice transcriptions).
 
-Gate (`docs/rebuild-spec.md`): at least 95% fully right, 0 silent wrong changes, 0 invented numbers, and p50 model turns no worse than the v1 baseline.
+Gate (`docs/design.md`): at least 95% fully right, 0 silent wrong changes, 0 invented numbers.
 
 ## Latest
 
@@ -30,21 +30,4 @@ Model claude-haiku-5-5; 3 runs (2026-11-23, 2026-11-23, 2026-11-23); 365 scenari
 | Model turns per message, p50 | 1 | 1 | 1 | 1 |
 | Messages needing a second model turn | 1.4% | 2.1% | 3.1% | 2.1% |
 | Cost (US$) | 0.1737 | 0.1748 | 0.1761 | 0.1748 |
-
-## v1 baseline (tag `v1-final`, main 066eb87)
-
-Model claude-haiku-5-5; 3 runs (2026-11-22, 2026-11-22, 2026-11-22); 214 scenarios and 288 turns per run.
-
-|  | Run 1 | Run 2 | Run 3 | Median |
-|---|---|---|---|---|
-| Scenarios fully right | 213 | 211 | 214 | 213 |
-| Fully right, share | 99.5% | 98.6% | 100.0% | 99.5% |
-| Silent wrong changes | 0 | 0 | 0 | 0 |
-| Unnecessary questions | 0 | 0 | 0 | 0 |
-| Invented numbers | 0 | 0 | 0 | 0 |
-| Per-turn latency p50 | 1,181 ms | 1,197 ms | 1,192 ms | 1,192 ms |
-| Per-turn latency p95 | 1,831 ms | 2,074 ms | 1,790 ms | 1,831 ms |
-| Model turns per message, p50 | 1 | 1 | 1 | 1 |
-| Messages needing a second model turn | 3.1% | 4.2% | 3.1% | 3.1% |
-| Cost (US$) | 0.1158 | 0.1120 | 0.1108 | 0.1120 |
 

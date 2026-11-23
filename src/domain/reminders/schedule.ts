@@ -3,8 +3,8 @@ import { WEEKDAYS, type Weekday } from '../../core/es'
 import { argentinaToday } from '../../time'
 
 /**
- * The schedule of a reminder: the useful subset of iCalendar's RRULE as typed fields (docs/history/reminders-spec.md,
- * Design 2), pure. Argentina is UTC-3 all year with no daylight saving, so a wall-clock time is an instant
+ * The schedule of a reminder: the useful subset of iCalendar's RRULE as typed fields (docs/design.md,
+ * "Reminders"), pure. Argentina is UTC-3 all year with no daylight saving, so a wall-clock time is an instant
  * three hours later in UTC and no time-zone library is needed. `nextOccurrence` is the only logic.
  */
 

@@ -1,4 +1,4 @@
--- Warren's schema, as it would be written today (docs/rebuild-spec.md, "1. Data"; decisions D0-D16 in docs/rebuild/decisions-core.md).
+-- Warren's schema, as it would be written today (docs/design.md, "Data").
 -- One file, no superseded steps. Every column, constraint and index is named on purpose, and every table says what a row is.
 --
 -- The shape in four sentences:

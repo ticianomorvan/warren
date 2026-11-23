@@ -3,8 +3,7 @@
 Warren is a WhatsApp expense agent for people in Argentina, also reachable over MCP (Claude and other agents). A person writes
 "café 3500 y súper 12.000 con la visa, ayer 20 lucas de nafta" and gets one compact reply listing what was understood. They fix it in
 plain words ("no, el café fue 3800", "borrá el último"), ask simple questions ("¿cuánto gasté este mes en super?"), set reminders and
-tell Warren things to remember. The design and its reasons are in `docs/rebuild-spec.md` (the council and review outputs behind it are in
-`docs/rebuild/`); the v1-era specs are in `docs/history/`, for the reasons behind old decisions. The previous mail-ledger product is the
+tell Warren things to remember. How it works and why is in `docs/design.md`; this file holds the rules and the layout. The previous mail-ledger product is the
 tag `v0-mail-ledger`; v1 of this product is the tag `v1-final`.
 
 ## Rules
@@ -56,7 +55,7 @@ src/warren.ts  createWarren(deps): the one wiring, used by server.ts, the tests 
 test/          the kit: db.ts (useDatabase: a schema per file on PG_TEST_URL, PGlite otherwise), fakes.ts, until.ts, core.ts, golden/
 evals/scenarios/  the scenario eval (scenarios.jsonl, long-ledger.jsonl, drive.ts, grade.ts, report.ts, results/)
 scripts/       probe.ts (staging and production probe), import-v1.ts, cutover.ts, graph-sink/ (staging only)
-docs/          rebuild-spec.md (the design and what was built), rebuild/ (its evidence), history/ (superseded v1 specs)
+docs/          design.md (how Warren works and why)
 ```
 
 How a message goes: the webhook stores it (`wa_message`, `pending`), answers 200 and sends the first signal (read receipt and typing) for
@@ -81,15 +80,14 @@ pnpm start           # the server: DATABASE_URL, ANTHROPIC_API_KEY, the WhatsApp
 pnpm latency [--last N]   # p50/p95 by turn label and by stage, from DATABASE_URL
 pnpm eval:scenarios [--split dev|test|all] [--only s001,s002] [--file evals/scenarios/long-ledger.jsonl] [--budget 0.30] [--concurrency 4]
                      # multi-turn scenarios through the real pipeline and model; needs .env and spends money (a whole run is about US$0.17)
-pnpm eval:report     # writes evals/scenarios/results/latest.md from the newest three *-all.json runs next to the committed v1 baseline
+pnpm eval:report     # writes evals/scenarios/results/latest.md from the newest three *-all.json runs
 pnpm probe staging|production   # signed webhooks, MCP and a reminder against the environment (staging) or a read-only check (production)
 pnpm template:status | pnpm reminder:try-template <wa_id>   # the reminder template at Meta; the second sends a REAL message
-pnpm tsx scripts/import-v1.ts / scripts/cutover.ts   # the v1 import with verify, and the cutover with --dry-run and rollback
+pnpm tsx scripts/import-v1.ts / scripts/cutover.ts   # one-time cutover tools (v1 import, cutover with --dry-run and rollback), deleted after the live check
 ```
 
 The eval's `test` split is held out: never print or tune on it. `pnpm eval:report` is the only writer of `latest.md`; never edit it by
-hand. The bar a change to the agent must meet (3 full runs): a median of at least 211 of the 214 original scenarios fully right, 0 silent
-wrong changes and 0 invented numbers in every run, no scenario failing in 2 of 3 runs, p50 within +150 ms of v1.
+hand. The bar a change to the agent must meet is in `docs/design.md` ("Tests and evals").
 
 ## Conventions
 
@@ -100,8 +98,8 @@ wrong changes and 0 invented numbers in every run, no scenario failing in 2 of 3
 - pnpm refuses releases younger than `minimumReleaseAge` and install scripts outside `allowBuilds` (`pnpm-workspace.yaml`). Do not widen
   either without a reason in the commit.
 - Node 24 (`.nvmrc`), TypeScript strict, Biome formatting, Zod 4. No new dependency without a reason.
-- The schema is `src/core/schema/001_init.sql` and `002_auth.sql`, applied once each under an advisory lock at start. Until the first
-  production cutover they are edited in place; after it, a change is a new numbered file. `002_auth.sql` is better-auth's schema as plain SQL:
+- The schema is `src/core/schema/001_init.sql` and `002_auth.sql`, applied once each under an advisory lock at start. Production runs
+  them, so a change is a new numbered file, never an edit. `002_auth.sql` is better-auth's schema as plain SQL:
   `test/migrations.test.ts` fails when a plugin or an upgrade wants a table or column that is not there (`pnpm tsx src/auth/print-schema.ts`).
 - Prefer what the platform already ships (Postgres constraints, zod, the SDKs) over machinery of our own.
 - Every test file that touches the database uses `useDatabase()`; waits use `until()`, never a fixed sleep.
@@ -111,7 +109,7 @@ wrong changes and 0 invented numbers in every run, no scenario failing in 2 of 3
 - Railway project `warren` (US East), services `warren` (the app) and `Postgres`, plus a `staging` environment with its own service,
   Postgres and `graph-sink` (it records sends so staging never messages a real phone). Deploy by hand with `railway up -s warren`.
 - Railway settings live in `.railway/railway.ts` (Infrastructure as Code): build, start `pnpm start`, healthcheck `/health`, restart on
-  failure, one replica, the domain and the Postgres proxy (staging also has a 15 s drain and an overlap for a deploy; production gets them at the cutover). Variables are unmanaged: the file
+  failure, one replica, the domain and the Postgres proxy (a 15 s drain and an overlap for a deploy, in both environments). Variables are unmanaged: the file
   never holds secrets; set them with `railway variables`. Run `railway config plan` before `apply`: a plan that is not "already up to date"
   means someone changed the service by hand.
 - **One replica.** The claim stops a double send, and the old instance of a deploy never has its row overtaken by the new one's, but do not

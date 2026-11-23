@@ -13,7 +13,7 @@ export interface AppOptions {
   ingest: Ingest
   config: Pick<Config, 'WHATSAPP_VERIFY_TOKEN' | 'META_APP_SECRET'>
   worker: Worker
-  /** The OAuth server's routes for MCP (docs/history/mcp-spec.md); without them none of its paths exist. */
+  /** The OAuth server's routes for MCP (docs/design.md, "MCP and auth"); without them none of its paths exist. */
   auth?: AuthRoutes
   /** `/mcp`: the MCP endpoint (its door, origin check and tools). Without it the path does not exist. */
   mcp?: (req: IncomingMessage, res: ServerResponse) => Promise<void>

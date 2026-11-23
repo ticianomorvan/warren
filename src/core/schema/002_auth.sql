@@ -1,4 +1,4 @@
--- Sign-in and OAuth for MCP (docs/history/mcp-spec.md): better-auth's tables and Warren's WhatsApp sign-in code.
+-- Sign-in and OAuth for MCP (docs/design.md, "MCP and auth"): better-auth's tables and Warren's WhatsApp sign-in code.
 --
 -- Part 1 is what better-auth 1.7.26 creates for our config (src/auth/config.ts: the jwt, mcp and cimd plugins, and the oauth-provider
 -- they sit on), as printed by `getMigrations(auth.options).compileMigrations()` and formatted; migrations.test checks that it is still

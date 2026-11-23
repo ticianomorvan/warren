@@ -79,7 +79,7 @@ function outputTokens(turns: TurnResult[]): Summary['outputTokens'] {
   return { mean: mean(called.map((t) => t.outputTokens ?? 0)), byAction }
 }
 
-/** Gate from docs/history/agent-spec.md: at least 95% of scenarios fully right, no silent wrong change, no invented number. */
+/** The bar (docs/design.md, "Tests and evals"): at least 95% of scenarios fully right, no silent wrong change, no invented number. */
 export const GATE_PASS_RATE = 0.95
 
 export function summarize(results: ScenarioResult[]): Summary {
@@ -153,7 +153,7 @@ export function summarize(results: ScenarioResult[]): Summary {
 const pct = (x: number) => `${(x * 100).toFixed(1)}%`
 const ms = (x: number) => `${Math.round(x).toLocaleString('en-US')} ms`
 
-/** The numbers as lines of text, for the console and for the baseline file. */
+/** The numbers as lines of text, for the console. */
 export function renderSummary(s: Summary): string[] {
   const lines = [
     `scenarios fully right: ${s.passed}/${s.scenarios} (${pct(s.passRate)})${s.skipped ? `, ${s.skipped} not run (budget)` : ''}${s.errors ? `, ${s.errors} errors` : ''}`,
@@ -285,10 +285,9 @@ function section(title: string, runs: RunSummary[]): string[] {
 }
 
 /**
- * `results/latest.md`: the latest runs next to the committed v1 baseline, written from result files so
- * no number in it is typed by hand. Regenerate it with `pnpm eval:report`.
+ * `results/latest.md`: the latest runs, written from result files so no number in it is typed by hand. Regenerate it with `pnpm eval:report`.
  */
-export function renderLatest(latest: RunSummary[], baseline: RunSummary[]): string {
+export function renderLatest(latest: RunSummary[]): string {
   return [
     '# Scenario eval results',
     '',
@@ -304,10 +303,9 @@ export function renderLatest(latest: RunSummary[], baseline: RunSummary[]): stri
     '- Model turns per message, p50: the median count of model calls over the messages that called the model.',
     '- Cost: the model spend of the run (not the voice transcriptions).',
     '',
-    'Gate (`docs/rebuild-spec.md`): at least 95% fully right, 0 silent wrong changes, 0 invented numbers, and p50 model turns no worse than the v1 baseline.',
+    'Gate (`docs/design.md`): at least 95% fully right, 0 silent wrong changes, 0 invented numbers.',
     '',
     ...section('Latest', latest),
-    ...section('v1 baseline (tag `v1-final`, main 066eb87)', baseline),
   ]
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')

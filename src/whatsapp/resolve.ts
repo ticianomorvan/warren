@@ -175,7 +175,7 @@ const DISCONNECT =
 
 /**
  * "desconectar", "desconectá a Claude", "desconectar todo": a typed message that is only that cuts every connection of an agent
- * (docs/history/mcp-spec.md, Slice 3), done by code with no model call, like `undoRequest`. Anything with more in it goes to the model.
+ * (docs/design.md, "MCP and auth"), done by code with no model call, like `undoRequest`. Anything with more in it goes to the model.
  */
 export function disconnectRequest(text: string): boolean {
   const words = normalizeText(text)

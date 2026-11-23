@@ -64,10 +64,15 @@ async function until<T>(
  * `--expect <build>`: wait until `/health` says this deploy answers: the `x-warren-build` header has a commit sha or
  * deployment id that starts with the one given, or, for `--expect v1`, the header is absent (v1 answers a plain `ok` and no build). A probe that
  * passes against the version being replaced proves nothing; this is what the cutover and the rollback wait on.
+ * It takes 3 matching answers in a row, a second apart: Railway's edge answered 404 for a moment right after a new build first
+ * answered, so one match is not enough to start the read-only steps.
  */
+const CONSECUTIVE_MATCHES = 3
+const MATCH_GAP_MS = 1000
 async function expectBuild(healthUrl: string, expected: string, timeoutMs = 600_000) {
   await step(`health says build ${expected.slice(0, 12)}`, async () => {
     let last = 'no answer'
+    let streak = 0
     await until(`${healthUrl} to report ${expected.slice(0, 12)}`, timeoutMs, async () => {
       try {
         const r = await fetch(healthUrl)
@@ -78,11 +83,18 @@ async function expectBuild(healthUrl: string, expected: string, timeoutMs = 600_
               ? `build ${build.slice(0, 12)}`
               : 'no build header (v1)'
             : `status ${r.status}`
-        if (r.status !== 200) return false
-        return expected === 'v1'
-          ? !build
-          : (build ?? '').split(' ').some((id) => id.startsWith(expected))
+        const matches =
+          r.status === 200 &&
+          (expected === 'v1'
+            ? !build
+            : (build ?? '').split(' ').some((id) => id.startsWith(expected)))
+        streak = matches ? streak + 1 : 0
+        if (streak >= CONSECUTIVE_MATCHES) return true
+        // `until` waits 500 ms after a false; a match waits another 500 so the answers are a second apart.
+        if (matches) await sleep(MATCH_GAP_MS - 500)
+        return false
       } catch {
+        streak = 0
         return false
       }
     }).catch((err) => {

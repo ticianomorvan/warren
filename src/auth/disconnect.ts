@@ -1,7 +1,7 @@
 import type { Sql } from '../core/db'
 
 /**
- * "desconectar" (docs/history/mcp-spec.md, Slice 3): cuts every connection of an agent to this account, inside the commit transaction
+ * "desconectar" (docs/design.md, "MCP and auth"): cuts every connection of an agent to this account, inside the commit transaction
  * of the message that asked. Its refresh tokens are revoked, its consents, the browser sessions of its user and its pending authorization codes removed, and the
  * account is stamped `mcp_revoked_at`: the door of `/mcp` refuses every access token issued at or before it, so a token that is
  * still live stops working on its next call. A sign-in that was waiting is closed. Returns how many clients (Claude, Claude

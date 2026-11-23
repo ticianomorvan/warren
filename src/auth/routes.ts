@@ -81,7 +81,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
 const OAUTH_PATH = /^\/(?:api\/auth(?:\/|$)|\.well-known\/)/
 
 /**
- * The browser-facing half of the authorization server (docs/history/mcp-spec.md, Design 2 and 3): better-auth's own
+ * The browser-facing half of the authorization server (docs/design.md, "MCP and auth"): better-auth's own
  * endpoints and `.well-known` documents, the sign-in page and its status, and the consent page. `app.ts` hands it requests on `publicUrl`'s host only, so
  * tokens and metadata name one issuer; the webhook is not here and answers on any host.
  */

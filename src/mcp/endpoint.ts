@@ -26,7 +26,7 @@ const originOf = (origin: string) => {
 const errorName = (error: unknown) => (error instanceof Error ? error.name : 'unknown')
 
 /**
- * `/mcp` (docs/history/mcp-spec.md, Design 5) as one web handler, mounted on node by the SDK's own adapter: the origin first,
+ * `/mcp` (docs/design.md, "MCP and auth") as one web handler, mounted on node by the SDK's own adapter: the origin first,
  * then the door, then a stateless MCP server, a new one for each request, whose tools can only reach the account the door named
  * (it travels in `authInfo`, which the door makes and the handler passes on: nothing of the request is mutated). A failure
  * inside answers 500 and is logged by name; none reaches the process.

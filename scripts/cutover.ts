@@ -1,6 +1,6 @@
 /**
  * The cutover from v1 to the rebuild, as a script. Each step is logged (to the terminal and to a file in the work directory,
- * never with a URL or a secret in it). The commands, in order, with what each prints, are in docs/runbook-cutover.md.
+ * never with a URL or a secret in it). A one-time tool, deleted after the live check (docs/design.md, "Ops").
  *
  *   tsx scripts/cutover.ts --dry-run                  every step against a throwaway copy; changes nothing in production
  *   tsx scripts/cutover.ts                            the real thing (production)
@@ -9,7 +9,7 @@
  *   tsx scripts/cutover.ts rollback --rehearse        the same two legs on STAGING (v1-final on a scratch database, then this
  *                                                     checkout again), which is how the rollback's command path is proven
  *
- * The steps (docs/rebuild-spec.md section 7, with the old service stopped first so no write is lost):
+ * The steps (the old service is stopped first so no write is lost):
  *   1. `railway config plan` for production: abort on anything it would destroy.
  *   2. Stop the old service (`railway down`) and check it no longer answers. A sleeping service wakes on a webhook, so
  *      sleeping is not enough. Meta retries a webhook that gets no answer, so a message sent meanwhile arrives after.

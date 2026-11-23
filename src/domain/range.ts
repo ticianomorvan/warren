@@ -318,7 +318,7 @@ export interface SummaryPlan {
   before: Resolved | null
 }
 
-// ---- The typed range of the registry's `summarize` (docs/rebuild/council-agent.md): a discriminated union, no sentinels, no
+// ---- The typed range of the registry's `summarize` (docs/design.md, "Agent"): a discriminated union, no sentinels, no
 // ---- string mini-language for the second range. The resolution core above is shared.
 
 /** A typed range as the sentinel shape `resolveRange` reads: the fields a period does not use are empty. */

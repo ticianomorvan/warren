@@ -8,7 +8,7 @@ import { ScheduleSchema } from '../../src/domain/reminders/schedule'
 /**
  * A scenario is a conversation: a seeded ledger, then user turns, each with the Argentine "now" it
  * is sent at and what must be true afterwards. Expectations describe the INTENDED behaviour
- * (docs/history/agent-spec.md, Goal), not what the current pipeline does.
+ * (docs/design.md, "Tests and evals"), not what the current pipeline does.
  *
  * Ledger expectations are a delta over a closed world: a turn lists the changes it must make
  * (`ops`), and every other live movement must be untouched. No `ops` means "no change at all".

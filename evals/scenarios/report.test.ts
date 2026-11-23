@@ -44,15 +44,12 @@ describe('report', () => {
     expect(medianModelTurns(summary({ secondTurn: { turns: 10, withModel: 20 } }))).toBe(2)
   })
 
-  it('writes the latest runs next to the baseline, with a median column', () => {
-    const md = renderLatest(
-      [run({ passed: 8 }), run({ passed: 9 }), run({ passed: 10 })],
-      [run({ passed: 7 })],
-    )
+  it('writes the latest runs with a median column and the fixed bar', () => {
+    const md = renderLatest([run({ passed: 8 }), run({ passed: 9 }), run({ passed: 10 })])
     expect(md).toContain('## Latest')
-    expect(md).toContain('## v1 baseline')
+    expect(md).not.toContain('baseline')
+    expect(md).toContain('Gate (`docs/design.md`): at least 95% fully right')
     expect(md).toContain('| Scenarios fully right | 8 | 9 | 10 | 9 |')
-    expect(md).toContain('| Scenarios fully right | 7 | 7 |')
     expect(md).toContain('| Per-turn latency p95 | 2,100 ms | 2,100 ms | 2,100 ms | 2,100 ms |')
   })
 })
