@@ -191,10 +191,6 @@ export const CASES: Case[] = [
     outcome: { tool: 'delete_movement', status: 'applied', effect: 'deleted', old: nafta },
   },
   { name: 'undo nothing', outcome: { tool: 'undo_last', status: 'nothing', effect: null } },
-  {
-    name: 'undo restricted by channel',
-    outcome: { tool: 'undo_last', status: 'restricted', effect: null },
-  },
   { name: 'undo expired', outcome: { tool: 'undo_last', status: 'expired', effect: null } },
   undone('undo one log', [{ kind: 'logged', movement: cafe }]),
   undone('undo several logs', [

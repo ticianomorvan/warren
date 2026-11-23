@@ -1,5 +1,6 @@
 import type { Input, Range } from '../core/commands'
 import { addDays, type DateRange, dayParts as parts } from '../time'
+import { isTimeGroup } from './totals'
 
 /** A range as the resolution core reads it: the fields a period does not use are their empty value (`sentinel` makes it from a typed `Range`). */
 export interface RangeInput {
@@ -9,9 +10,6 @@ export interface RangeInput {
   from: string
   to: string
 }
-
-const TIME_GROUPS = ['day', 'week', 'month'] as const
-export const isTimeGroup = (by: string): boolean => (TIME_GROUPS as readonly string[]).includes(by)
 
 /**
  * Which kind of span a range is, which decides what "the one before" means: a month goes back to the
@@ -215,28 +213,12 @@ function bounded(whole: Whole, today: string, what: string): Resolution {
   return { ok: true, range }
 }
 
-/** Fields a period does not use must be their empty value: a stray one means the model misread the question. */
-function stray(spec: RangeInput): string | null {
-  const unused: [string, boolean][] = [
-    ['month', spec.period !== 'month' && spec.month !== 0],
-    ['year', spec.period !== 'month' && spec.period !== 'year' && spec.year !== 0],
-    ['from', spec.period !== 'dates' && spec.from !== ''],
-    ['to', spec.period !== 'dates' && spec.to !== ''],
-  ]
-  const bad = unused.filter(([, set]) => set).map(([field]) => field)
-  return bad.length === 0
-    ? null
-    : `period "${spec.period}" takes no ${bad.join(', ')}: send ${bad.map((f) => (f === 'from' || f === 'to' ? `${f} ""` : `${f} 0`)).join(', ')}. If the person named a month, a year or days, use period month, year or dates.`
-}
-
 /**
  * The inclusive Argentine days a range covers, counted from `today` (an Argentine day). Pure. A period that is not
  * over ends today ("en lo que va del año", "esta semana"), so the days shown are the days that count. A range that
  * has not started, is reversed or is longer than two years is refused with the reason the model is told.
  */
 export function resolveRange(spec: RangeInput, today: string): Resolution {
-  const bad = stray(spec)
-  if (bad) return refuse(bad)
   const [year = 0, month = 1] = parts(today)
   switch (spec.period) {
     case 'today':

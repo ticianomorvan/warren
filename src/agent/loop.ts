@@ -1,11 +1,12 @@
 import type Anthropic from '@anthropic-ai/sdk'
-import { type Call, COMMANDS, TOOLS } from '../core/commands'
+import { type Call, COMMANDS } from '../core/commands'
 import { capFind, checkTurn, checkValues, type Declined, type Shown } from '../core/guards'
 import type { MovementRow } from '../domain/movements'
 import type { TurnTiming } from '../timings'
 import { movementLine } from './context'
 import { MODELS, type ModelKey, type Usage } from './models'
 import { SYSTEM_PROMPT } from './prompt'
+import { TOOLS } from './tools'
 
 /** The most model calls one message may use: a read, then the action, with one to spare for a refusal. */
 export const MAX_TURNS = 3

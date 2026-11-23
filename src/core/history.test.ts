@@ -320,19 +320,15 @@ describe('the strict stack', () => {
     expect(await liveMovements(sql)).toEqual([{ entity: 1, amount: '3500', description: 'café' }])
   })
 
-  it('restricts by store: a channel that may not undo reminders is told so, and nothing is touched', async () => {
+  it('takes a log and a reminder of one turn back together, whichever channel asks', async () => {
     const a = await newAccount(sql)
     await turn(sql, a, [log(cafe()), remind('pagar la Visa')])
-    const u = await undoAt(a, minutes(5), { channel: 'mcp', stores: ['movement', 'fact'] })
-    expect(u).toMatchObject({ status: 'restricted', effect: null })
-    expect(say(u, views)).toBe('No tengo nada para deshacer.')
-    expect(await liveMovements(sql)).toHaveLength(1)
-    expect(await liveReminderList(sql)).toHaveLength(1)
-    // With every store (MCP has reminder tools now), the same undo takes both.
     expect(kinds(await undoAt(a, minutes(6), { channel: 'mcp' }))).toEqual([
       'logged',
       'reminder_removed',
     ])
+    expect(await liveMovements(sql)).toHaveLength(0)
+    expect(await liveReminderList(sql)).toHaveLength(0)
   })
 })
 

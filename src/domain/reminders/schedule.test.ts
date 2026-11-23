@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { WEEKDAYS, type Weekday } from '../../core/es'
 import { argentinaTime, argentinaToday } from '../../time'
 import {
   type First,
@@ -6,8 +7,6 @@ import {
   normalizeSchedule,
   resolveFirst,
   ScheduleSchema,
-  WEEKDAYS,
-  type Weekday,
 } from './schedule'
 
 type Input = Parameters<typeof ScheduleSchema.parse>[0]

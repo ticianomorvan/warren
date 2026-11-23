@@ -34,7 +34,7 @@ const { server, sweep, stop } = createWarren({
 
 server.listen(config.PORT, () => log('listening', { port: config.PORT }))
 
-// The first request after a tool change compiles the tool grammar (~10 s): do it before anyone writes.
+// Writes the prompt cache and opens the connection, so the first person's message pays for neither.
 warmUp(client, 'haiku').then(
   () => log('agent_warm'),
   (err) => log('agent_warm_failed', { error: String(err) }, 'error'),

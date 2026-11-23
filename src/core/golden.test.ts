@@ -44,7 +44,6 @@ describe('describe() against what v1 rendered', () => {
         'delete_movement:gone',
         'delete_movement:applied',
         'undo_last:nothing',
-        'undo_last:restricted',
         'undo_last:expired',
         'undo_last:applied',
         'remember_fact:applied',

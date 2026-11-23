@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { COMMANDS, TOOL_NAMES, type Tool } from '../core/commands'
+import { COMMANDS, type Tool } from '../core/commands'
 import { type ContextInput, renderContext } from './context'
 import { EXAMPLES, renderExamples } from './examples'
 import { SYSTEM_PROMPT } from './prompt'
@@ -18,7 +18,7 @@ describe('the prompt', () => {
   })
 
   it('names every tool the model is offered, and the registry limits', () => {
-    for (const name of TOOL_NAMES) {
+    for (const name of Object.keys(COMMANDS) as Tool[]) {
       if (COMMANDS[name].by !== 'code') expect(SYSTEM_PROMPT).toContain(name)
     }
     expect(SYSTEM_PROMPT).toContain('at most 20 movements')

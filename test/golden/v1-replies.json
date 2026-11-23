@@ -17,7 +17,6 @@
     "delete the newest": "✓ Borré: Café $3.500",
     "delete not the newest, another day": "✓ Borré: Nafta YPF $20.000 (crédito visa) · ayer · 09:30",
     "undo nothing": "No tengo nada para deshacer.",
-    "undo restricted by channel": "No tengo nada para deshacer.",
     "undo expired": "Lo último que hice fue hace más de 24 horas y ya no lo deshago solo. Decime qué querés corregir o borrar.",
     "undo one log": "↩︎ Deshice: Café $3.500",
     "undo several logs": "↩︎ Deshice: Café $3.500 · Nafta YPF $20.000 (crédito visa) · ayer · Sueldo +$850.000,50 · 05/11",

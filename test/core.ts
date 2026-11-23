@@ -1,6 +1,5 @@
 import type { Call, Movement } from '../src/core/commands'
 import type { Sql } from '../src/core/db'
-import type { Store } from '../src/core/history'
 import { type Channel, type Committed, commit } from '../src/core/turn'
 
 /** The clock of the core tests: an Argentine noon, so "today" is 2026-11-20. */
@@ -33,7 +32,7 @@ export function turn(
   sql: Sql,
   accountId: number,
   calls: Call[],
-  o: { at?: Date; clock?: () => Date; channel?: Channel; stores?: readonly Store[] } = {},
+  o: { at?: Date; clock?: () => Date; channel?: Channel } = {},
 ): Promise<Committed> {
   return commit(sql, {
     accountId,
@@ -41,7 +40,6 @@ export function turn(
     now: o.at ?? NOW,
     ...(o.clock ? { clock: o.clock } : {}),
     calls,
-    ...(o.stores ? { stores: o.stores } : {}),
     compose: (_tx, done) => ({
       reply:
         done

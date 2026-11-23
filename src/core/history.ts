@@ -26,14 +26,10 @@ import type { Sql } from './db'
  * There is no "something changed it since" case: the caller holds the account lock and the turn is the newest one that is neither an
  * undo nor undone, so every later turn is settled and what the turn left stands as it left it. That is asserted (`asLeft`), not
  * handled: a failure means something wrote to the person's data outside `commit`.
- * Policy (which stores a channel may undo) comes in as `stores`.
  */
 
 /** How long a turn can be undone: past it, the person is told and nothing is touched. */
 export const UNDO_WINDOW_HOURS = 24
-
-export const STORES = ['movement', 'fact', 'reminder'] as const
-export type Store = (typeof STORES)[number]
 
 /** What undoing one entity of the turn did. */
 export type Undone =
@@ -68,8 +64,6 @@ export type UndoResult =
   | { status: 'nothing' }
   /** Their last turn is older than the window. */
   | { status: 'expired' }
-  /** The turn changed a store this channel may not undo. Nothing was changed. */
-  | { status: 'restricted' }
   /** A change of the turn can never be undone, which blocks the older ones too: nothing was changed. */
   | { status: 'blocked'; turn: number; blocking: Blocking; why: BlockedBy[] }
 
@@ -298,7 +292,7 @@ const emptyPlan = <R extends { version: number }>(): Plan<R> => ({
  */
 export async function undoLast(
   tx: Sql,
-  o: { accountId: number; turn: number; now: Date; stores: readonly Store[] },
+  o: { accountId: number; turn: number; now: Date },
 ): Promise<UndoResult> {
   const last = await lastTurn(tx, o.accountId, o.now)
   if (!last) return { status: 'nothing' }
@@ -310,7 +304,7 @@ export async function undoLast(
     reminder: await reminderAdapter.load(tx, o.accountId, last.id),
   }
   // A reminder of the turn that cannot be read cannot be taken back, and the stack is strict: the turn is blocked, by name.
-  if (read.reminder.unreadable.length > 0 && o.stores.includes('reminder')) {
+  if (read.reminder.unreadable.length > 0) {
     return {
       status: 'blocked',
       turn: last.id,
@@ -324,15 +318,15 @@ export async function undoLast(
     reminder: read.reminder.versions,
   }
   const plans: Plans = { movement: emptyPlan(), fact: emptyPlan(), reminder: emptyPlan() }
-  const touched = new Set<Store>()
+  let touched = false
 
   const classify = <R extends { id: number; version: number; loggedAt: Date }>(
-    store: Store,
+    store: string,
     versions: Version<R>[],
     plan: Plan<R>,
   ) => {
     for (const e of entitiesOf(versions, last.id)) {
-      touched.add(store)
+      touched = true
       // As the turn left it: what it made is still live (a later turn that changed it was undone, so its version is live again),
       // what it ended is still ended. Under the account lock this always holds; if it does not, something wrote outside `commit`.
       const asLeft = e.post ? e.head.live : !e.head.live
@@ -350,8 +344,7 @@ export async function undoLast(
   classify('fact', loaded.fact, plans.fact)
   classify('reminder', loaded.reminder, plans.reminder)
 
-  if (touched.size === 0) return { status: 'nothing' }
-  if ([...touched].some((s) => !o.stores.includes(s))) return { status: 'restricted' }
+  if (!touched) return { status: 'nothing' }
 
   // What can never come back blocks the turn, and so everything older.
   const never = reminderRules(plans.reminder, o.now)

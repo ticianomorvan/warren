@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { WEEKDAYS, type Weekday } from '../../core/es'
 import { argentinaToday } from '../../time'
 
 /**
@@ -6,9 +7,6 @@ import { argentinaToday } from '../../time'
  * Design 2), pure. Argentina is UTC-3 all year with no daylight saving, so a wall-clock time is an instant
  * three hours later in UTC and no time-zone library is needed. `nextOccurrence` is the only logic.
  */
-
-export const WEEKDAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const
-export type Weekday = (typeof WEEKDAYS)[number]
 
 const DAY_MS = 86_400_000
 const ARGENTINA_OFFSET_MS = 3 * 3_600_000

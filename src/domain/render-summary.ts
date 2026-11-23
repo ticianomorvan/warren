@@ -1,5 +1,5 @@
 import type { Category } from '../core/commands'
-import { CATEGORY_LABEL, capitalize, money as formatMoney } from '../core/es'
+import { CATEGORY_LABEL, capitalize, money as formatMoney, MONTHS, MONTHS_SHORT } from '../core/es'
 import { addDays, mondayOf, dayParts as parts, weekdayName } from '../time'
 import type { Resolved } from './range'
 import { change, formatPercent, toCents } from './summary'
@@ -11,35 +11,6 @@ import { type GroupBy, type GroupTotal, isTimeGroup, type QueryTotal } from './t
  * purpose (Ticiano will refine it); what it must always do is name the days it covers and keep currencies and
  * directions apart.
  */
-
-const MONTHS = [
-  'enero',
-  'febrero',
-  'marzo',
-  'abril',
-  'mayo',
-  'junio',
-  'julio',
-  'agosto',
-  'septiembre',
-  'octubre',
-  'noviembre',
-  'diciembre',
-]
-const MONTHS_SHORT = [
-  'ene',
-  'feb',
-  'mar',
-  'abr',
-  'may',
-  'jun',
-  'jul',
-  'ago',
-  'sep',
-  'oct',
-  'nov',
-  'dic',
-]
 
 /** The most groups listed of what was bought or paid; the rest are "… y N más". */
 export const MAX_GROUPS = 8

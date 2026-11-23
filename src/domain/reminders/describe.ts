@@ -1,7 +1,16 @@
-import { clock, list, MONTHS, shortDate, WEEKDAY, weekdayOf } from '../../core/es'
+import {
+  clock,
+  list,
+  MONTHS,
+  shortDate,
+  WEEKDAY,
+  WEEKDAYS,
+  type Weekday,
+  weekdayOf,
+} from '../../core/es'
 import { addDays, argentinaToday, dayParts } from '../../time'
 import type { ReminderRow } from './db'
-import { type Schedule, WEEKDAYS, type Weekday } from './schedule'
+import type { Schedule } from './schedule'
 
 /**
  * A schedule in Argentine Spanish, rendered by code from the typed fields, so the person sees what code understood and

@@ -12,6 +12,7 @@ import { addDays } from '../time'
 import type { Outcome } from './apply'
 import type { SkipReason, Then } from './commands'
 import { CATEGORY_LABEL, capitalize, money, shortDate } from './es'
+import { BULLET } from './fit'
 import type { Declined } from './guards'
 import type { Blocking, Undone } from './history'
 
@@ -26,8 +27,6 @@ export interface View {
   today: string
   newest: number | null
 }
-
-const BULLET = '• '
 
 // ---- Words code says on its own
 
@@ -192,7 +191,6 @@ function undoText(o: Extract<Outcome, { tool: 'undo_last' }>, today: string): st
     case 'applied':
       return undoneLine(o.items, today)
     case 'nothing':
-    case 'restricted':
       return REPLY.undoNothing
     case 'expired':
       return REPLY.undoExpired

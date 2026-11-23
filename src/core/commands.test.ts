@@ -1,16 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { COMMANDS, labelOf, TOOL_NAMES, TOOLS, type Tool } from './commands'
+import { TOOLS } from '../agent/tools'
+import { COMMANDS, labelOf, type Tool } from './commands'
+
+const TOOL_NAMES = Object.keys(COMMANDS) as Tool[]
 
 describe('the registry', () => {
-  it.each(TOOL_NAMES)('%s: every typed example parses with its own schema', (name) => {
-    const entry = COMMANDS[name]
-    expect(entry.examples.length).toBeGreaterThan(0)
-    for (const example of entry.examples) {
-      const parsed = entry.input.safeParse(example)
-      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true)
-    }
-  })
-
   it('offers the model every tool but the ones only code sends, in the registry order', () => {
     expect(TOOLS.map((t) => t.name)).toEqual(TOOL_NAMES.filter((n) => n !== 'forget_all_confirmed'))
   })
@@ -51,13 +45,6 @@ describe('the registry', () => {
         'cancel_reminder',
       ].sort(),
     )
-  })
-
-  it('every write names its effect, and nothing else does', () => {
-    for (const name of TOOL_NAMES) {
-      const { kind, effect } = COMMANDS[name]
-      expect(effect !== undefined, name).toBe(kind === 'write')
-    }
   })
 
   it('an MCP block asks for the write scope exactly where the tool writes', () => {

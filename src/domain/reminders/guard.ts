@@ -1,5 +1,5 @@
 import type { z } from 'zod'
-import { hasForeignDigit, unwritten } from '../../core/numbers'
+import { hasForeignDigit } from '../../core/numbers'
 import { holdsSecretValue, looksContact } from '../../core/secrets'
 import { tidy as tidyWords } from '../facts'
 import {
@@ -40,33 +40,20 @@ export type ReminderCheck =
  * The rules of a reminder before it is stored, whoever sends it: the text is one line of at most `MAX_WHAT` characters and
  * no secret or contact data (it is sent to the person through Meta, as written); the schedule's first occurrence after `now`
  * exists and is at most `MAX_DAYS_AHEAD` days away. Every send is at least a day after the one before (a schedule holds
- * one time a day), so no check of that is left to make. `message` is the person's own message, when there is one: a number
- * in the text must be one they wrote.
+ * one time a day), so no check of that is left to make. What needs the person's own message (a secret in it, a number in the text
+ * they did not write) is `checkTurn`'s: the conversation's rules.
  */
 export function checkReminder(
   input: { what: string; schedule: Schedule | null },
   now: Date,
-  message?: string,
 ): ReminderCheck {
   const what = tidyWhat(tidyWords(input.what))
   if (looksContact(what) || /\+\d/.test(what)) return { ok: false, refused: 'contact' }
-  // A message that holds a secret sets no reminder, whatever the model leaves of it in `what`: the person is told and it is wiped.
-  if (holdsSecretValue(what) || (message !== undefined && holdsSecretValue(message))) {
-    return { ok: false, refused: 'secret' }
-  }
+  if (holdsSecretValue(what)) return { ok: false, refused: 'secret' }
   if (what === '') return { ok: false, message: 'what is empty: it is what to remind them of' }
   if (hasForeignDigit(what)) return { ok: false, message: 'what has digits that are not 0-9' }
   if (what.length > MAX_WHAT) {
     return { ok: false, message: `what is too long: at most ${MAX_WHAT} characters, in one line` }
-  }
-  if (message !== undefined) {
-    const made = unwritten(what, message)
-    if (made.length > 0) {
-      return {
-        ok: false,
-        message: `numbers the person did not write in what: ${[...new Set(made)].join(', ')}. Leave them out`,
-      }
-    }
   }
   // From `now` on (see `normalizeSchedule`): a start that has passed is moved to the first occurrence, never drained by `count`.
   const schedule = input.schedule && normalizeSchedule(input.schedule, now)

@@ -4,7 +4,6 @@ import { applyCall, type Outcome } from './apply'
 import { type Call, labelOf, type Then, writes } from './commands'
 import type { Sql } from './db'
 import { describe } from './describe'
-import type { Store } from './history'
 
 /**
  * The commit point. A turn is one unit of work on any channel, and its row is inserted only here, last, in the transaction that
@@ -54,8 +53,6 @@ export interface CommitInput<S = never> {
   clock?: () => Date
   /** The calls of the turn, in order. The writes are applied; the others (answers, asks, reads) are carried in `calls` as sent. */
   calls: Call[]
-  /** The stores an undo of this channel may reach. Default: all. */
-  stores?: readonly Store[]
   /** Before the account lock, read-only: the WhatsApp claim's guard row. False ends the transaction with nothing written (`null`). */
   claim?: (tx: Sql) => Promise<boolean>
   /**
@@ -146,7 +143,6 @@ export function commit<S>(
           turnId,
           at: i.now,
           now: clock,
-          ...(i.stores ? { stores: i.stores } : {}),
         },
         call,
       )

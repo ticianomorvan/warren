@@ -57,19 +57,6 @@ export const MAX_FOUND = 20
 /** The most movements a message may name in `ask_user`. */
 export const MAX_ASKED = 10
 
-/** What a write did, in one word each: the vocabulary of `Outcome.effect` and of the history. */
-export const EFFECTS = [
-  'logged',
-  'corrected',
-  'deleted',
-  'undone',
-  'remembered',
-  'forgotten',
-  'reminded',
-  'unreminded',
-] as const
-export type Effect = (typeof EFFECTS)[number]
-
 /** One word for a unit of work: the `turn.label` and the latency report's key. */
 export type Label =
   | 'log'
@@ -203,15 +190,11 @@ export interface Entry<S extends z.ZodType = z.ZodType> {
    * commit point. `answer`: ends the turn with something code renders or the model says. `ask`: ends the turn with a question.
    */
   kind: 'read' | 'write' | 'answer' | 'ask'
-  /** What a write does: the word its outcome and the history carry. */
-  effect?: Effect
   label: Label
   /** Sent alone: with another action in the same turn it is refused. */
   alone?: true
   /** Only code sends it, after the person's own answer; the model is never offered it. */
   by?: 'code'
-  /** Typed inputs a test parses with `input`; the prompt shows them. */
-  examples: z.input<S>[]
   mcp?: McpBlock
 }
 
@@ -393,7 +376,6 @@ export const COMMANDS = {
       "Search the person's whole history for a movement that is not in the list of the 10 newest. Returns up to 20 live movements with their ids, newest first. Leave out the filters you do not need.",
     kind: 'read',
     label: 'find',
-    examples: [{ text: 'nafta', from: '2026-10-01' }, { amount: '12000' }],
     mcp: {
       title: 'Find movements',
       description:
@@ -411,24 +393,7 @@ export const COMMANDS = {
     input: z.object({ movements: z.array(MovementSchema).min(1).max(10) }),
     description: 'Record 1 to 10 new movements (expenses or income) the person tells you about.',
     kind: 'write',
-    effect: 'logged',
     label: 'log',
-    examples: [
-      {
-        movements: [
-          {
-            direction: 'out',
-            amount: '3500',
-            currency: 'ARS',
-            date: '2026-11-20',
-            description: 'café',
-            category: 'restaurantes',
-            payment: 'crédito visa',
-            confidence: 'high',
-          },
-        ],
-      },
-    ],
     mcp: {
       title: 'Log movements',
       description:
@@ -444,9 +409,7 @@ export const COMMANDS = {
     description:
       'Change fields of one existing movement, by id. Only the fields that change are sent.',
     kind: 'write',
-    effect: 'corrected',
     label: 'correct',
-    examples: [{ id: 41, changes: { amount: '3800' } }],
     mcp: {
       title: 'Correct a movement',
       description:
@@ -461,9 +424,7 @@ export const COMMANDS = {
     input: z.object({ id: Id }),
     description: 'Delete one existing movement, by id.',
     kind: 'write',
-    effect: 'deleted',
     label: 'delete',
-    examples: [{ id: 41 }],
     mcp: {
       title: 'Delete a movement',
       description:
@@ -495,11 +456,6 @@ export const COMMANDS = {
       'Answer how much the person spent or received over any days (a named period, a month, a year or explicit days), optionally split by category, payment, day, week or month, or compared with the period before or a second range. Code resolves the days and computes every total, count, difference and percentage; you only choose the range, the split, the comparison and the filters (including the words of a description, for "cuántos cafés").',
     kind: 'answer',
     label: 'summarize',
-    examples: [
-      { range: { period: 'this_month' }, group_by: 'category' },
-      { range: { period: 'month', month: 10 }, compare: { period: 'month', month: 9 } },
-      { range: { period: 'last_month' }, compare: 'previous', category: 'supermercado' },
-    ],
     mcp: {
       title: 'Summarize spending and income',
       description:
@@ -518,11 +474,6 @@ export const COMMANDS = {
       'Ask which movement the person means, or what to change in it, when you cannot act. Code writes the question and lists the movements you give; you write no question. `then` says what the answer will do: delete it, correct it (with the new value the person already gave), or ask what to change.',
     kind: 'ask',
     label: 'ask',
-    examples: [
-      { movement_ids: [41, 38], then: { do: 'delete' } },
-      { movement_ids: [41, 38], then: { do: 'correct', changes: { amount: '4100' } } },
-      { movement_ids: [41], then: { do: 'ask_change' } },
-    ],
   }),
 
   reply: define({
@@ -532,7 +483,6 @@ export const COMMANDS = {
     kind: 'answer',
     label: 'reply',
     alone: true,
-    examples: [{ text: 'Eso no lo puedo hacer, pero te anoto los gastos.' }],
   }),
 
   skip: define({
@@ -553,7 +503,6 @@ export const COMMANDS = {
       'Say that you did not do one part of a message while you did the others. Code writes the line. Never for the whole message.',
     kind: 'answer',
     label: 'reply',
-    examples: [{ part: 'la nafta del lunes', reason: 'not_found' }],
   }),
 
   help: define({
@@ -562,7 +511,6 @@ export const COMMANDS = {
       'Send the canned help text: only when the person asks for help or what you can do, or greets you.',
     kind: 'answer',
     label: 'reply',
-    examples: [{}],
   }),
 
   undo_last: define({
@@ -570,10 +518,8 @@ export const COMMANDS = {
     description:
       'Undo the person\'s LAST batch of changes as a whole (everything one earlier message logged, corrected or deleted): "deshacer", "volvé atrás", "anulá lo que hiciste", "no, eso no" right after a record. Code finds the batch and writes what it undid; you send no id. Never for one named movement (that is delete_movement or correct_movement), and never together with another action.',
     kind: 'write',
-    effect: 'undone',
     label: 'undo',
     alone: true,
-    examples: [{}],
     mcp: {
       title: 'Undo the last change',
       description:
@@ -594,13 +540,7 @@ export const COMMANDS = {
     description:
       'Remember ONE fact the person states about their own money or habits, so you understand later messages: an alias (a name they use for a payment, a place or a thing: "la del galicia" is "la visa"), a category (where a kind of expense goes: "café" is entretenimiento) or a note (anything else: "cobro" is "el 5"). Only what they say, explicitly ("acordate que...") or as a clear statement; never a guess, never something you inferred. It logs, corrects and deletes nothing. A new value for the same key replaces the old one. Code checks it and writes the record.',
     kind: 'write',
-    effect: 'remembered',
     label: 'remember',
-    examples: [
-      { kind: 'alias', key: 'la visa', value: 'crédito galicia' },
-      { kind: 'category', key: 'café', value: 'entretenimiento' },
-      { kind: 'note', key: 'cobro', value: 'el 5' },
-    ],
     mcp: {
       title: 'Remember a fact',
       description:
@@ -623,9 +563,7 @@ export const COMMANDS = {
     description:
       'Forget one remembered fact: its id from "Hechos" (only an id you were shown), or its key (the words) when it is not shown. For "olvidate de lo de la visa". Never for a movement of the ledger.',
     kind: 'write',
-    effect: 'forgotten',
     label: 'forget',
-    examples: [{ target: { id: 7 } }, { target: { key: 'la visa' } }],
     mcp: {
       title: 'Forget a fact',
       description: 'Forgets one remembered fact, by id or by key. "deshacer" brings it back.',
@@ -643,17 +581,14 @@ export const COMMANDS = {
     kind: 'ask',
     label: 'forget',
     alone: true,
-    examples: [{}],
   }),
 
   forget_all_confirmed: define({
     input: Nothing,
     description: "The person's own 'sí' to '¿Seguro?'. Code sends it; the model never does.",
     kind: 'write',
-    effect: 'forgotten',
     label: 'forget',
     by: 'code',
-    examples: [{}],
   }),
 
   list_facts: define({
@@ -662,7 +597,6 @@ export const COMMANDS = {
       'The person asks what you know or have noted about them ("¿qué sabés de mí?", "¿qué tenés anotado?"). Code lists every fact.',
     kind: 'answer',
     label: 'reply',
-    examples: [{}],
     mcp: {
       title: 'List what Warren remembers',
       description: 'Lists every live fact (alias, category rule or note) the person told Warren.',
@@ -686,18 +620,7 @@ export const COMMANDS = {
     description:
       'Set a reminder: Warren sends the person a WhatsApp message with `what` at the time `first` says. For a repeating one add `every` (day, week, month, year) with `interval` (1 unless "cada 2…"); weekdays for week (mon..sun); month_days for month or year (1 to 31, -1 is the last day); nth ({n: 1..4 or -1, weekday}) for "el primer lunes"; month (1..12) for year; until or count to end it. Leave out every field that does not apply. Code works out the first date, checks it is ahead and writes the confirmation.',
     kind: 'write',
-    effect: 'reminded',
     label: 'remind',
-    examples: [
-      { what: 'pagar la Visa', first: { month_day: 10 } },
-      { what: 'llamar al médico', first: { in: { n: 20, unit: 'minutes' } } },
-      {
-        what: 'tomar la pastilla',
-        first: { day: 'tomorrow', time: '08:00' },
-        every: 'week',
-        weekdays: ['mon', 'thu'],
-      },
-    ],
     mcp: {
       title: 'Set a reminder',
       description:
@@ -713,9 +636,7 @@ export const COMMANDS = {
     description:
       'Cancel one live reminder, by an id from "Recordatorios" (only an id you were shown). For "cancelá el del alquiler", "ya no me recuerdes la pastilla". Never for a movement of the ledger.',
     kind: 'write',
-    effect: 'unreminded',
     label: 'remind',
-    examples: [{ id: 3 }],
     mcp: {
       title: 'Cancel a reminder',
       description: 'Cancels one live reminder, by id. "deshacer" brings it back.',
@@ -732,7 +653,6 @@ export const COMMANDS = {
       'The person asks which reminders they have ("¿qué recordatorios tengo?", "¿qué me ibas a recordar?"). Code lists every live reminder.',
     kind: 'answer',
     label: 'reply',
-    examples: [{}],
     mcp: {
       title: 'List reminders',
       description: 'Lists every live reminder, the next to come first.',
@@ -765,54 +685,10 @@ export type WriteTool = {
 }[Tool]
 export type WriteCall = CallOf<WriteTool>
 
-const entries = Object.entries(COMMANDS) as [Tool, Entry][]
-export const TOOL_NAMES = entries.map(([name]) => name)
 export const isTool = (name: string): name is Tool => name in COMMANDS
-export const isWriteTool = (name: string): name is WriteTool =>
-  isTool(name) && COMMANDS[name].kind === 'write'
 
 /** Where `kind` says a call writes. */
 export const writes = (call: Call): call is WriteCall => COMMANDS[call.tool].kind === 'write'
-
-/** The Anthropic tool definition of a registry entry: the input's JSON schema (defaults are how code reads a field the model left out, not something to show it). */
-function definition(name: Tool, entry: Entry) {
-  const { $schema: _, ...schema } = z.toJSONSchema(entry.input, { io: 'input' }) as Record<
-    string,
-    unknown
-  >
-  const strip = (node: unknown): unknown => {
-    if (Array.isArray(node)) return node.map(strip)
-    if (node && typeof node === 'object') {
-      return Object.fromEntries(
-        Object.entries(node)
-          // `z.int()` states the safe-integer range as its bounds: noise for the model, so only real bounds stay.
-          .filter(
-            ([key, value]) =>
-              key !== 'default' &&
-              !(
-                (key === 'minimum' || key === 'maximum') &&
-                Math.abs(Number(value)) === Number.MAX_SAFE_INTEGER
-              ),
-          )
-          .map(([key, value]) => [key, strip(value)]),
-      )
-    }
-    return node
-  }
-  return {
-    name,
-    description: entry.description,
-    input_schema: strip(schema) as { type: 'object'; [key: string]: unknown },
-  }
-}
-
-/**
- * The tools the model is offered, in the registry's order, built once and never changed: its order and bytes are part of the cached
- * prefix. The tools are not `strict`; the input is parsed with the same zod schema and every value is checked by code.
- */
-export const TOOLS = entries
-  .filter(([, entry]) => entry.by !== 'code')
-  .map(([name, entry]) => definition(name, entry))
 
 /** The turn's label for a list of calls: the one tool's, or `multi`. */
 export function labelOf(calls: readonly { tool: Tool }[]): Label | 'multi' {

@@ -27,7 +27,7 @@ import { MAX_REMINDERS, scheduleOf } from '../domain/reminders/guard'
 import { nextOccurrence } from '../domain/reminders/schedule'
 import type { WriteCall } from './commands'
 import type { Sql } from './db'
-import { STORES, type Store, type UndoResult, undoLast } from './history'
+import { type UndoResult, undoLast } from './history'
 
 /**
  * One write path under every channel: `applyCall` runs one of the nine writes inside the commit transaction and says what it did, as
@@ -45,8 +45,6 @@ export interface ApplyContext {
   at: Date
   /** The scheduling clock: when a reminder's schedule is counted from. Never before `at` (a message that waited is judged by the later one). */
   now: Date
-  /** The stores this channel may undo. Default: all of them. */
-  stores?: readonly Store[]
 }
 
 /** What a forget was asked for: an entity id, or the key's words. */
@@ -133,7 +131,6 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
         accountId,
         turn: turnId,
         now: ctx.at,
-        stores: ctx.stores ?? STORES,
       })
       return { tool: call.tool, effect: undone.status === 'applied' ? 'undone' : null, ...undone }
     }
