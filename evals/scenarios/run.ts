@@ -21,6 +21,8 @@ const { values } = parseArgs({
     budget: { type: 'string', default: '0.30' },
     // Run only these scenarios (comma-separated ids), whatever their split.
     only: { type: 'string' },
+    // A scenario file other than scenarios.jsonl (a separate set, e.g. long-ledger.jsonl): its runs are saved as `-long.json`.
+    file: { type: 'string' },
   },
 })
 
@@ -46,7 +48,7 @@ try {
 if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is missing: set it in .env')
 
 const only = values.only ? new Set(values.only.split(',').map((id) => id.trim())) : null
-const scenarios = loadScenarios().filter((s) =>
+const scenarios = loadScenarios(values.file ? join(root, values.file) : undefined).filter((s) =>
   only ? only.has(s.id) : split === 'all' || s.split === split,
 )
 if (scenarios.length === 0) {
@@ -137,7 +139,7 @@ if (split === 'all') {
 const stamp = startedAt.toISOString().replace(/[:.]/g, '-')
 mkdirSync(join(root, 'evals/scenarios/results'), { recursive: true })
 writeFileSync(
-  join(root, `evals/scenarios/results/${stamp}-${split}.json`),
+  join(root, `evals/scenarios/results/${stamp}-${values.file ? 'long' : split}.json`),
   // Held-out scenarios leave only their status behind: no texts, replies or problems.
   JSON.stringify(
     {

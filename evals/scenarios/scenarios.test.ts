@@ -257,3 +257,29 @@ describe('the driver, with a scripted model', () => {
     ).toBe(true)
   })
 })
+
+describe('long-ledger.jsonl (R7: pre-search)', () => {
+  const long = loadScenarios(new URL('./long-ledger.jsonl', import.meta.url).pathname)
+
+  it('has at least 15 scenarios, a ledger of 40+ movements over 2 months, and unique ids that do not collide with scenarios.jsonl', () => {
+    expect(long.length).toBeGreaterThanOrEqual(15)
+    for (const s of long) {
+      expect(s.seed.length, s.id).toBeGreaterThanOrEqual(40)
+      const days = s.seed.map((m) => m.on).sort()
+      const span = Date.parse(days.at(-1) as string) - Date.parse(days[0] as string)
+      expect(span / 86_400_000, s.id).toBeGreaterThanOrEqual(55)
+    }
+    const ids = [...scenarios, ...long].map((s) => s.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('almost every movement a turn corrects or deletes is older than the 10 newest (the traps may name one in the list)', () => {
+    const refs = long.flatMap((s) => {
+      const older = new Set(s.seed.slice(0, -10).map((m) => m.ref))
+      return s.turns.flatMap((t) =>
+        t.ops.flatMap((op) => (op.op === 'log' ? [] : [older.has(op.ref)])),
+      )
+    })
+    expect(refs.filter(Boolean).length).toBeGreaterThanOrEqual(refs.length - 1)
+  })
+})
