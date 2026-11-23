@@ -20,16 +20,16 @@ Model claude-haiku-5-5; 3 runs (2026-11-22, 2026-11-22, 2026-11-22); 359 scenari
 
 |  | Run 1 | Run 2 | Run 3 | Median |
 |---|---|---|---|---|
-| Scenarios fully right | 356 | 352 | 356 | 356 |
-| Fully right, share | 99.2% | 98.1% | 99.2% | 99.2% |
-| Silent wrong changes | 2 | 2 | 2 | 2 |
-| Unnecessary questions | 0 | 1 | 0 | 0 |
+| Scenarios fully right | 357 | 358 | 357 | 357 |
+| Fully right, share | 99.4% | 99.7% | 99.4% | 99.4% |
+| Silent wrong changes | 0 | 0 | 0 | 0 |
+| Unnecessary questions | 0 | 0 | 0 | 0 |
 | Invented numbers | 0 | 0 | 0 | 0 |
-| Per-turn latency p50 | 1,145 ms | 1,146 ms | 1,156 ms | 1,146 ms |
-| Per-turn latency p95 | 1,778 ms | 1,709 ms | 1,718 ms | 1,718 ms |
+| Per-turn latency p50 | 1,175 ms | 1,160 ms | 1,147 ms | 1,160 ms |
+| Per-turn latency p95 | 1,738 ms | 1,709 ms | 1,751 ms | 1,738 ms |
 | Model turns per message, p50 | 1 | 1 | 1 | 1 |
-| Messages needing a second model turn | 3.9% | 2.9% | 3.1% | 3.1% |
-| Cost (US$) | 0.1738 | 0.1717 | 0.1720 | 0.1720 |
+| Messages needing a second model turn | 1.9% | 2.7% | 2.7% | 2.7% |
+| Cost (US$) | 0.1703 | 0.1724 | 0.1715 | 0.1715 |
 
 ## v1 baseline (tag `v1-final`, main 066eb87)
 
