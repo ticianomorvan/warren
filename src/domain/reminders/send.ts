@@ -118,7 +118,7 @@ export function createReminderSender(o: ReminderSenderOptions) {
         wa_id: string
       }[]
     >`
-      SELECT s.id::int AS id, s.reminder_entity_id::int AS reminder, s.account_id::int AS account_id, x.what, s.due_at, a.address AS wa_id
+      SELECT s.id AS id, s.reminder_entity_id AS reminder, s.account_id AS account_id, x.what, s.due_at, a.address AS wa_id
       FROM reminder_send s
       JOIN LATERAL (
         SELECT what FROM reminder WHERE entity_id = s.reminder_entity_id ORDER BY id DESC LIMIT 1) x ON true
@@ -173,7 +173,7 @@ export function createReminderSender(o: ReminderSenderOptions) {
         wa_id: string
       }[]
     >`
-      SELECT r.entity_id::int AS id, r.id::int AS version, r.account_id::int AS account_id, r.what, r.schedule, r.next_due_at, a.address AS wa_id
+      SELECT r.entity_id AS id, r.id AS version, r.account_id AS account_id, r.what, r.schedule, r.next_due_at, a.address AS wa_id
       FROM reminder r
       JOIN LATERAL (
         SELECT address FROM account_address
@@ -213,7 +213,7 @@ export function createReminderSender(o: ReminderSenderOptions) {
       INSERT INTO reminder_send (account_id, reminder_entity_id, due_at, kind, started_at, status)
       VALUES (${r.account_id}, ${r.id}, ${dueAt}, ${kind}, ${now}, ${status})
       ON CONFLICT (reminder_entity_id, due_at) DO NOTHING
-      RETURNING id::int AS id`
+      RETURNING id AS id`
     if (!send) return { due: true }
     if (status === 'failed') {
       log('reminder_send_failed', { send: send.id, reminder: r.id, reason: 'not allowed' }, 'error')

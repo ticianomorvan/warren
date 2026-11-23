@@ -134,7 +134,7 @@ export interface FactRow {
 }
 
 const columns = (sql: Sql) =>
-  sql`entity_id::int AS id, id::int AS version, kind, key, value, logged_at AS "loggedAt"`
+  sql`entity_id AS id, id AS version, kind, key, value, logged_at AS "loggedAt"`
 
 /**
  * The facts the model is shown with a message: the newest `limit`, and, so that an old alias still works, every other live

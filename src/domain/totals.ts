@@ -71,41 +71,40 @@ function matching(sql: Sql, accountId: number, f: QueryFilter) {
       ${needle ? sql`AND position(${needle}::text IN ${sql.unsafe(folded('payment'))}) > 0` : sql``}`
 }
 
-/** Totals per direction and currency, summed by the database. Currencies are never converted. */
-export function queryTotals(sql: Sql, accountId: number, f: QueryFilter) {
-  return sql<QueryTotal[]>`
-    SELECT direction, currency, sum(amount)::text AS total, count(*)::int AS count
-    FROM movement WHERE ${matching(sql, accountId, f)}
-    GROUP BY direction, currency
-    ORDER BY direction DESC, currency`
-}
-
-/** Per group within each direction and currency: what was bought or paid biggest first, time oldest first. */
-export function queryGroups(
-  sql: Sql,
-  accountId: number,
-  f: QueryFilter,
-  by: Exclude<GroupBy, 'none'>,
-) {
-  const key = sql.unsafe(GROUP_SQL[by])
-  return sql<GroupTotal[]>`
-    SELECT direction, currency, ${key} AS key,
-      ${by === 'payment' ? sql`coalesce(min(nullif(btrim(payment), '')), '')` : sql`NULL::text`} AS label,
-      sum(amount)::text AS total, count(*)::int AS count
-    FROM movement WHERE ${matching(sql, accountId, f)}
-    GROUP BY direction, currency, ${key}
-    ORDER BY direction DESC, currency, ${isTimeGroup(by) ? sql`${key}` : sql`sum(amount) DESC, ${key}`}`
-}
-
-/** The totals and the groups of one range, both summed by the database over the same filter. */
+/**
+ * The totals and the groups of one range, both summed by the database in ONE statement (grouping sets), so they come from one snapshot
+ * and cannot disagree. Totals are per direction and currency, never converted; the groups are within each of those, what was bought or
+ * paid biggest first and time oldest first.
+ */
 export async function summaryRows(
   sql: Sql,
   accountId: number,
   f: QueryFilter,
   by: GroupBy,
 ): Promise<SummaryRows> {
+  if (by === 'none') {
+    return {
+      totals: await sql<QueryTotal[]>`
+        SELECT direction, currency, sum(amount)::text AS total, count(*)::int AS count
+        FROM movement WHERE ${matching(sql, accountId, f)}
+        GROUP BY direction, currency
+        ORDER BY direction DESC, currency`,
+      groups: [],
+    }
+  }
+  const key = sql.unsafe(GROUP_SQL[by])
+  const rows = await sql<(GroupTotal & { total_row: boolean })[]>`
+    SELECT direction, currency, ${key} AS key,
+      ${by === 'payment' ? sql`coalesce(min(nullif(btrim(payment), '')), '')` : sql`NULL::text`} AS label,
+      sum(amount)::text AS total, count(*)::int AS count, GROUPING(${key}) = 1 AS total_row
+    FROM movement WHERE ${matching(sql, accountId, f)}
+    GROUP BY GROUPING SETS ((direction, currency), (direction, currency, ${key}))
+    ORDER BY direction DESC, currency, GROUPING(${key}) DESC,
+      ${isTimeGroup(by) ? sql`${key}` : sql`sum(amount) DESC, ${key}`}`
   return {
-    totals: await queryTotals(sql, accountId, f),
-    groups: by === 'none' ? [] : await queryGroups(sql, accountId, f, by),
+    totals: rows
+      .filter((r) => r.total_row)
+      .map(({ direction, currency, total, count }) => ({ direction, currency, total, count })),
+    groups: rows.filter((r) => !r.total_row).map(({ total_row: _, ...group }) => group),
   }
 }

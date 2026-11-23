@@ -133,10 +133,10 @@ interface Plan<R extends { version: number }> {
 const movementAdapter: Adapter<MovementRow> = {
   async load(tx, accountId, turn) {
     const rows = await tx<(MovementRow & Raw)[]>`
-      SELECT entity_id::int AS id, id::int AS version, direction, amount::text AS amount, currency,
+      SELECT entity_id AS id, id AS version, direction, amount::text AS amount, currency,
         to_char(occurred_on, 'YYYY-MM-DD') AS date, description, category, payment, confidence,
         to_char(logged_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI') AS time,
-        logged_at AS "loggedAt", made_in::int AS "madeIn", ended_in::int AS "endedIn", ended_at IS NULL AS live
+        logged_at AS "loggedAt", made_in AS "madeIn", ended_in AS "endedIn", ended_at IS NULL AS live
       FROM movement
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM movement WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
@@ -163,8 +163,8 @@ const movementAdapter: Adapter<MovementRow> = {
 const factAdapter: Adapter<FactRow> = {
   async load(tx, accountId, turn) {
     const rows = await tx<(FactRow & Raw)[]>`
-      SELECT entity_id::int AS id, id::int AS version, kind, key, value, logged_at AS "loggedAt",
-        made_in::int AS "madeIn", ended_in::int AS "endedIn", ended_at IS NULL AS live
+      SELECT entity_id AS id, id AS version, kind, key, value, logged_at AS "loggedAt",
+        made_in AS "madeIn", ended_in AS "endedIn", ended_at IS NULL AS live
       FROM fact
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM fact WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
@@ -197,7 +197,7 @@ const factAdapter: Adapter<FactRow> = {
       ...plan.changed.map((c) => c.head.id),
     ])
     const live = await tx<{ id: number; kind: string; key: string }[]>`
-      SELECT entity_id::int AS id, kind, key FROM fact WHERE account_id = ${accountId} AND ended_at IS NULL`
+      SELECT entity_id AS id, kind, key FROM fact WHERE account_id = ${accountId} AND ended_at IS NULL`
     const reclaimed = plan.ended
       .map((e) => e.pre)
       .filter((pre) =>
@@ -229,8 +229,8 @@ const reminderAdapter: Adapter<ReminderRow> = {
         live: boolean
       }[]
     >`
-      SELECT entity_id::int AS id, id::int AS version, what, schedule, next_due_at, logged_at AS "loggedAt",
-        made_in::int AS "madeIn", ended_in::int AS "endedIn", ended_at IS NULL AS live
+      SELECT entity_id AS id, id AS version, what, schedule, next_due_at, logged_at AS "loggedAt",
+        made_in AS "madeIn", ended_in AS "endedIn", ended_at IS NULL AS live
       FROM reminder
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM reminder WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
@@ -300,7 +300,7 @@ export async function lastTurn(tx: Sql, accountId: number, now: Date): Promise<L
     EXISTS (SELECT 1 FROM ${tx(table)} v WHERE v.account_id = ${accountId} AND (
       (v.made_in = t.id AND v.ended_in IS DISTINCT FROM t.id) OR (v.ended_in = t.id AND v.made_in <> t.id)))`
   const [row] = await tx<LastTurn[]>`
-    SELECT t.id::int AS id, extract(epoch FROM ${now}::timestamptz - t.created_at)::float8 AS "ageSecs"
+    SELECT t.id AS id, extract(epoch FROM ${now}::timestamptz - t.created_at)::float8 AS "ageSecs"
     FROM turn t
     WHERE t.account_id = ${accountId} AND t.undoes IS NULL
       AND NOT EXISTS (SELECT 1 FROM turn u WHERE u.undoes = t.id)
@@ -313,7 +313,7 @@ export async function lastTurn(tx: Sql, accountId: number, now: Date): Promise<L
 async function settledTurns(tx: Sql, turns: number[]): Promise<Set<number>> {
   if (turns.length === 0) return new Set()
   const rows = await tx<{ id: number }[]>`
-    SELECT t.id::int AS id FROM turn t
+    SELECT t.id AS id FROM turn t
     WHERE t.id = ANY(${turns}::bigint[])
       AND (t.undoes IS NOT NULL OR EXISTS (SELECT 1 FROM turn u WHERE u.undoes = t.id))`
   return new Set(rows.map((r) => r.id))

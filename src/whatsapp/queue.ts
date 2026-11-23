@@ -1,4 +1,5 @@
 import type { Sql } from '../core/db'
+import { sensitive } from '../core/secrets'
 import { REDACTED_BODY } from '../redact'
 import type { Timings } from '../timings'
 
@@ -81,7 +82,7 @@ export function createQueue(sql: Sql, o: QueueOptions) {
           WHERE id IN (SELECT id FROM picked)
           RETURNING id, wamid, wa_id, kind, attempts, text, media_id, turn_id, typing_sent_at,
             COALESCE(meta_ts, received_at) AS message_at, extract(epoch FROM now() - received_at) * 1000 AS age_ms)
-        SELECT c.id::int AS id, c.wamid, c.wa_id, c.kind, c.attempts, c.text, c.media_id AS "mediaId",
+        SELECT c.id AS id, c.wamid, c.wa_id, c.kind, c.attempts, c.text, c.media_id AS "mediaId",
           c.typing_sent_at IS NOT NULL AS "typingSent", c.message_at AS "messageAt", c.age_ms AS "ageMs", t.reply
         FROM claimed c LEFT JOIN turn t ON t.id = c.turn_id`
       const row = rows[0]
@@ -93,14 +94,24 @@ export function createQueue(sql: Sql, o: QueueOptions) {
      * again. A row that died after its send started is `unknown`; a row out of attempts is `failed`.
      */
     async tidy(): Promise<void> {
-      await sql`
-        UPDATE wa_message SET status = 'unknown',
-          error = 'send outcome unknown: the worker died or timed out after the send started'
-        WHERE status = 'processing' AND ${staleClaim(sql, o.staleMs)} AND send_started_at IS NOT NULL`
-      await sql`
-        UPDATE wa_message SET status = 'failed', error = COALESCE(error, 'attempts exhausted')
-        WHERE attempts >= ${o.maxAttempts}
-          AND (status = 'pending' OR (status = 'processing' AND ${staleClaim(sql, o.staleMs)} AND send_started_at IS NULL))`
+      const settled = [
+        ...(await sql<{ id: number; text: string | null }[]>`
+          UPDATE wa_message SET status = 'unknown',
+            error = 'send outcome unknown: the worker died or timed out after the send started'
+          WHERE status = 'processing' AND ${staleClaim(sql, o.staleMs)} AND send_started_at IS NOT NULL
+          RETURNING id, text`),
+        ...(await sql<{ id: number; text: string | null }[]>`
+          UPDATE wa_message SET status = 'failed', error = COALESCE(error, 'attempts exhausted')
+          WHERE attempts >= ${o.maxAttempts}
+            AND (status = 'pending' OR (status = 'processing' AND ${staleClaim(sql, o.staleMs)} AND send_started_at IS NULL))
+          RETURNING id, text`),
+      ]
+      // A message that held a secret keeps no trace of it, however its row ended.
+      for (const r of settled) {
+        if (r.text !== null && sensitive(r.text)) {
+          await sql`UPDATE wa_message SET text = ${REDACTED_BODY} WHERE id = ${r.id}`
+        }
+      }
     },
 
     /** The senders that have a row to work on: the sweep starts one lane for each. */
@@ -215,9 +226,12 @@ export function createQueue(sql: Sql, o: QueueOptions) {
      */
     async settle(c: Claim, status: Exclude<Settled, 'done'>, error?: string): Promise<boolean> {
       const clearSend = status === 'pending' || status === 'ignored'
+      // A row that ends without a turn (ignored, failed, unknown) keeps no secret the person wrote.
+      const wipe = status !== 'pending' && c.text !== null && sensitive(c.text)
       const rows = await sql`
         UPDATE wa_message
         SET status = ${status}, error = ${error ?? null},
+            ${wipe ? sql`text = ${REDACTED_BODY},` : sql``}
             send_started_at = ${clearSend ? null : sql`send_started_at`}
         WHERE ${owned(c)} RETURNING id`
       return rows.length > 0

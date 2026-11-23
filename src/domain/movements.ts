@@ -30,7 +30,7 @@ export interface MovementRow {
 }
 
 const columns = (sql: Sql) => sql`
-  entity_id::int AS id, id::int AS version, direction, amount::text AS amount, currency,
+  entity_id AS id, id AS version, direction, amount::text AS amount, currency,
   to_char(occurred_on, 'YYYY-MM-DD') AS date, description, category, payment, confidence,
   to_char(logged_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI') AS time,
   logged_at AS "loggedAt"`
@@ -46,7 +46,7 @@ export function recentMovements(sql: Sql, accountId: number, limit = RECENT_LIMI
 /** The entity id of the account's newest live movement, or null when it has none. */
 export async function newestLiveId(sql: Sql, accountId: number): Promise<number | null> {
   const [row] = await sql<{ id: number | null }[]>`
-    SELECT entity_id::int AS id FROM movement
+    SELECT entity_id AS id FROM movement
     WHERE account_id = ${accountId} AND ended_at IS NULL ORDER BY movement.id DESC LIMIT 1`
   return row?.id ?? null
 }
@@ -195,14 +195,15 @@ const foldedPayment = `lower(translate(coalesce(payment, ''), ${ACCENTS[0]}, ${A
 
 /**
  * The account's live movements that match every filter set, newest first, `limit` of them (the caller caps it: the turn check
- * for WhatsApp's model, the page size for MCP) and, for a next page, only those whose version is below `beforeVersion`. The words
- * match the `search` column (description and category, folded); the ranking is v1's: newest first, nothing else.
+ * for WhatsApp's model, the page size for MCP) and, for a next page, only those whose entity is below `beforeEntity`. Newest is by
+ * entity (when the movement was first logged), which a correction does not change, so a movement corrected between two pages is
+ * neither skipped nor shown twice. The words match the `search` column (description and category, folded).
  */
 export function findMovements(
   sql: Sql,
   accountId: number,
   f: FindFilter,
-  o: { beforeVersion?: number } = {},
+  o: { beforeEntity?: number } = {},
 ) {
   const words = normalizeText(f.text ?? '')
     .split(/\s+/)
@@ -212,14 +213,14 @@ export function findMovements(
   return sql<MovementRow[]>`
     SELECT ${columns(sql)} FROM movement
     WHERE account_id = ${accountId} AND ended_at IS NULL
-      ${o.beforeVersion ? sql`AND id < ${o.beforeVersion}` : sql``}
+      ${o.beforeEntity ? sql`AND entity_id < ${o.beforeEntity}` : sql``}
       ${f.from ? sql`AND occurred_on >= ${f.from}::date` : sql``}
       ${f.to ? sql`AND occurred_on <= ${f.to}::date` : sql``}
       ${f.category ? sql`AND category = ${f.category}` : sql``}
       ${f.amount ? sql`AND amount = ${f.amount}::numeric` : sql``}
       ${payment ? sql`AND position(${payment}::text IN ${sql.unsafe(foldedPayment)}) > 0` : sql``}
       ${words.length > 0 ? sql`AND search LIKE ALL (${words.map(like)}::text[])` : sql``}
-    ORDER BY movement.id DESC LIMIT ${Math.max(f.limit, 1)}`
+    ORDER BY entity_id DESC LIMIT ${Math.max(f.limit, 1)}`
 }
 
 /** At most this many older movements are added to the context for a message. */

@@ -166,9 +166,9 @@ async function liveRemindersOf(sql: Sql, waId: string): Promise<LiveReminder[]> 
  */
 async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
   return sql<Row[]>`
-    SELECT m.id::int AS id, m.amount::text AS amount, to_char(m.occurred_on, 'YYYY-MM-DD') AS date,
+    SELECT m.id AS id, m.amount::text AS amount, to_char(m.occurred_on, 'YYYY-MM-DD') AS date,
       m.description, m.category, m.payment, m.direction, m.currency,
-      (SELECT n.id::int FROM movement n WHERE n.entity_id = m.entity_id AND n.id > m.id ORDER BY n.id LIMIT 1) AS "supersededBy",
+      (SELECT n.id FROM movement n WHERE n.entity_id = m.entity_id AND n.id > m.id ORDER BY n.id LIMIT 1) AS "supersededBy",
       (m.ended_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM movement n WHERE n.entity_id = m.entity_id AND n.id > m.id)) AS deleted
     FROM movement m JOIN account_address a ON a.account_id = m.account_id AND a.channel = 'whatsapp'
     WHERE a.address = ${waId} ORDER BY m.id`
@@ -184,7 +184,7 @@ async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<stri
     const tx = raw as unknown as Sql
     const [turn] = await tx<{ id: number }[]>`
       INSERT INTO turn (account_id, channel, created_at, label, reply)
-      VALUES (${accountId}, 'whatsapp', ${new Date(first - 86_400_000).toISOString()}, 'seed', 'seed') RETURNING id::int AS id`
+      VALUES (${accountId}, 'whatsapp', ${new Date(first - 86_400_000).toISOString()}, 'seed', 'seed') RETURNING id AS id`
     const madeIn = turn?.id ?? 0
     // The seeded ledger is not something the person did in this conversation: an undo has nothing of theirs to take back (as in v1,
     // where the seed was no batch). The seed turn is marked as already undone, without ending anything.
@@ -211,7 +211,7 @@ async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<stri
         INSERT INTO movement (account_id, made_in, direction, amount, currency, occurred_on, description, category, payment, confidence, logged_at)
         VALUES (${accountId}, ${madeIn}, ${m.direction}, ${m.amount}, ${m.currency}, ${m.on}, ${m.description}, ${m.category},
           ${m.payment}, 'high', ${loggedAt})
-        RETURNING id::int AS id`
+        RETURNING id AS id`
       refs.set(m.ref, row?.id ?? 0)
     }
   })
@@ -363,7 +363,7 @@ async function waitFor(sql: Sql, wamid: string, timeoutMs = 60_000): Promise<Sto
   const end = Date.now() + timeoutMs
   for (;;) {
     const [row] = await sql<Stored[]>`
-      SELECT m.id::int AS id, m.status, t.reply, t.label AS action, t.calls, m.error, m.timings, m.audit
+      SELECT m.id AS id, m.status, t.reply, t.label AS action, t.calls, m.error, m.timings, m.audit
       FROM wa_message m LEFT JOIN turn t ON t.id = m.turn_id WHERE m.wamid = ${wamid}`
     if (row && ['done', 'failed', 'unknown', 'ignored'].includes(row.status)) return row
     if (Date.now() > end) throw new Error(`timed out waiting for ${wamid}`)

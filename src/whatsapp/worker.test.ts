@@ -333,6 +333,32 @@ describe('the owner of a row', () => {
   })
 })
 
+describe('a secret in a row that ends with no turn', () => {
+  const CARD = 'mi tarjeta es 4509 9535 6623 3704'
+
+  it('is wiped when the sender is not allowed (settled ignored)', async () => {
+    const app = await setup({ allowed: ['5491155550000'] })
+    await post(app.base, messageBody('wamid.NS', '5491100000000', { text: { body: CARD } }))
+    await settle()
+    expect(await row('wamid.NS')).toMatchObject({
+      status: 'ignored',
+      text: '[dato sensible, no guardado]',
+    })
+    app.close()
+  })
+
+  it('is wiped when the sweep gives up on the row (attempts exhausted)', async () => {
+    const app = await setup()
+    await seed('wamid.NT', `attempts = 9, text = '${CARD}'`)
+    await app.worker.sweep()
+    expect(await row('wamid.NT')).toMatchObject({
+      status: 'failed',
+      text: '[dato sensible, no guardado]',
+    })
+    app.close()
+  })
+})
+
 describe('a message that cannot be answered', () => {
   it('a failing model gives exactly one failure message, no rows and no turn, and keeps what it tried', async () => {
     const app = await setup({
@@ -349,6 +375,26 @@ describe('a message that cannot be answered', () => {
     expect(r).toMatchObject({ status: 'failed', turn_id: null, text: 'café 3500' })
     expect(r?.failure_sent_at).toBeInstanceOf(Date)
     expect(r?.error).toContain('overloaded')
+    app.close()
+  })
+
+  it('the failure notice waits for the typing call, so the indicator never lands after it', async () => {
+    const hold = gate()
+    const fake = fakeGraph({ typing: () => hold.promise })
+    const app = await setup({
+      fake,
+      model: fakeModel(() => {
+        throw new Error('overloaded')
+      }),
+    })
+    await post(app.base, messageBody('wamid.BADT'))
+    // The model failed at once; the typing call is still out: nothing is sent yet.
+    await until(async () => (await row('wamid.BADT')) !== undefined && app.model.n > 0)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(app.calls.sent).toHaveLength(0)
+    hold.open()
+    await until(() => app.calls.sent.length === 1)
+    expect(bodies(app.calls)).toEqual([REPLY_FAILED])
     app.close()
   })
 

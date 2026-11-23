@@ -37,7 +37,12 @@ const fields = z.object({
     .string()
     .optional()
     .transform((s) => s?.trim().replace(/\/$/, '') || undefined)
-    .pipe(z.url().optional()),
+    .pipe(
+      z
+        .url()
+        .refine((u) => new URL(u).pathname === '/', 'GRAPH_BASE_URL is an origin: no path')
+        .optional(),
+    ),
   // Comma-separated WhatsApp ids that get a reply. `*` answers everyone (dev mode). Empty or unset
   // answers nobody: messages are still stored, as `ignored`.
   ALLOWED_WA_IDS: list,

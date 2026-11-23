@@ -21,7 +21,7 @@ const none: FindFilter = {
   amount: null,
   limit: 20,
 }
-const find = (a: number, f: Partial<FindFilter>, o: { beforeVersion?: number } = {}) =>
+const find = (a: number, f: Partial<FindFilter>, o: { beforeEntity?: number } = {}) =>
   findMovements(sql, a, { ...none, ...f }, o)
 
 async function seed() {
@@ -95,12 +95,22 @@ describe('find: the search column, with v1’s ranking (newest first)', () => {
     expect(await find(a, { text: 'ca_e' })).toHaveLength(0)
   })
 
-  it('pages by version and caps by limit', async () => {
+  it('pages by movement and caps by limit', async () => {
     const a = await seed()
     const page = await find(a, { limit: 2 })
     expect(page.map((m) => m.id)).toEqual([4, 3])
-    const next = await find(a, { limit: 2 }, { beforeVersion: page.at(-1)?.version as number })
+    const next = await find(a, { limit: 2 }, { beforeEntity: page.at(-1)?.id as number })
     expect(next.map((m) => m.id)).toEqual([2, 1])
+  })
+
+  it('a movement corrected between two pages is neither skipped nor shown twice', async () => {
+    const a = await seed()
+    const page = await find(a, { limit: 2 })
+    // Movement 2 is corrected after page one was read: its new version has a higher row id than the cursor's.
+    await turn(sql, a, [{ tool: 'correct_movement', input: { id: 2, changes: { amount: '1' } } }])
+    const next = await find(a, { limit: 2 }, { beforeEntity: page.at(-1)?.id as number })
+    expect(next.map((m) => m.id)).toEqual([2, 1])
+    expect([...page, ...next].map((m) => m.id)).toEqual([4, 3, 2, 1])
   })
 
   it('finds only live movements of the account', async () => {

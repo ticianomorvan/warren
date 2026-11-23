@@ -270,13 +270,20 @@ export function createWorker(o: WorkerOptions) {
       (error: unknown) => ({ error }),
     )
 
+    /**
+     * The failure notice, after the interim note and the typing call are out (as the reply is): a typing call that lands after it would
+     * show "typing…" under the notice, and a late interim note would follow it.
+     */
+    const failed = async (reason: string, o: Parameters<typeof sender.fail>[2]) => {
+      await closeInterim()
+      await typing
+      return ordered(sent, () => sender.fail(c, reason, o))
+    }
+
     try {
       const outcome = await Promise.race([working, aborted])
-      if (deadline.aborted) {
-        return await ordered(sent, () =>
-          sender.fail(c, 'deadline passed before the commit point', { stages, text }),
-        )
-      }
+      if (deadline.aborted)
+        return await failed('deadline passed before the commit point', { stages, text })
       if (shutdown.signal.aborted) {
         // Nothing was committed and no send started: hand the row to the next process at once.
         await queue.settle(c, 'pending', 'shutdown before the commit point')
@@ -288,13 +295,11 @@ export function createWorker(o: WorkerOptions) {
         const e = outcome.error
         // A failed message keeps what the agent tried (and a refusal's category); it writes nothing to the ledger.
         if (e instanceof AgentError) stages.turns = e.turnLog
-        return await ordered(sent, () =>
-          sender.fail(c, `parse failed: ${errorText(e)}`, {
-            ...(e instanceof AgentError ? { audit: e.audit } : {}),
-            stages,
-            text,
-          }),
-        )
+        return await failed(`parse failed: ${errorText(e)}`, {
+          ...(e instanceof AgentError ? { audit: e.audit } : {}),
+          stages,
+          text,
+        })
       }
 
       const w = outcome.value
@@ -326,9 +331,7 @@ export function createWorker(o: WorkerOptions) {
           },
         })
       } catch (err) {
-        return await ordered(sent, () =>
-          sender.fail(c, `commit failed: ${errorText(err)}`, { stages }),
-        )
+        return await failed(`commit failed: ${errorText(err)}`, { stages })
       }
       stages.commit_ms = Math.round(performance.now() - committing)
       if (committed === null) {

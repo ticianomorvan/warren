@@ -43,8 +43,11 @@ CREATE TABLE turn (
   reply       text        NOT NULL,                    -- the whole reply the person got
   -- A "which one?" the reply asked: {options: [{n, id}], then}. The person's next message answers it.
   question    jsonb       CONSTRAINT turn_question_object CHECK (question IS NULL OR jsonb_typeof(question) = 'object'),
-  undoes      bigint      REFERENCES turn (id),        -- the turn this one reverted
-  CONSTRAINT turn_undoes_other CHECK (undoes IS NULL OR undoes <> id)
+  undoes      bigint,                                  -- the turn this one reverted: an earlier turn of the same account
+  -- What references a turn by (id, account_id) stays within one account: a version made or ended in, and an undo of, another person's turn cannot exist.
+  CONSTRAINT turn_id_account UNIQUE (id, account_id),
+  CONSTRAINT turn_undoes_earlier CHECK (undoes IS NULL OR undoes < id),
+  CONSTRAINT turn_undoes_same_account FOREIGN KEY (undoes, account_id) REFERENCES turn (id, account_id)
 );
 -- A turn is undone once, whatever races.
 CREATE UNIQUE INDEX turn_undoes_once ON turn (undoes) WHERE undoes IS NOT NULL;
@@ -120,7 +123,7 @@ COMMENT ON TABLE reply IS 'One row per message Warren sent as an answer, with th
 --   ended_in / ended_at   the turn that ended this version (a correction, a delete, a forget, a cancel, an undo) and when.
 --              Live means ended_at IS NULL. Both are set together, once.
 -- A correction inserts a new version of the same entity_id in the same transaction that ends the old one.
--- made_in / ended_in reference `turn` DEFERRABLE INITIALLY DEFERRED: the commit transaction applies the writes first and inserts the turn row last
+-- made_in / ended_in reference `turn` (with the account, so a version can only belong to its own person's turns) DEFERRABLE INITIALLY DEFERRED: the commit transaction applies the writes first and inserts the turn row last
 -- (its existence is the commit point), so the reference is checked at COMMIT. A transaction that never inserts its turn cannot commit a version.
 
 CREATE SEQUENCE movement_entity_seq AS bigint;
@@ -128,8 +131,8 @@ CREATE TABLE movement (
   id           bigserial   PRIMARY KEY,
   entity_id    bigint      NOT NULL DEFAULT nextval('movement_entity_seq'),
   account_id   bigint      NOT NULL REFERENCES account (id),
-  made_in      bigint      NOT NULL REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
-  ended_in     bigint      REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
+  made_in      bigint      NOT NULL,
+  ended_in     bigint,
   ended_at     timestamptz,
   logged_at    timestamptz NOT NULL DEFAULT now(),       -- when the entity was first logged: a correction passes the original in its INSERT
   direction    text        NOT NULL CONSTRAINT movement_direction_known CHECK (direction IN ('in', 'out')),
@@ -147,7 +150,9 @@ CREATE TABLE movement (
   search       text        GENERATED ALWAYS AS (
                  lower(translate(description || ' ' || replace(category, '_', ' '), 'áéíóúüñÁÉÍÓÚÜÑ', 'aeiouunAEIOUUN'))
                ) STORED,
-  CONSTRAINT movement_ended_pair CHECK ((ended_at IS NULL) = (ended_in IS NULL))
+  CONSTRAINT movement_ended_pair CHECK ((ended_at IS NULL) = (ended_in IS NULL)),
+  CONSTRAINT movement_made_in_turn FOREIGN KEY (made_in, account_id) REFERENCES turn (id, account_id) DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT movement_ended_in_turn FOREIGN KEY (ended_in, account_id) REFERENCES turn (id, account_id) DEFERRABLE INITIALLY DEFERRED
 );
 ALTER SEQUENCE movement_entity_seq OWNED BY movement.entity_id;
 CREATE UNIQUE INDEX movement_one_live_version ON movement (entity_id) WHERE ended_at IS NULL;
@@ -163,14 +168,16 @@ CREATE TABLE fact (
   id          bigserial   PRIMARY KEY,
   entity_id   bigint      NOT NULL DEFAULT nextval('fact_entity_seq'),
   account_id  bigint      NOT NULL REFERENCES account (id),
-  made_in     bigint      NOT NULL REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
-  ended_in    bigint      REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
+  made_in     bigint      NOT NULL,
+  ended_in    bigint,
   ended_at    timestamptz,
   logged_at   timestamptz NOT NULL DEFAULT now(),
   kind        text        NOT NULL CONSTRAINT fact_kind_known CHECK (kind IN ('alias', 'category', 'note')),
   key         text        NOT NULL CONSTRAINT fact_key_length CHECK (key <> '' AND char_length(key) <= 40),     -- normalized words the fact is about
   value       text        NOT NULL CONSTRAINT fact_value_length CHECK (value <> '' AND char_length(value) <= 100),
-  CONSTRAINT fact_ended_pair CHECK ((ended_at IS NULL) = (ended_in IS NULL))
+  CONSTRAINT fact_ended_pair CHECK ((ended_at IS NULL) = (ended_in IS NULL)),
+  CONSTRAINT fact_made_in_turn FOREIGN KEY (made_in, account_id) REFERENCES turn (id, account_id) DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fact_ended_in_turn FOREIGN KEY (ended_in, account_id) REFERENCES turn (id, account_id) DEFERRABLE INITIALLY DEFERRED
 );
 ALTER SEQUENCE fact_entity_seq OWNED BY fact.entity_id;
 CREATE UNIQUE INDEX fact_one_live_version ON fact (entity_id) WHERE ended_at IS NULL;
@@ -186,8 +193,8 @@ CREATE TABLE reminder (
   id           bigserial   PRIMARY KEY,
   entity_id    bigint      NOT NULL DEFAULT nextval('reminder_entity_seq'),
   account_id   bigint      NOT NULL REFERENCES account (id),
-  made_in      bigint      NOT NULL REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
-  ended_in     bigint      REFERENCES turn (id) DEFERRABLE INITIALLY DEFERRED,
+  made_in      bigint      NOT NULL,
+  ended_in     bigint,
   ended_at     timestamptz,
   logged_at    timestamptz NOT NULL DEFAULT now(),
   what         text        NOT NULL CONSTRAINT reminder_what_valid
@@ -197,7 +204,9 @@ CREATE TABLE reminder (
   -- "Live" is the schema's word: `ended_at IS NULL`. A finished one-off is live with `next_due_at IS NULL` (it was sent; the undo reads it
   -- as `sent`). A reminder that is still to fire is "scheduled": live with a `next_due_at` (`SCHEDULED` in src/domain/reminders/db.ts).
   next_due_at  timestamptz,
-  CONSTRAINT reminder_ended_pair CHECK ((ended_at IS NULL) = (ended_in IS NULL))
+  CONSTRAINT reminder_ended_pair CHECK ((ended_at IS NULL) = (ended_in IS NULL)),
+  CONSTRAINT reminder_made_in_turn FOREIGN KEY (made_in, account_id) REFERENCES turn (id, account_id) DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT reminder_ended_in_turn FOREIGN KEY (ended_in, account_id) REFERENCES turn (id, account_id) DEFERRABLE INITIALLY DEFERRED
 );
 ALTER SEQUENCE reminder_entity_seq OWNED BY reminder.entity_id;
 CREATE UNIQUE INDEX reminder_one_live_version ON reminder (entity_id) WHERE ended_at IS NULL;
@@ -233,7 +242,8 @@ COMMENT ON TABLE reminder_send IS 'One row per occurrence of a reminder that was
 -- Append-only guard. Attached to every table of the person's data; the arguments are the columns that may change in place.
 --   * no DELETE;
 --   * an UPDATE may touch only the listed columns;
---   * `ended_in`/`ended_at` change once: from NULL, together (the table's *_ended_pair CHECK keeps them together).
+--   * `ended_in`/`ended_at` change once: from NULL, together (the table's *_ended_pair CHECK keeps them together);
+--   * `next_due_at` changes only while the version is live.
 -- Runs on PGlite and on Postgres alike (both ship plpgsql). The triggers are AFTER ROW: a BEFORE trigger sees the stored generated
 -- column (`movement.search`) not yet computed in NEW, so it would always look changed. Raising in an AFTER trigger aborts the statement all the same.
 
@@ -257,6 +267,13 @@ BEGIN
      AND old_row -> 'ended_at' <> 'null'::jsonb
      AND (new_row -> 'ended_at' <> old_row -> 'ended_at' OR new_row -> 'ended_in' <> old_row -> 'ended_in') THEN
     RAISE EXCEPTION '% is append-only: a version that ended does not change its ending', TG_TABLE_NAME
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+  -- The scheduler's own state is for a reminder that can still fire: an ended version's next occurrence does not change.
+  IF 'next_due_at' = ANY (allowed)
+     AND old_row -> 'ended_at' <> 'null'::jsonb
+     AND new_row -> 'next_due_at' IS DISTINCT FROM old_row -> 'next_due_at' THEN
+    RAISE EXCEPTION '% is append-only: an ended version does not change its next occurrence', TG_TABLE_NAME
       USING ERRCODE = 'integrity_constraint_violation';
   END IF;
   RETURN NULL;

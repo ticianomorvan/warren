@@ -52,7 +52,7 @@ const present = <T>(x: T | null): x is T => x !== null
 export const SCHEDULED = (sql: Sql) => sql`ended_at IS NULL AND next_due_at IS NOT NULL`
 
 const columns = (sql: Sql) =>
-  sql`entity_id::int AS id, id::int AS version, what, schedule, next_due_at, logged_at AS "loggedAt"`
+  sql`entity_id AS id, id AS version, what, schedule, next_due_at, logged_at AS "loggedAt"`
 
 /** The account's live reminders, the next to come first: what the model is shown and "¿qué recordatorios tengo?" lists. */
 export async function liveReminders(sql: Sql, accountId: number): Promise<ReminderRow[]> {

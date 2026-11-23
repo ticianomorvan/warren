@@ -128,7 +128,7 @@ export function commit<S>(
     if (stopped) return stopped
     // The turn's id is taken after the lock, so ids of one account run in commit order.
     const [reserved] = await tx<{ id: number }[]>`
-      SELECT nextval(pg_get_serial_sequence('turn', 'id'))::int AS id`
+      SELECT nextval(pg_get_serial_sequence('turn', 'id')) AS id`
     const turnId = (reserved as { id: number }).id
     const today = argentinaToday(i.now)
     const clock = i.clock ? new Date(Math.max(i.now.getTime(), i.clock().getTime())) : i.now

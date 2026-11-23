@@ -147,7 +147,42 @@ describe('turn', () => {
       await broke(
         sql`INSERT INTO turn (id, account_id, channel, label, reply, undoes) VALUES (987654, ${accountId}, 'whatsapp', 'undo', 'x', 987654)`,
       ),
-    ).toBe('turn_undoes_other')
+    ).toBe('turn_undoes_earlier')
+  })
+
+  it('refuses an undo of another account’s turn, and an undo of a later turn', async () => {
+    const mine = await seed()
+    const theirs = await seed()
+    const theirTurn = await theirs.turn()
+    expect(
+      await broke(
+        sql`INSERT INTO turn (account_id, channel, label, reply, undoes) VALUES (${mine.accountId}, 'whatsapp', 'undo', 'x', ${theirTurn})`,
+      ),
+    ).toBe('turn_undoes_same_account')
+    const first = await mine.turn()
+    expect(
+      await broke(
+        sql`INSERT INTO turn (id, account_id, channel, label, reply, undoes) VALUES (${first - 1}, ${mine.accountId}, 'whatsapp', 'undo', 'x', ${first})`,
+      ),
+    ).toBe('turn_undoes_earlier')
+  })
+
+  it('refuses a version made or ended in another account’s turn', async () => {
+    const mine = await seed()
+    const theirs = await seed()
+    const theirTurn = await theirs.turn()
+    expect(
+      await broke(
+        sql`INSERT INTO movement (account_id, made_in, direction, amount, currency, occurred_on, description, category, confidence)
+          VALUES (${mine.accountId}, ${theirTurn}, 'out', 1, 'ARS', '2026-11-20', 'x', 'otros', 'high')`,
+      ),
+    ).toBe('movement_made_in_turn')
+    const own = await newMovement(mine.accountId, await mine.turn())
+    expect(
+      await broke(
+        sql`UPDATE movement SET ended_in = ${theirTurn}, ended_at = now() WHERE id = ${own.id}`,
+      ),
+    ).toBe('movement_ended_in_turn')
   })
 
   it('refuses a second undo of the same turn', async () => {
@@ -331,6 +366,10 @@ describe('the append-only guard', () => {
       { ended: boolean; due: Date | null }[]
     >`SELECT ended_at IS NOT NULL AS ended, next_due_at AS due FROM reminder WHERE id = ${r}`
     expect(row).toEqual({ ended: true, due: null })
+    // The scheduler's state is for a version that can still fire: an ended one keeps its next occurrence as it was.
+    expect(await broke(sql`UPDATE reminder SET next_due_at = now() WHERE id = ${r}`)).toMatch(
+      /does not change its next occurrence/,
+    )
 
     const [f] = await sql<{ id: number }[]>`
       INSERT INTO fact (account_id, made_in, kind, key, value) VALUES (${s.accountId}, ${t1}, 'note', 'cobro2', 'el 5') RETURNING id::int AS id`

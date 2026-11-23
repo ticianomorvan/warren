@@ -16,7 +16,7 @@ const seconds = (n: number | undefined) => (n === undefined ? null : new Date(n 
 export async function accountFor(sql: Sql, waId: string): Promise<number> {
   const find = async () => {
     const [row] = await sql<{ id: number }[]>`
-      SELECT account_id::int AS id FROM account_address WHERE channel = 'whatsapp' AND address = ${waId}`
+      SELECT account_id AS id FROM account_address WHERE channel = 'whatsapp' AND address = ${waId}`
     return row?.id
   }
   const found = await find()
@@ -25,7 +25,7 @@ export async function accountFor(sql: Sql, waId: string): Promise<number> {
     const tx = raw as unknown as Sql
     const [account] = await tx<
       { id: number }[]
-    >`INSERT INTO account DEFAULT VALUES RETURNING id::int AS id`
+    >`INSERT INTO account DEFAULT VALUES RETURNING id AS id`
     const created = account as { id: number }
     const rows = await tx`
       INSERT INTO account_address (account_id, channel, address) VALUES (${created.id}, 'whatsapp', ${waId})
@@ -92,7 +92,7 @@ async function reminderStatus(
   return sql.begin(async (raw) => {
     const tx = raw as unknown as Sql
     const [row] = await tx<{ id: number; kind: string; status: string }[]>`
-      SELECT id::int AS id, kind, status FROM reminder_send WHERE wamid = ${s.wamid} FOR UPDATE`
+      SELECT id AS id, kind, status FROM reminder_send WHERE wamid = ${s.wamid} FOR UPDATE`
     if (!row) return false
     if (s.status !== 'failed' || row.status !== 'sent') return true
     const status = row.kind === 'text' && s.code === OUTSIDE_WINDOW ? 'retry_template' : 'failed'

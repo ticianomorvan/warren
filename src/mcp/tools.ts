@@ -77,12 +77,12 @@ const unavailable = (tool: string, error: unknown) => {
   return fail('unavailable', 'Warren could not read your data right now. Try again in a moment.')
 }
 
-// ---- The cursor of a page: the version the next page starts below, opaque to the client.
+// ---- The cursor of a page: the movement (entity id) the next page starts below, opaque to the client.
 
-export const encodeCursor = (beforeVersion: number): string =>
-  Buffer.from(`m${beforeVersion}`).toString('base64url')
+export const encodeCursor = (beforeEntity: number): string =>
+  Buffer.from(`m${beforeEntity}`).toString('base64url')
 
-/** The version inside a cursor we made, or null for anything else. */
+/** The entity id inside a cursor we made, or null for anything else. */
 export function decodeCursor(cursor: string): number | null {
   if (cursor.length > 32 || !/^[A-Za-z0-9_-]+$/.test(cursor)) return null
   const text = Buffer.from(cursor, 'base64url').toString('utf8')
@@ -206,25 +206,25 @@ async function find(c: ToolContext, input: Record<string, unknown>) {
   if (checked.kind !== 'read') {
     return fail('invalid', checked.kind === 'rejected' ? checked.message : 'invalid input')
   }
-  let beforeVersion: number | undefined
+  let beforeEntity: number | undefined
   if (cursor !== undefined) {
     const decoded = decodeCursor(cursor)
     if (decoded === null)
       return fail('invalid', 'Invalid cursor. Use the `next_cursor` of a previous result.')
-    beforeVersion = decoded
+    beforeEntity = decoded
   }
   // One more than a page, to know whether there is a next one.
   const rows = await findMovements(
     c.sql,
     c.accountId,
     { ...checked.filter, limit: limit + 1 },
-    beforeVersion ? { beforeVersion } : {},
+    beforeEntity ? { beforeEntity } : {},
   )
   const page = rows.slice(0, limit)
   const last = page.at(-1)
   const output: Out<'find_movements'> = {
     movements: page.map(movementView),
-    next_cursor: rows.length > limit && last ? encodeCursor(last.version) : null,
+    next_cursor: rows.length > limit && last ? encodeCursor(last.id) : null,
   }
   return done(output)
 }

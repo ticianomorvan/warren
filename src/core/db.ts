@@ -4,11 +4,26 @@ import { log } from '../log'
 
 export type Sql = postgres.Sql
 
+/**
+ * Ids are `bigint` in the schema and plain numbers in code: the driver reads a bigint as a number, and refuses one that a number
+ * cannot hold exactly. So no query casts an id down to `int`, which would fail at 2^31.
+ */
+const bigint: postgres.PostgresType<number> = {
+  to: 20,
+  from: [20],
+  serialize: (n) => String(n),
+  parse: (text) => {
+    const n = Number(text)
+    if (!Number.isSafeInteger(n)) throw new Error(`a bigint of ${text} does not fit a number`)
+    return n
+  },
+}
+
 export function connect(
   url: string,
   options: postgres.Options<Record<string, postgres.PostgresType>> = {},
 ): Sql {
-  return postgres(url, { onnotice: () => {}, ...options })
+  return postgres(url, { onnotice: () => {}, types: { bigint }, ...options })
 }
 
 /** The schema (`001_init.sql`, `002_auth.sql`). */

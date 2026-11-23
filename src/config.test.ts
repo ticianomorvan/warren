@@ -29,3 +29,18 @@ describe('REMINDER_TEMPLATE', () => {
     )
   })
 })
+
+describe('GRAPH_BASE_URL', () => {
+  it('is an origin, or unset (Meta)', () => {
+    expect(loadConfig(env).GRAPH_BASE_URL).toBeUndefined()
+    expect(
+      loadConfig({ ...env, GRAPH_BASE_URL: 'http://graph-sink.internal:8080/' }).GRAPH_BASE_URL,
+    ).toBe('http://graph-sink.internal:8080')
+  })
+
+  it('refuses a path: calls go to the origin only, so a path would be silently dropped', () => {
+    expect(() => loadConfig({ ...env, GRAPH_BASE_URL: 'http://graph-sink.internal/v1' })).toThrow(
+      'GRAPH_BASE_URL',
+    )
+  })
+})
