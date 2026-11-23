@@ -558,13 +558,27 @@ describe('undo of a reminder', () => {
     expect(await liveReminderList(sql)).toHaveLength(MAX_REMINDERS)
   })
 
-  it('a stored reminder whose schedule no longer parses does not break an undo of the turn it sits in', async () => {
+  it('a stored reminder whose schedule no longer parses blocks the undo of its turn, by name, and the turn stays the last', async () => {
     const a = await newAccount(sql)
     const t = await turn(sql, a, [log(cafe())])
     await sql`INSERT INTO reminder (account_id, made_in, what, schedule, next_due_at)
       VALUES (${a}, ${t.turn}, 'mala', '{"start":"nope"}'::jsonb, now())`
     const u = await undoAt(a, minutes(5))
-    expect(kinds(u)).toEqual(['logged'])
+    expect(u).toMatchObject({
+      status: 'blocked',
+      why: ['unreadable'],
+      blocking: { reminders: [{ what: 'mala' }] },
+    })
+    // Nothing was touched: the café is still live.
+    expect(await liveMovements(sql)).toHaveLength(1)
+  })
+
+  it('a turn with only such a reminder is blocked too, not "nothing to undo"', async () => {
+    const a = await newAccount(sql)
+    const t = await turn(sql, a, [remember('x', 'y')])
+    await sql`INSERT INTO reminder (account_id, made_in, what, schedule, next_due_at)
+      VALUES (${a}, ${t.turn}, 'mala', '{"start":"nope"}'::jsonb, now())`
+    expect(await undoAt(a, minutes(5))).toMatchObject({ status: 'blocked', why: ['unreadable'] })
   })
 
   it('a reminder never moves the ledger when undone', async () => {

@@ -197,7 +197,9 @@ function blockedLine(blocking: Affected, why: string[], today: string): string {
     ? 'ya se mandó'
     : why.includes('past')
       ? 'ya pasó su fecha'
-      : 'no entra: ya tenés el máximo'
+      : why.includes('unreadable')
+        ? 'tiene una fecha que no puedo leer'
+        : 'no entra: ya tenés el máximo'
   return `No deshice nada: ${what.join(' · ')} ${reason} y no se puede deshacer, así que tampoco lo anterior. Si querés cambiar algo más viejo, decime qué, por ejemplo "corregí el café".`
 }
 

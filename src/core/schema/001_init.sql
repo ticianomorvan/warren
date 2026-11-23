@@ -194,6 +194,8 @@ CREATE TABLE reminder (
                CHECK (what <> '' AND char_length(what) <= 100 AND what !~ '[[:cntrl:]]'),
   schedule     jsonb       NOT NULL CONSTRAINT reminder_schedule_object CHECK (jsonb_typeof(schedule) = 'object'),  -- the typed schedule (src/domain/reminders/schedule.ts)
   -- Declared mutable scheduler state, the one column besides the ended pair that changes in place: the next occurrence, null once finished.
+  -- "Live" is the schema's word: `ended_at IS NULL`. A finished one-off is live with `next_due_at IS NULL` (it was sent; the undo reads it
+  -- as `sent`). A reminder that is still to fire is "scheduled": live with a `next_due_at` (`SCHEDULED` in src/domain/reminders/db.ts).
   next_due_at  timestamptz,
   CONSTRAINT reminder_ended_pair CHECK ((ended_at IS NULL) = (ended_in IS NULL))
 );

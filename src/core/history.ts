@@ -54,13 +54,14 @@ export type Undone =
   | { kind: 'reminder_restored'; reminder: ReminderRow }
 
 /** Why a change can never be undone, so nothing older can be reached either. */
-export type BlockedBy = 'sent' | 'past' | 'cap'
+export type BlockedBy = 'sent' | 'past' | 'cap' | 'unreadable'
 
 /** The entities of a turn that an undo found stale or blocked, by store, as the turn left them. */
 export interface Affected {
   movements: MovementRow[]
   facts: FactRow[]
-  reminders: ReminderRow[]
+  /** By what they say: a reminder whose stored schedule cannot be read has no more than that. */
+  reminders: Pick<ReminderRow, 'id' | 'what'>[]
 }
 const nothing = (): Affected => ({ movements: [], facts: [], reminders: [] })
 const count = (c: Affected) => c.movements.length + c.facts.length + c.reminders.length
@@ -99,9 +100,15 @@ interface Entity<R extends { version: number }> {
   later: Version<R>[]
 }
 
+/** What an adapter read of a turn: the versions, and the ones it could not read (a reminder whose schedule no longer parses). */
+interface Loaded<R> {
+  versions: Version<R>[]
+  unreadable: { id: number; what: string }[]
+}
+
 interface Adapter<R extends { id: number; version: number; loggedAt: Date }> {
   /** Every version of every entity the turn touched, locked, oldest first. */
-  load(tx: Sql, accountId: number, turn: number): Promise<Version<R>[]>
+  load(tx: Sql, accountId: number, turn: number): Promise<Loaded<R>>
   end(tx: Sql, version: number, turn: number): Promise<boolean>
   /** The next version of an entity, with the values of `from`. */
   restore(tx: Sql, o: { accountId: number; turn: number; from: R; now: Date }): Promise<R>
@@ -134,7 +141,10 @@ const movementAdapter: Adapter<MovementRow> = {
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM movement WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
       ORDER BY movement.id FOR UPDATE`
-    return rows.map(({ madeIn, endedIn, live, ...row }) => ({ row, madeIn, endedIn, live }))
+    return {
+      versions: rows.map(({ madeIn, endedIn, live, ...row }) => ({ row, madeIn, endedIn, live })),
+      unreadable: [],
+    }
   },
   end: (tx, version, turn) => endVersion(tx, version, turn),
   async restore(tx, { accountId, turn, from, now }) {
@@ -159,7 +169,10 @@ const factAdapter: Adapter<FactRow> = {
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM fact WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
       ORDER BY fact.id FOR UPDATE`
-    return rows.map(({ madeIn, endedIn, live, ...row }) => ({ row, madeIn, endedIn, live }))
+    return {
+      versions: rows.map(({ madeIn, endedIn, live, ...row }) => ({ row, madeIn, endedIn, live })),
+      unreadable: [],
+    }
   },
   end: (tx, version, turn) => endFact(tx, version, turn),
   restore: (tx, { accountId, turn, from, now }) =>
@@ -222,13 +235,15 @@ const reminderAdapter: Adapter<ReminderRow> = {
       WHERE account_id = ${accountId} AND entity_id IN (
         SELECT entity_id FROM reminder WHERE account_id = ${accountId} AND (made_in = ${turn} OR ended_in = ${turn}))
       ORDER BY reminder.id FOR UPDATE`
-    const out: Version<ReminderRow>[] = []
+    const versions: Version<ReminderRow>[] = []
+    const unreadable: Loaded<ReminderRow>['unreadable'] = []
     for (const r of rows) {
-      // A row whose schedule no longer parses is left out: it cannot be shown or restored, and must not break the others.
+      // A row whose schedule no longer parses cannot be shown or restored: the undo says so and touches nothing.
       const row = toReminder(r)
-      if (row) out.push({ row, madeIn: r.madeIn, endedIn: r.endedIn, live: r.live })
+      if (row) versions.push({ row, madeIn: r.madeIn, endedIn: r.endedIn, live: r.live })
+      else unreadable.push({ id: r.id, what: r.what })
     }
-    return out
+    return { versions, unreadable }
   },
   end: (tx, version, turn) => endReminder(tx, version, turn),
   restore: (tx, { accountId, turn, from, now }) =>
@@ -353,10 +368,24 @@ export async function undoLast(
   if (!last) return { status: 'nothing' }
   if (last.ageSecs > UNDO_WINDOW_HOURS * 3600) return { status: 'expired' }
 
-  const loaded = {
+  const read = {
     movement: await movementAdapter.load(tx, o.accountId, last.id),
     fact: await factAdapter.load(tx, o.accountId, last.id),
     reminder: await reminderAdapter.load(tx, o.accountId, last.id),
+  }
+  // A reminder of the turn that cannot be read cannot be taken back, and the stack is strict: the turn is blocked, by name.
+  if (read.reminder.unreadable.length > 0 && o.stores.includes('reminder')) {
+    return {
+      status: 'blocked',
+      turn: last.id,
+      blocking: { ...nothing(), reminders: read.reminder.unreadable },
+      why: ['unreadable'],
+    }
+  }
+  const loaded = {
+    movement: read.movement.versions,
+    fact: read.fact.versions,
+    reminder: read.reminder.versions,
   }
   const settled = await settledTurns(tx, [
     ...new Set(Object.values(loaded).flatMap((vs) => vs.map((v) => v.madeIn))),
@@ -369,7 +398,7 @@ export async function undoLast(
     store: Store,
     versions: Version<R>[],
     plan: Plan<R>,
-    movedInto: R[],
+    movedInto: Pick<R, 'id'>[],
   ) => {
     for (const e of entitiesOf(versions, last.id)) {
       touched.add(store)

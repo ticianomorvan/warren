@@ -45,8 +45,11 @@ export function toRow(r: RawRow): ReminderRow | null {
 
 const present = <T>(x: T | null): x is T => x !== null
 
-/** Not ended: the only reminders that count. A finished one-off (`next_due_at` null) is not live either. */
-const LIVE = (sql: Sql) => sql`ended_at IS NULL AND next_due_at IS NOT NULL`
+/**
+ * Scheduled: live (not ended) and still to fire. The only reminders that count, list or can be cancelled. A finished one-off is
+ * live too (`ended_at IS NULL`, as the schema says) but has `next_due_at` NULL, so it is not scheduled: the one place that says so.
+ */
+export const SCHEDULED = (sql: Sql) => sql`ended_at IS NULL AND next_due_at IS NOT NULL`
 
 const columns = (sql: Sql) =>
   sql`entity_id::int AS id, id::int AS version, what, schedule, next_due_at, logged_at AS "loggedAt"`
@@ -55,7 +58,7 @@ const columns = (sql: Sql) =>
 export async function liveReminders(sql: Sql, accountId: number): Promise<ReminderRow[]> {
   const rows = await sql<RawRow[]>`
     SELECT ${columns(sql)} FROM reminder
-    WHERE account_id = ${accountId} AND ${LIVE(sql)}
+    WHERE account_id = ${accountId} AND ${SCHEDULED(sql)}
     ORDER BY next_due_at, reminder.id`
   return rows.map(toRow).filter(present)
 }
@@ -68,7 +71,7 @@ export async function lockLiveReminder(
 ): Promise<ReminderRow | null> {
   const [row] = await sql<RawRow[]>`
     SELECT ${columns(sql)} FROM reminder
-    WHERE entity_id = ${entityId} AND account_id = ${accountId} AND ${LIVE(sql)}
+    WHERE entity_id = ${entityId} AND account_id = ${accountId} AND ${SCHEDULED(sql)}
     FOR UPDATE`
   return row ? toRow(row) : null
 }
