@@ -253,6 +253,19 @@ export interface Read {
   open: OpenQuestion | null
 }
 
+/** What depends on the words of the message: the facts it names and the older movements it mentions. A voice note reads it again once it is heard. */
+export async function readForText(
+  sql: Sql,
+  accountId: number,
+  text: string,
+): Promise<Pick<Read, 'mentioned' | 'memory'>> {
+  const [mentioned, memory] = await Promise.all([
+    mentionedMovements(sql, accountId, text),
+    liveFacts(sql, accountId, text),
+  ])
+  return { mentioned, memory }
+}
+
 /**
  * The account's state as the model needs it for a message sent at `at`: the newest movements, the facts the message names, the
  * live reminders, and the conversation. The conversation is the account's `turn`s across channels (a WhatsApp turn has the person's
@@ -265,10 +278,9 @@ export async function readState(
   text: string,
 ): Promise<Read> {
   const since = new Date(at.getTime() - CONVERSATION_WINDOW_MS)
-  const [movements, mentioned, memory, reminders, turns, sent, [last]] = await Promise.all([
+  const [movements, { mentioned, memory }, reminders, turns, sent, [last]] = await Promise.all([
     recentMovements(sql, accountId, RECENT_LIMIT),
-    mentionedMovements(sql, accountId, text),
-    liveFacts(sql, accountId, text),
+    readForText(sql, accountId, text),
     liveReminders(sql, accountId),
     sql<
       {

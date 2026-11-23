@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { isAllowed } from '../access'
-import { readState } from '../agent/context'
+import { readForText, readState } from '../agent/context'
 import { AgentError, type AuditEntry } from '../agent/loop'
 import { estimateCostUsd, type ModelKey } from '../agent/models'
 import { compose, type HelpOptions, render } from '../agent/reply'
@@ -10,7 +10,6 @@ import { type Call, labelOf } from '../core/commands'
 import type { Sql } from '../core/db'
 import { sensitive } from '../core/secrets'
 import { commit, type Done, type Question } from '../core/turn'
-import { liveFacts } from '../domain/facts'
 import { log } from '../log'
 import { REDACTED_BODY, scrubAudit } from '../redact'
 import { argentinaToday } from '../time'
@@ -229,8 +228,8 @@ export function createWorker(o: WorkerOptions) {
       if (voice) {
         text = voice.heard
         heard = voice.heard
-        // The facts the message names are known only now that it is heard.
-        read = { ...read, memory: await liveFacts(sql, accountId, text) }
+        // The facts the message names and the older movements it mentions are known only now that it is heard.
+        read = { ...read, ...(await readForText(sql, accountId, text)) }
       }
       // A bare answer to the question we just asked, "vincular <code>", a bare "deshacer": code's job, no model call (resolve.ts).
       const answer = codeAnswer(text, {

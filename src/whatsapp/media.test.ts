@@ -227,6 +227,28 @@ describe('a voice note', () => {
     app.close()
   })
 
+  it('finds the older movement it names, as a typed message does (pre-search runs on what was heard)', async () => {
+    // 12 newer movements push the alquiler out of the 10 newest.
+    await seedMovements([
+      { on: '2025-09-01', amount: '650000', description: 'alquiler' },
+      ...Array.from({ length: 12 }, (_, k) => ({
+        on: `2025-10-0${(k % 9) + 1}`,
+        amount: String(1000 + k),
+        description: `gasto${k}`,
+      })),
+    ])
+    const app = await setup({
+      fake: fakeGraph({ media: { a1: NOTE } }),
+      transcriber: fakeTranscriber(heard('borrá el alquiler')).transcriber,
+      model: script({ name: 'help', input: {} }),
+    })
+    await voice(app, 'wamid.A9')
+    const context = String(app.requests[0]?.messages[0]?.content)
+    expect(context).toContain('alquiler')
+    expect(context).toContain('Movimientos más antiguos que esa lista')
+    app.close()
+  })
+
   it('answers with what was heard when nothing changed, rendered by code', async () => {
     const app = await setup({
       fake: fakeGraph({ media: { a1: NOTE } }),
