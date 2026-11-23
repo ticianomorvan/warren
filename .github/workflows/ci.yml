@@ -1,7 +1,7 @@
 name: CI
 on:
   push:
-    branches: [main, rebuild] # rebuild: until its pull request opens (R9), so each push is checked
+    branches: [main]
   pull_request:
 
 permissions:
