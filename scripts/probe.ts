@@ -149,11 +149,17 @@ async function staging() {
   const q = <T extends Row>(strings: TemplateStringsArray, ...args: unknown[]) =>
     ro<T[]>(strings, ...(args as never[]))
 
-  const WA = '5491100000001'
+  // The first synthetic number on staging's allowlist that has never written: every run starts from an empty account.
+  // Staging's allowlist holds only such numbers, and its Graph is the sink, so none of them is ever messaged.
+  const pool = (app.ALLOWED_WA_IDS ?? '').split(',').filter(Boolean)
   assert(
-    (app.ALLOWED_WA_IDS ?? '').split(',').every((n) => n.startsWith('54911000000')),
-    'staging allowlist holds a non-synthetic number',
+    pool.length > 0 && pool.every((n) => /^54911000\d{6}$/.test(n)),
+    'staging allowlist is not synthetic numbers',
   )
+  const usedRows = await ro<{ wa_id: string }[]>`SELECT DISTINCT wa_id FROM wa_message`
+  const used = new Set(usedRows.map((r) => r.wa_id))
+  const WA = pool.find((n) => !used.has(n)) ?? ''
+  assert(WA, 'every synthetic number on the allowlist has been used: extend ALLOWED_WA_IDS')
 
   // --- the sink
   let cursor = 0
@@ -293,19 +299,21 @@ async function staging() {
     }>`SELECT count(*)::text AS n FROM turn WHERE undoes IS NOT NULL`
     assert(Number(u?.n) >= 1, 'no undo turn recorded')
   })
-  await step('question then answer: an ambiguous correction asks, "1" answers', async () => {
-    await text('café 2800 ayer')
-    const r = await text('corregí el café, fue 3000')
-    const [t] = await q<{
-      question: unknown
-    }>`SELECT question FROM turn WHERE question IS NOT NULL ORDER BY id DESC LIMIT 1`
+  await step('question then answer: "forget everything" asks, "sí" answers', async () => {
+    await text('acordate que "el chino" es un supermercado')
+    const liveFacts = () =>
+      q<{
+        n: string
+      }>`SELECT count(*)::text AS n FROM fact f JOIN account_address ad ON ad.account_id = f.account_id AND ad.address = ${WA} WHERE f.ended_at IS NULL`
+    assert(Number((await liveFacts())[0]?.n) >= 1, 'the fact was not stored')
+    const r = await text('olvidate de todo lo que sabés de mí')
+    const [t] = await q<{ question: unknown }>`
+      SELECT t.question FROM turn t JOIN account_address ad ON ad.account_id = t.account_id AND ad.address = ${WA}
+      WHERE t.question IS NOT NULL ORDER BY t.id DESC LIMIT 1`
     assert(t?.question, `no question was asked; replies: ${JSON.stringify(r.texts)}`)
-    const a = await text('1')
-    const amounts = (await live()).map((x) => Number(x.amount)).sort()
-    assert(
-      amounts.includes(3000),
-      `after the answer the live amounts are ${JSON.stringify(amounts)} (${a.texts.length} reply)`,
-    )
+    assert(Number((await liveFacts())[0]?.n) >= 1, 'the facts were forgotten before the answer')
+    await text('sí')
+    assert(Number((await liveFacts())[0]?.n) === 0, 'the answer did not forget the facts')
   })
   await step(
     'voice fixture: the note is fetched from the sink, transcribed and logged',
@@ -467,7 +475,7 @@ async function staging() {
     )
     const [n] = await q<{
       n: string
-    }>`SELECT count(*)::text AS n FROM movement WHERE description = 'probe mcp'`
+    }>`SELECT count(*)::text AS n FROM movement m JOIN account_address ad ON ad.account_id = m.account_id AND ad.address = ${WA} WHERE m.description = 'probe mcp'`
     assert(n?.n === '1', `the replay wrote again: ${n?.n}`)
     await text('deshacer')
     assert(
