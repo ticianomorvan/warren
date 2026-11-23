@@ -216,3 +216,41 @@ export function findMovements(
       ${words.length > 0 ? sql`AND search LIKE ALL (${words.map(like)}::text[])` : sql``}
     ORDER BY movement.id DESC LIMIT ${Math.max(f.limit, 1)}`
 }
+
+/** At most this many older movements are added to the context for a message. */
+export const MENTIONED_LIMIT = 8
+
+/**
+ * The older live movements a message names: those beyond the `RECENT_LIMIT` newest (the model already sees those) that have a word of
+ * 4 or more letters of the message at the start of a word of their `search` column (description and category, folded), or an
+ * amount the message writes. Newest first, `limit` of them, as `findMovements` ranks. It only retrieves: the model still picks the id.
+ */
+export function mentionedMovements(
+  sql: Sql,
+  accountId: number,
+  message: string,
+  limit = MENTIONED_LIMIT,
+) {
+  const folded = normalizeText(message)
+  const words = [
+    ...new Set(folded.split(/[^a-z0-9]+/).filter((w) => /[a-z]/.test(w) && w.length >= 4)),
+  ]
+  const amounts = [
+    ...new Set(
+      (folded.match(/\d[\d.,]*/g) ?? []).map((n) =>
+        /^\d{1,3}(\.\d{3})+$/.test(n) ? n.replaceAll('.', '') : n.replace(',', '.'),
+      ),
+    ),
+  ].filter((n) => /^\d+(\.\d{1,2})?$/.test(n) && Number(n) > 0)
+  if (words.length === 0 && amounts.length === 0) return Promise.resolve([] as MovementRow[])
+  const like = (w: string) => `% ${w.replace(/[\\%_]/g, '\\$&')}%`
+  return sql<MovementRow[]>`
+    SELECT ${columns(sql)} FROM movement
+    WHERE account_id = ${accountId} AND ended_at IS NULL
+      AND entity_id NOT IN (
+        SELECT entity_id FROM movement WHERE account_id = ${accountId} AND ended_at IS NULL
+        ORDER BY id DESC LIMIT ${RECENT_LIMIT})
+      AND (${words.length > 0 ? sql`(' ' || search) LIKE ANY (${words.map(like)}::text[])` : sql`false`}
+        OR ${amounts.length > 0 ? sql`amount = ANY (${amounts}::numeric[])` : sql`false`})
+    ORDER BY movement.id DESC LIMIT ${limit}`
+}

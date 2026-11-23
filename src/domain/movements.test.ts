@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { cafe, liveMovements, log, newAccount, remove, turn } from '../../test/core'
 import { sql, useDatabase } from '../../test/db'
 import { schemaDir } from '../core/db'
-import { type FindFilter, findMovements, newestLiveId, recentMovements } from './movements'
+import {
+  type FindFilter,
+  findMovements,
+  mentionedMovements,
+  newestLiveId,
+  recentMovements,
+} from './movements'
 
 useDatabase({ migrations: schemaDir })
 
@@ -118,5 +124,59 @@ describe('the newest', () => {
     await turn(sql, a, [remove(1)])
     expect(await newestLiveId(sql, a)).toBe(4)
     expect(await newestLiveId(sql, await newAccount(sql))).toBeNull()
+  })
+})
+
+describe('mentionedMovements', () => {
+  /** Two older rows, then 10 newer ones: only the older two can be mentioned. */
+  async function longLedger() {
+    const a = await newAccount(sql)
+    await turn(sql, a, [
+      log(
+        cafe({ description: 'veterinario', amount: '18000', category: 'mascotas' }),
+        cafe({ description: 'nafta YPF', amount: '21000', category: 'combustible' }),
+        ...Array.from({ length: 10 }, (_, k) =>
+          cafe({ description: `kiosco ${k}`, amount: `${100 + k}`, category: 'restaurantes' }),
+        ),
+      ),
+    ])
+    return a
+  }
+
+  it('finds an older movement by a word of its description, accents and case ignored, and by its amount', async () => {
+    const a = await longLedger()
+    expect(
+      (await mentionedMovements(sql, a, 'borrá el Veterinário')).map((m) => m.description),
+    ).toEqual(['veterinario'])
+    expect(
+      (await mentionedMovements(sql, a, 'borrá el veterinario')).map((m) => m.description),
+    ).toEqual(['veterinario'])
+    expect(
+      (await mentionedMovements(sql, a, 'corregí lo de 21.000')).map((m) => m.description),
+    ).toEqual(['nafta YPF'])
+  })
+
+  it("never returns what the newest 10 already show, another account's rows, or a word of under 4 letters", async () => {
+    const a = await longLedger()
+    const b = await longLedger()
+    expect(await mentionedMovements(sql, a, 'kiosco 3')).toEqual([])
+    expect(await mentionedMovements(sql, a, 'el de la')).toEqual([])
+    expect((await mentionedMovements(sql, b, 'nafta')).length).toBe(1)
+  })
+
+  it('returns at most the limit, newest first', async () => {
+    const a = await newAccount(sql)
+    await turn(sql, a, [
+      log(
+        ...Array.from({ length: 14 }, (_, k) =>
+          cafe({ description: `cena ${k}`, amount: `${200 + k}` }),
+        ),
+        ...Array.from({ length: 10 }, (_, k) =>
+          cafe({ description: `otro ${k}`, amount: `${50 + k}` }),
+        ),
+      ),
+    ])
+    const found = await mentionedMovements(sql, a, 'borrá la cena', 3)
+    expect(found.map((m) => m.description)).toEqual(['cena 13', 'cena 12', 'cena 11'])
   })
 })
