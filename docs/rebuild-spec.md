@@ -462,6 +462,54 @@ Spend: **US$1.356 of the US$1.40** (`results/spend.jsonl`, every run below). Pre
 - **`scripts/cutover.ts`**: the six steps, each logged to the terminal and a file, and `rollback` (DATABASE_URL back to `${{Postgres.DATABASE_URL}}`, then the tag `v1-final` deployed from a temporary worktree). `--dry-run` reads a dump of production (a read; `--dump <file>` skips it), restores it into a throwaway Docker Postgres that also holds the new database, runs 1 to 4 there, prints step 5's commands, and runs the read-only production probe. A real run needs `--new-url` (the new empty Postgres) and `--old-stopped`. **For R9:** put the old service to sleep before running it (writes between the dump and the import are lost), create the new Postgres first, and run the rollback only if step 6 fails.
 - **Open:** the `pnpm probe staging` question step depends on the model choosing `forget_all_facts` for "olvidate de todo lo que sabés de mí"; an "ambiguous correction" scenario was tried first and the model picked the newest row instead of asking (twice), so it is not used. Probe model spend is estimated, not metered: about US$0.03 over 8 runs.
 
+### As built (R9 fixes, part 1: core, domain, agent, WhatsApp)
+
+From `docs/rebuild/` review findings at 7aa5a6e, built in the order bugs, design, docs, D6, D7. Each bug has a test that fails without its fix (checked by stashing the fix). Commit shas are the ones on `rebuild`.
+
+**Proof, final head `e0b7073`** (code identical to `1b88200`; the later two commits are the D7 experiment and its revert).
+- `pnpm check`: 984 passed, 15 skipped (PGlite). Real `postgres:17` (Docker, stopped after): 999 passed, 0 skipped; the whole concurrency, core-race and reminder-sender files 5 times with `RACE_RUNS=5`: 5 of 5. CI green on both jobs at the pushed heads (one red run, `ee6b890`, was the intermediate D5 commit that the next commit fixed).
+- Scenario eval, 3 runs, `--split all`, 365 scenarios (the 359 plus 6 new dev ones):
+
+  | | run 1 | run 2 | run 3 | median |
+  |---|---|---|---|---|
+  | fully right (of 365) | 364 | 363 | 364 | 364 |
+  | of the 214 originals | 213 | 213 | 214 | 213 |
+  | silent wrong / invented / unnecessary | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 | |
+  | per-turn p50 / p95 (ms; v1 p50 1,192) | 1,168 / 1,789 | 1,228 / 1,836 | 1,206 / 1,849 | 1,206 / 1,836 |
+  | second model turn | 1.4% | 2.1% | 3.1% | 2.1% |
+  | cost (US$) | 0.1737 | 0.1748 | 0.1761 | |
+
+  Failures: `s153` (run 1), `s131` and `s290` (run 2), `s341` (run 3): all dev, none in 2 of 3 runs. Every failure is a visible dev scenario, so the held-out split passed in all three. The bar (median 213 of 214 >= 211, 0 silent and 0 invented in every run, no scenario failing twice, p50 +14 ms against v1) is met. `results/latest.md` is regenerated from these three runs.
+- Long-ledger set, 3 runs: fully right 21, 21, 21 of 22; second model turns 6, 4, 5 of 22 (R7: 5, 6, 4); 0 silent. Pre-search keeps its R7 numbers.
+- **Spend:** US$1.30 recorded in `results/spend.jsonl` for this slice (the D6 control and fix runs, the D7 run, the final 3 + 3), of the US$2.00 brief; the rebuild has used about US$5.50 of the US$7 cap.
+
+**Bugs**
+- B1 fixed `54f19df`: `checkValues` puts the resolved `Schedule` into the `set_reminder` call; `commit` takes a `clock` read at the commit point and `applyCall` re-checks the approved schedule against it (`past` if it has gone by). `ApplyContext` has `at` (the message's time: `logged_at`, the undo window) and `now` (the scheduling clock). An undo's restore of a reminder still counts from `at`.
+- B2 fixed `54f19df`: reads (`summarize`, `list_facts`, `list_reminders`, `ask_user` options) are rendered inside the commit transaction after the writes, through `compose(tx, done, record, turnId)`.
+- B3 fixed `9a3d932`, differently from the finding: the rule of what holds a sender back is the queue's alone (`createQueue({blocking})`: only a kind that goes through the agent, an audio only when something transcribes it), so a sticker or a reaction never holds the next message and the early `release()` is safe. The lane-waits-and-claims-again fix would have retried a rate-limited send at once, which two existing tests pin as not happening. Test: a slow sticker reply, then a log, answered with no sweep. The SIGTERM overlap case (a row the old instance hands back) still waits for the next sweep, at most 30 s.
+- B4 fixed `85b2e3d`: `readForText` runs facts and pre-search on what was heard.
+- B5 fixed `c359672`: pre-search reads amounts with `core/numbers` tokens (`3500.`, `1.500,50`).
+- B6 fixed `040930d`: `Shown.movements` maps entity id to the version shown; `checkTurn` (code) attaches `version` to `correct_movement` and `delete_movement`, a question's options carry `v`, and `lockLive` returns null (`gone`) unless the live version is that one or one this turn made. MCP stays entity-only.
+- B7 fixed `b0bc06c`: the open question skips `notice` turns; the live question is found by its turn id. The prompt now says one thing, v1's: a bare number with no open question is `help`, "borrá el 2" is a position.
+- B8 fixed `f6c9b59`: an unreadable reminder blocks the undo, by name (`BlockedBy` `unreadable`); "scheduled" (live with a `next_due_at`) is one SQL fragment (`SCHEDULED`) and named in the schema comment. The old test that undid the log around such a reminder is replaced: the strict stack blocks the turn.
+
+**Smaller bugs**
+- Fact key as substring, `LONG_DIGITS` joining amounts, leading zeros, year 0: fixed `13a424b`. The key matches whole words with a plural allowed ("cafe" is in "los cafés"). A card is 13+ digits plain or in groups of 4 to 6; four 4-digit amounts with spaces (`1500 2000 3000 4000`) still read as a card.
+- `summaryRows` in one statement (grouping sets), paging by entity id (`beforeEntity`, the MCP cursor is the entity id), the failure notice after the interim note and typing, secrets wiped from rows that end with no turn (`tidy`, `settle`), `GRAPH_BASE_URL` with a path refused, schema constraints (`UNIQUE (id, account_id)` on `turn` and composite FKs for `made_in`, `ended_in`, `undoes`; `undoes < id`; no `next_due_at` change on an ended reminder; ids as bigint read as numbers by the driver, so no `::int` cast is left), the untrusted-text labels in the context: fixed `f1ce54b`. The live-question index: in B7.
+
+**Design**
+- D1 fixed `54f19df`: `claim`, `guard` (may `{stop}`), `compose(tx, ...)`, `requireChange` (`{unchanged}`); `lockAccount` is private; `answerSignIn` is in `auth/answer.ts` (with the sign-in texts); MCP's write builds its result once. `after` gets the `done` of the turn.
+- D2 fixed `8c0c595`: `stale`, the fact reclaim, both caps, `settledTurns` and `BlockedBy` `cap` are deleted; `asLeft` throws. No real path reached them; a marker turn that hides a turn now proves the assertion.
+- D3 fixed `9dfd858`, except one item where the finding was wrong: `checkTurn`'s secret and number rules for a reminder are not a copy: `checkReminder` never received the message, so it was its dead `message` parameter that went. `definition()` and `TOOLS` are in `agent/tools.ts`. `stores` and `restricted` are gone (MCP undoes every store).
+- D4 fixed `9beacf8`: `checkReply` moved to `core/reply-check.ts` and is one of `checkTurn`'s guards (skipped on the last turn); its verdict rides on the `reply` call to `compose`; `Shown` carries the evidence.
+- D5 fixed `ee6b890`, `2b419e2`: `worker.acknowledge` sends the first signal from the webhook for each new message of an allowed sender and stamps after the call; after the stamps the lanes look again (the stamp's UPDATE locks the row for a moment and the claim skips locked rows: without this a message could wait for the sweep, which real Postgres showed). Burst test, 20 runs x 20 receipts: **receipt to stamped p50 0 ms, p95 6 ms, max 7 ms** (R7: 0, 6, 8). `signalWaiting` and `kick`'s second pass are gone.
+- D6 fixed `a3f05a2`, `1b88200`. (a) Tool contracts live in the registry descriptions with `RECENT_LIMIT` and `MAX_FOUND` interpolated; the `find_movements`, `reply` and `help` bullets are out of the prompt; "goes alone" is said once, by `agent/tools.ts` for every `alone` tool; "no, eso no" once per situation. Tokens of the frozen prefix (count-tokens, free): **26,498 before, 26,443 after** (a small cut, since most of it moved). (b) Four dev scenarios (`s382` to `s385`) and two controls (`s386` a bare thanks, `s387` an exchange rate after a greeting); the old prompt failed `s383`, the new one passed 14 of 14 three times. (c) `compare`'s field description leads with `previous` and says never the whole period before as a range; `s153` passed 3 of 3 in the first check and failed once in 3 full runs (run 1 of the final set), so it is still a flake, not a 2-of-3 failure. A model flake the full runs found, `s202` sending 20:00 for "a las 8" (a silent wrong reminder), is fixed in the field description of `time` (6 of 6 clean after).
+- D7 not adopted, `78460c4` and `e0b7073`: one full run with `tool_choice: any`, 356 of 365, 3 silent wrong changes and 5 unnecessary questions (D6 head: 363 to 365, 0, 0); about 80 ms faster per turn. It breaks the adoption rule, so no second and third run was spent. `results/` keeps the run.
+
+**Docs** fixed `9ec7dda`: `AGENTS.md` rewritten for this layout and these rules; the v1-era specs are in `docs/history/` (`git mv`); the `server.ts` comment is replaced. README status and eval commands too.
+
+**For the next builder (part 2).** MCP cleanups beyond D1 (`tools.ts` is one 500-line file), `AGENTS.md` does not yet describe the MCP tool list in detail, the SIGTERM hand-back wait (above), and `checkReminder`'s callers. `docs/rebuild/` review findings outside core, domain, agent and WhatsApp are part 2's.
+
 ## Decisions (Ticiano, 2026-11-22)
 
 1. Rebuild from scratch on main, autonomously, with no manual testing in the middle.
