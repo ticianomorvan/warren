@@ -450,7 +450,9 @@ describe('undo of a reminder', () => {
     await turn(sql, a, [cancel(1)], { at: minutes(5) })
     // The message is inside the window, but its worker only got to it on 15 December.
     const late = new Date('2026-12-15T12:00:00Z')
-    expect(kinds(await undoAt(a, minutes(10), { clock: () => late }))).toEqual(['reminder_restored'])
+    expect(kinds(await undoAt(a, minutes(10), { clock: () => late }))).toEqual([
+      'reminder_restored',
+    ])
     const live = await allReminders(sql)
     expect(live.at(-1)?.due).toEqual(new Date('2027-01-10T12:00:00Z'))
   })
