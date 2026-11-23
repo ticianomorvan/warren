@@ -440,7 +440,7 @@ async function rollbackToV1() {
     if (dry)
       return `dry run: would set DATABASE_URL on ${env} to \${{Postgres.DATABASE_URL}} (the old database is kept untouched)`
     if (stagingPg) {
-      await withAdmin(`DROP DATABASE IF EXISTS "${rehearsalDb}"`)
+      await withAdmin(`DROP DATABASE IF EXISTS "${rehearsalDb}" WITH (FORCE)`)
       await withAdmin(`CREATE DATABASE "${rehearsalDb}"`)
     }
     railway(
@@ -482,7 +482,7 @@ async function rollbackToV1() {
         railway(['up', '-s', 'warren', '-e', 'staging', '--ci'])
         const id = newest('warren', 'staging').id
         probe(id, 'staging', webhook)
-        await withAdmin(`DROP DATABASE IF EXISTS "${rehearsalDb}"`)
+        await withAdmin(`DROP DATABASE IF EXISTS "${rehearsalDb}" WITH (FORCE)`)
         return `deployment ${id.slice(0, 8)} answers`
       },
     )
