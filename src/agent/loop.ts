@@ -214,7 +214,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     if (left <= 0) throw new AgentError(`turn ${turn}: out of time`, audit, turn - 1, turnLog)
     const calledAt = performance.now()
     const response = await i.client.messages.create(
-      { ...requestBase(i.model), tool_choice: { type: 'any' as const }, max_tokens: 2048, messages },
+      { ...requestBase(i.model), max_tokens: 2048, messages },
       {
         timeout: Math.min(CALL_TIMEOUT_MS, left),
         maxRetries: 1,
