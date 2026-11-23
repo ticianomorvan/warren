@@ -5,7 +5,7 @@ import { sql, useDatabase } from '../../test/db'
 import { message, toolUse } from '../../test/fakes'
 import { schemaDir } from '../core/db'
 import { commit } from '../core/turn'
-import { readState } from './context'
+import { contextInput, readState, renderContext } from './context'
 import { understand } from './understand'
 
 useDatabase({ migrations: schemaDir })
@@ -81,6 +81,32 @@ describe('understand, then commit', () => {
     expect(read.open?.question.options).toHaveLength(2)
     const later = await readState(sql, a, minutes(20), '2')
     expect(later.open).toBeNull()
+  })
+
+  it('a notice (a voice note that could not be used) leaves the open question open, and the question is still the live one', async () => {
+    const a = await newAccount(sql)
+    await turn(sql, a, [
+      log(cafe({ description: 'café' }), cafe({ description: 'súper', amount: '12000' })),
+    ])
+    const [first, second] = await sql<{ id: number }[]>`
+      SELECT entity_id::int AS id FROM movement WHERE account_id = ${a} ORDER BY id`
+    const ids = [first?.id, second?.id] as number[]
+    const { client } = model([['ask_user', { movement_ids: ids, then: { do: 'delete' } }]])
+    const { committed } = await say(a, 'borrá lo del taxi', client, minutes(1))
+    // A noisy voice note, answered with a notice: a turn with no calls and no question.
+    await commit(sql, {
+      accountId: a,
+      channel: 'whatsapp',
+      now: minutes(2),
+      calls: [],
+      label: 'notice',
+      compose: () => ({ reply: 'No te entendí el audio, ¿me lo escribís?' }),
+    })
+    const read = await readState(sql, a, minutes(3), '2')
+    expect(read.open?.turn).toBe(committed.turn)
+    const ctx = renderContext(contextInput(read, { text: '2', at: minutes(3) }))
+    expect(ctx.text).toContain('Pregunta pendiente: 1 = id')
+    expect(ctx.text).not.toContain('pregunta vencida')
   })
 
   it('answers a summary with totals the database computed', async () => {

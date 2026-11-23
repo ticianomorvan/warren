@@ -30,6 +30,8 @@ export interface Context {
 }
 
 export interface ConversationTurn {
+  /** The turn's id, when it is a turn (a reminder Warren sent has none): the open question is found by it. */
+  turn?: number
   /** Who wrote the earlier turn: the person, an MCP client's agent, or a reminder Warren sent. */
   source: 'person' | 'mcp' | 'reminder'
   /** What the person wrote; empty for an MCP turn and a reminder. */
@@ -69,6 +71,8 @@ export interface ContextInput {
   pending: {
     asked: { number: number; id: number; version?: number }[]
     kind: PendingKind
+    /** The turn that asked it: the one conversation entry whose numbers still answer it. */
+    turn?: number
   } | null
 }
 
@@ -102,7 +106,7 @@ const reminderFact = (r: ReminderRow, today: string) =>
   reminderLine(r, today).replace(/^id=\d+ /, '')
 
 const EXPIRED =
-  '(pregunta vencida: ya no se contesta con un número; un número ahora es una posición de "Últimos movimientos")'
+  '(pregunta vencida: ya no se contesta con un número; un número solo no es nada: help. "borrá el 2" sí es la posición 2 de "Últimos movimientos")'
 
 const PENDING_TEXT = {
   correct: 'la persona pidió corregir',
@@ -130,9 +134,13 @@ export function renderContext(i: ContextInput): Context {
     i.movements.length === 0
       ? '(ninguno)'
       : i.movements.map((m, k) => `${k + 1}. ${movementLine(m)}`).join('\n')
-  // Only the previous message's question can still be answered with a number (and only when `pending` says so); an older one's
-  // numbers would otherwise steer "borrá el 2" to its option 2.
-  const live = i.pending ? i.conversation.length - 1 : -1
+  // Only the open question can still be answered with a number (and only when `pending` says so); an older one's numbers would
+  // otherwise steer "borrá el 2" to its option 2. It is found by its turn: it need not be the last entry (a notice may follow it).
+  const live = i.pending
+    ? i.pending.turn === undefined
+      ? i.conversation.length - 1
+      : i.conversation.findIndex((t) => t.turn === i.pending?.turn)
+    : -1
   const conversation = i.conversation.map((t, k) => {
     const expired = t.asked && k !== live ? `\n${EXPIRED}` : ''
     const who =
@@ -245,7 +253,10 @@ export const CONVERSATION_TURNS = 6
 /** How long a question can still be answered with a number. */
 export const ANSWER_WINDOW_MS = 10 * 60_000
 
-/** The question Warren's newest turn asked, with what it will do, when it is recent enough to be answered. */
+/**
+ * The question Warren's newest turn asked, with what it will do, when it is recent enough to be answered. A notice (a photo or voice
+ * note that could not be used) is no answer to it and leaves it open, so the newest turn that is not a notice is the one that counts.
+ */
 export interface OpenQuestion {
   question: Question
   turn: number
@@ -312,7 +323,7 @@ export async function readState(
       ORDER BY s.started_at DESC LIMIT ${CONVERSATION_TURNS}`,
     sql<{ id: number; at: Date; question: Question | null }[]>`
       SELECT id::int AS id, created_at AS at, question FROM turn
-      WHERE account_id = ${accountId} AND created_at <= ${at} ORDER BY id DESC LIMIT 1`,
+      WHERE account_id = ${accountId} AND created_at <= ${at} AND label <> 'notice' ORDER BY id DESC LIMIT 1`,
   ])
   const minutes = (when: Date) => Math.max(0, Math.floor((at.getTime() - when.getTime()) / 60_000))
   const label = (kind: string | null, said: string | null) =>
@@ -323,6 +334,7 @@ export async function readState(
         : (said ?? '')
   const conversation: (ConversationTurn & { at: number })[] = [
     ...turns.map((t) => ({
+      turn: t.id,
       source: t.channel === 'mcp' ? ('mcp' as const) : ('person' as const),
       text: t.channel === 'mcp' ? '' : label(t.kind, t.text),
       reply: t.reply,
@@ -393,6 +405,7 @@ export function contextInput(
               ...(o.v === undefined ? {} : { version: o.v }),
             })),
             kind,
+            ...(read.open ? { turn: read.open.turn } : {}),
           }
         : null,
   }
