@@ -292,9 +292,10 @@ const emptyPlan = <R extends { version: number }>(): Plan<R> => ({
  */
 export async function undoLast(
   tx: Sql,
-  o: { accountId: number; turn: number; now: Date },
+  o: { accountId: number; turn: number; at: Date; now: Date },
 ): Promise<UndoResult> {
-  const last = await lastTurn(tx, o.accountId, o.now)
+  // The window counts from the message (`at`); what a reminder comes back to counts from the commit clock (`now`), as setting one does.
+  const last = await lastTurn(tx, o.accountId, o.at)
   if (!last) return { status: 'nothing' }
   if (last.ageSecs > UNDO_WINDOW_HOURS * 3600) return { status: 'expired' }
 

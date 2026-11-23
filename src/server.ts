@@ -20,7 +20,7 @@ const graph = createGraph({
   baseUrl: config.GRAPH_BASE_URL,
 })
 const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, fetch: keepAliveFetch() })
-const { server, sweep, stop } = createWarren({
+const { server, sweepMessages, sweepReminders, stop } = createWarren({
   sql,
   config,
   graph,
@@ -45,16 +45,17 @@ warmUp(client, 'haiku').then(
   (err) => log('agent_warm_failed', { error: String(err) }, 'error'),
 )
 
-// Startup sweep, then every 30 s. Two processes (a deploy's overlap) are safe: the claim takes a sender's oldest due row only when no older
-// one is held, so the new instance never overtakes the old one's.
-const tick = sweep
-void tick()
-const timer = setInterval(tick, 30_000)
+// Startup sweep, then the messages every 5 s and the reminders every 30 s. A message the old instance of a deploy handed back at SIGTERM
+// waits at most one message tick; the three queries of a message sweep read only the open rows' partial index. Two processes (a deploy's
+// overlap) are safe: the claim takes a sender's oldest due row only when no older one is held, so the new instance never overtakes the old one's.
+void sweepMessages()
+void sweepReminders()
+const timers = [setInterval(sweepMessages, 5_000), setInterval(sweepReminders, 30_000)]
 
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     log('shutdown', { signal })
-    clearInterval(timer)
+    for (const t of timers) clearInterval(t)
     server.close()
     // Messages still parsing go back to `pending` for the next process; replies already being sent
     // finish, so a deploy does not leave rows `unknown`.

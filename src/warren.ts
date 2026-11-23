@@ -54,7 +54,11 @@ export interface Warren {
   server: Server
   /** Another worker over the same pieces, for tests that swap the model mid-run (an old instance beside a new one). */
   makeWorker: (client?: Anthropic) => Worker
-  /** One pass of everything that runs on a timer: the messages left pending and the reminders that are due. */
+  /** One pass over the messages left pending (a row the old instance handed back at SIGTERM): `server.ts` runs it every few seconds. */
+  sweepMessages: () => Promise<void>
+  /** One pass over the reminders that are due: `server.ts` runs it every 30 s. */
+  sweepReminders: () => Promise<void>
+  /** Both, for tests and the eval. */
   sweep: () => Promise<void>
   /** Stops taking work and lets what is in flight finish (a deploy, or the end of a test). */
   stop: (graceMs?: number) => Promise<void>
@@ -136,20 +140,27 @@ export function createWarren(deps: WarrenDeps): Warren {
     ...(auth ? { auth } : {}),
     ...(mcp ? { mcp } : {}),
   })
+  const sweepMessages = () =>
+    worker.sweep().then(
+      () => {},
+      (err) => log('sweep_error', { error: String(err) }, 'error'),
+    )
+  const sweepReminders = () =>
+    reminders.sweep().then(
+      () => {},
+      (err) => log('reminder_sweep_error', { error: String(err) }, 'error'),
+    )
   return {
     ingest,
     worker,
     reminders,
     server,
     makeWorker,
+    sweepMessages,
+    sweepReminders,
+    // Independent: a failing reminder sweep never holds back the messages, nor the other way round.
     sweep: async () => {
-      // Independent: a failing reminder sweep never holds back the messages, nor the other way round.
-      await Promise.all([
-        worker.sweep().catch((err) => log('sweep_error', { error: String(err) }, 'error')),
-        reminders
-          .sweep()
-          .catch((err) => log('reminder_sweep_error', { error: String(err) }, 'error')),
-      ])
+      await Promise.all([sweepMessages(), sweepReminders()])
     },
     stop: async (graceMs = 10_000) => {
       await Promise.all([worker.stop(graceMs), reminders.stop(graceMs)])

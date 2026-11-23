@@ -444,6 +444,17 @@ describe('undo of a reminder', () => {
     expect(live.at(-1)?.due).toEqual(new Date('2026-12-10T12:00:00Z'))
   })
 
+  it("restores a reminder with its next date counted from the commit clock, not the message's time (as setting one is)", async () => {
+    const a = await newAccount(sql)
+    await turn(sql, a, [remind('pagar la Visa', { month_day: 10 }, { every: 'month' })])
+    await turn(sql, a, [cancel(1)], { at: minutes(5) })
+    // The message is inside the window, but its worker only got to it on 15 December.
+    const late = new Date('2026-12-15T12:00:00Z')
+    expect(kinds(await undoAt(a, minutes(10), { clock: () => late }))).toEqual(['reminder_restored'])
+    const live = await allReminders(sql)
+    expect(live.at(-1)?.due).toEqual(new Date('2027-01-10T12:00:00Z'))
+  })
+
   it('a set that a later cancel removed and "deshacer" restored can still be undone as the set', async () => {
     const a = await newAccount(sql)
     await turn(sql, a, [remind('pagar la Visa')])

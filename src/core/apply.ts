@@ -130,7 +130,8 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       const undone = await undoLast(tx, {
         accountId,
         turn: turnId,
-        now: ctx.at,
+        at: ctx.at,
+        now: ctx.now,
       })
       return { tool: call.tool, effect: undone.status === 'applied' ? 'undone' : null, ...undone }
     }
