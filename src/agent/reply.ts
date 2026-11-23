@@ -257,7 +257,10 @@ export async function render(
         const options = await liveByIds(sql, accountId, a.movement_ids)
         const question: Question | undefined =
           !asked && options.length > 0
-            ? { options: options.map((m, k) => ({ n: k + 1, id: m.id })), then: a.then }
+            ? {
+                options: options.map((m, k) => ({ n: k + 1, id: m.id, v: m.version })),
+                then: a.then,
+              }
             : undefined
         asked ||= question !== undefined
         out.set(call, {

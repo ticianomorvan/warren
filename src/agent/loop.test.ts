@@ -21,7 +21,7 @@ const row = (id: number): MovementRow => ({
   loggedAt: NOW,
 })
 const shown = (...ids: number[]): Shown => ({
-  movements: new Set(ids),
+  movements: new Map(ids.map((id): [number, number] => [id, id * 10])),
   facts: new Set(),
   reminders: new Set(),
 })
@@ -204,9 +204,9 @@ describe('runAgent', () => {
     const next = calls(['delete_movement', { id: 7 }])
     const { client, seen } = fake(guess, next)
     const r = await run(client, { shown: start, env: { find: async () => [row(7)] } })
-    expect(r.calls).toEqual([{ tool: 'delete_movement', input: { id: 7 } }])
+    expect(r.calls).toEqual([{ tool: 'delete_movement', input: { id: 7 }, version: 7 }])
     expect(r.found.map((m) => m.id)).toEqual([7])
-    expect([...start.movements]).toEqual([1])
+    expect([...start.movements.keys()]).toEqual([1])
     const results = JSON.stringify(seen[1]?.params.messages.at(-1))
     expect(results).toContain('1 found')
     expect(results).toContain('was not shown to you')

@@ -66,7 +66,10 @@ export interface ContextInput {
   /** The person's live reminders, the next to come first. */
   reminders?: ReminderRow[]
   /** The question Warren just asked, if the person has not answered it. */
-  pending: { asked: { number: number; id: number }[]; kind: PendingKind } | null
+  pending: {
+    asked: { number: number; id: number; version?: number }[]
+    kind: PendingKind
+  } | null
 }
 
 const oneLine = (value: string) => value.replace(/\s+/g, ' ').trim()
@@ -193,10 +196,11 @@ export function renderContext(i: ContextInput): Context {
   ].join('\n\n')
 
   const shown: Shown = {
-    movements: new Set([
-      ...i.movements.map((m) => m.id),
-      ...mentioned.map((m) => m.id),
-      ...(i.pending?.asked.map((a) => a.id) ?? []),
+    movements: new Map<number, number | undefined>([
+      // A question's options first: the lists show the live version of the same movement, which wins.
+      ...(i.pending?.asked.map((a): [number, number | undefined] => [a.id, a.version]) ?? []),
+      ...mentioned.map((m): [number, number | undefined] => [m.id, m.version]),
+      ...i.movements.map((m): [number, number | undefined] => [m.id, m.version]),
     ]),
     facts: new Set(memory.map((f) => f.id)),
     reminders: new Set(reminders.map((r) => r.id)),
@@ -224,7 +228,10 @@ export function withFound(ctx: Context, found: readonly MovementRow[]): Context 
     ...ctx,
     shown: {
       ...ctx.shown,
-      movements: new Set([...ctx.shown.movements, ...found.map((m) => m.id)]),
+      movements: new Map([
+        ...ctx.shown.movements,
+        ...found.map((m): [number, number] => [m.id, m.version]),
+      ]),
     },
     evidence: [...ctx.evidence, ...found.map(movementFact)],
   }
@@ -377,6 +384,16 @@ export function contextInput(
     conversation: read.conversation,
     ...(m.photo ? { photo: true } : {}),
     ...(m.voice ? { voice: true } : {}),
-    pending: q && kind ? { asked: q.options.map((o) => ({ number: o.n, id: o.id })), kind } : null,
+    pending:
+      q && kind
+        ? {
+            asked: q.options.map((o) => ({
+              number: o.n,
+              id: o.id,
+              ...(o.v === undefined ? {} : { version: o.v }),
+            })),
+            kind,
+          }
+        : null,
   }
 }

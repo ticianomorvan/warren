@@ -24,6 +24,7 @@ import { sql, useDatabase } from '../../test/db'
 import { MAX_FACTS } from '../domain/facts'
 import { MAX_REMINDERS } from '../domain/reminders/guard'
 import type { Outcome } from './apply'
+import type { Call } from './commands'
 import { schemaDir } from './db'
 import { checkValues } from './guards'
 
@@ -125,6 +126,55 @@ describe('correct_movement', () => {
     const t = await turn(sql, a, [correct(1, { amount: '3600' }), correct(1, { amount: '3700' })])
     expect(t.done.map((d) => d.outcome?.status)).toEqual(['applied', 'applied'])
     expect(await liveMovements(sql)).toEqual([{ entity: 1, amount: '3700', description: 'café' }])
+  })
+})
+
+describe('a movement the person was shown, changed meanwhile', () => {
+  /** What WhatsApp showed: entity 1 as it was in version `shown`. Then another channel corrects it. */
+  async function shownThenChanged() {
+    const a = await newAccount(sql)
+    await turn(sql, a, [log(cafe())])
+    const [v1] = await allMovements(sql)
+    await turn(sql, a, [correct(1, { description: 'nafta', amount: '20000' })], {
+      at: minutes(1),
+      channel: 'mcp',
+    })
+    return { a, shown: v1?.id as number }
+  }
+
+  it('is not deleted in its new form: the call names the version that was shown', async () => {
+    const { a, shown } = await shownThenChanged()
+    const o = await one(a, { ...remove(1), version: shown } as Call, minutes(2))
+    expect(o).toMatchObject({ tool: 'delete_movement', status: 'gone', id: 1 })
+    expect(await liveMovements(sql)).toEqual([{ entity: 1, amount: '20000', description: 'nafta' }])
+  })
+
+  it('is not corrected in its new form either', async () => {
+    const { a, shown } = await shownThenChanged()
+    const o = await one(a, { ...correct(1, { amount: '1' }), version: shown } as Call, minutes(2))
+    expect(o).toMatchObject({ tool: 'correct_movement', status: 'gone' })
+  })
+
+  it('a call with no version (an MCP client sees the live state) acts on the live one', async () => {
+    const { a } = await shownThenChanged()
+    expect(await one(a, remove(1), minutes(2))).toMatchObject({ status: 'applied' })
+  })
+
+  it('a version this very turn made is acted on: a correction then a delete of the same movement', async () => {
+    const a = await newAccount(sql)
+    await turn(sql, a, [log(cafe())])
+    const [v1] = await allMovements(sql)
+    const t = await turn(
+      sql,
+      a,
+      [
+        { ...correct(1, { amount: '4000' }), version: v1?.id },
+        { ...remove(1), version: v1?.id },
+      ] as Call[],
+      { at: minutes(1) },
+    )
+    expect(t.done.map((d) => d.outcome?.status)).toEqual(['applied', 'applied'])
+    expect(await liveMovements(sql)).toEqual([])
   })
 })
 

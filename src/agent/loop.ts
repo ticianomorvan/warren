@@ -202,7 +202,7 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: first }]
   const found = new Map<number, MovementRow>()
   // The caller's set stays untouched: this loop adds what a search finds to its own copy.
-  const shown: Shown = { ...i.shown, movements: new Set(i.shown.movements) }
+  const shown: Shown = { ...i.shown, movements: new Map(i.shown.movements) }
   const audit: AuditEntry[] = []
   const turnLog: TurnTiming[] = []
   const started = performance.now()
@@ -334,7 +334,8 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     }
 
     // Ids found in this turn may be acted on only from the next one: one that appears in a search of this very turn was guessed.
-    for (const row of found.values()) shown.movements = new Set([...shown.movements, row.id])
+    for (const row of found.values())
+      shown.movements = new Map(shown.movements).set(row.id, row.version)
 
     const refused = checked.some((c) => c.verdict.kind === 'rejected')
     const searched = checked.some((c) => c.verdict.kind === 'read')

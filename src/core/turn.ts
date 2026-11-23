@@ -23,7 +23,8 @@ export type Channel = 'whatsapp' | 'mcp' | 'cli'
 
 /** A "which one?" the reply asked: the options by number, and what an option does once picked. */
 export interface Question {
-  options: { n: number; id: number }[]
+  /** `v` is the version of the movement the question showed: an answer applies to that one, or to nothing. */
+  options: { n: number; id: number; v?: number }[]
   then: Then | { do: 'forget_all' } | { do: 'link'; link_id: number }
 }
 

@@ -83,16 +83,20 @@ export async function insertMovements(
 
 /**
  * A row lock on the account's live movement of this entity. Null when it is not: another turn corrected or deleted it, and a
- * second change must not apply to it. (A write transaction holds the account lock already; the row lock is the second layer.)
+ * second change must not apply to it. With `shown` (the version the person was shown, and the turn that asks), the live version must
+ * be that one or one this same turn made: a movement corrected meanwhile (over MCP, say) is not acted on in its new form. (A write
+ * transaction holds the account lock already; the row lock is the second layer.)
  */
 export async function lockLive(
   sql: Sql,
   accountId: number,
   entityId: number,
+  shown?: { version: number; turnId: number },
 ): Promise<MovementRow | null> {
   const [row] = await sql<MovementRow[]>`
     SELECT ${columns(sql)} FROM movement
     WHERE entity_id = ${entityId} AND account_id = ${accountId} AND ended_at IS NULL
+      ${shown ? sql`AND (movement.id = ${shown.version} OR made_in = ${shown.turnId})` : sql``}
     FOR UPDATE`
   return row ?? null
 }

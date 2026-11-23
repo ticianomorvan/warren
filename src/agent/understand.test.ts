@@ -71,8 +71,8 @@ describe('understand, then commit', () => {
     expect(row?.label).toBe('ask')
     expect(row?.question).toEqual({
       options: [
-        { n: 1, id: ids[1] },
-        { n: 2, id: ids[0] },
+        { n: 1, id: ids[1], v: ids[1] },
+        { n: 2, id: ids[0], v: ids[0] },
       ],
       then: { do: 'delete' },
     })

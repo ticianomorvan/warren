@@ -65,6 +65,19 @@ describe('codeAnswer: the answer to a question', () => {
     )
   })
 
+  it('applies the answer to the version the question showed', () => {
+    const shown: Question = {
+      options: [
+        { n: 1, id: 41, v: 410 },
+        { n: 2, id: 37, v: 370 },
+      ],
+      then: { do: 'delete' },
+    }
+    expect(answer('2', shown)).toEqual(
+      call({ tool: 'delete_movement', input: { id: 37 }, version: 370 }),
+    )
+  })
+
   it('runs the pending deletion', () => {
     expect(answer('dale el 1', remove)).toEqual(
       call({ tool: 'delete_movement', input: { id: 41 } }),

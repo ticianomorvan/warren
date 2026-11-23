@@ -106,15 +106,18 @@ function answerQuestion(text: string, question: Question): CodeAnswer | null {
     text,
     question.options.map((o) => o.n),
   )
-  const id = question.options.find((o) => o.n === n)?.id
-  if (id === undefined) return null
+  const option = question.options.find((o) => o.n === n)
+  if (option === undefined) return null
+  const { id } = option
+  // The answer applies to the version the question showed, when it says which.
+  const version = option.v === undefined ? {} : { version: option.v }
   switch (then.do) {
     case 'delete':
-      return { kind: 'call', call: { tool: 'delete_movement', input: { id } } }
+      return { kind: 'call', call: { tool: 'delete_movement', input: { id }, ...version } }
     case 'correct':
       return {
         kind: 'call',
-        call: { tool: 'correct_movement', input: { id, changes: then.changes } },
+        call: { tool: 'correct_movement', input: { id, changes: then.changes }, ...version },
       }
     case 'ask_change': {
       // A question with nothing behind it ("¿Qué querés cambiar?" over several options): the number picks one, and the follow-up

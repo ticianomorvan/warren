@@ -111,6 +111,10 @@ export type Outcome =
 
 export type OutcomeOf<T extends WriteCall['tool']> = Extract<Outcome, { tool: T }>
 
+/** The version a conversation showed for a call's movement, with this turn: what `lockLive` checks the live version against. */
+const shownOf = (call: { version?: number }, turnId: number) =>
+  call.version === undefined ? undefined : { version: call.version, turnId }
+
 /** Runs one write inside the commit transaction and says what it did. A call is checked (`checkValues`, `checkTurn`) before it gets here. */
 export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Promise<Outcome> {
   const { accountId, turnId } = ctx
@@ -125,7 +129,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       return { tool: call.tool, status: 'applied', effect: 'logged', movements }
     }
     case 'correct_movement': {
-      const old = await lockLive(tx, accountId, call.input.id)
+      const old = await lockLive(tx, accountId, call.input.id, shownOf(call, turnId))
       if (!old) return { tool: call.tool, status: 'gone', effect: null, id: call.input.id }
       const values = applyChanges(old, call.input.changes)
       const changed = changedFields(old, values)
@@ -134,7 +138,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       return { tool: call.tool, status: 'applied', effect: 'corrected', old, next, changed }
     }
     case 'delete_movement': {
-      const old = await lockLive(tx, accountId, call.input.id)
+      const old = await lockLive(tx, accountId, call.input.id, shownOf(call, turnId))
       if (!old) return { tool: call.tool, status: 'gone', effect: null, id: call.input.id }
       await endVersion(tx, old.version, turnId)
       return { tool: call.tool, status: 'applied', effect: 'deleted', old }

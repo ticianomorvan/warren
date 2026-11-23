@@ -215,7 +215,8 @@ export function checkValues(tool: string, input: unknown, env: Env): Checked {
 
 /** What the model has been shown, by the ids it may act on (`context.ts` builds it): each kind of id is in its own space. */
 export interface Shown {
-  movements: ReadonlySet<number>
+  /** Each movement's entity id, with the version that was shown (undefined when only the id is known): a change applies to that version. */
+  movements: ReadonlyMap<number, number | undefined>
   facts: ReadonlySet<number>
   reminders: ReadonlySet<number>
   /** The id of the pending question's only option, when it has exactly one: a change in this message is about it. */
@@ -227,7 +228,7 @@ const ALONE =
 
 function unseen(
   ids: number[],
-  shown: ReadonlySet<number>,
+  shown: ReadonlyMap<number, unknown> | ReadonlySet<number>,
   what: string,
   where: string,
 ): string | null {
@@ -254,15 +255,7 @@ export function checkTurn(calls: readonly Call[], shown: Shown, message: string)
         const issues = checkCount(logged)
         return issues.length > 0 ? rejected(issueText(issues)) : { kind: 'ok', call }
       }
-      case 'correct_movement': {
-        const bad = unseen(
-          [call.input.id],
-          shown.movements,
-          'id',
-          '"Últimos movimientos", a find_movements result or the pending question',
-        )
-        return bad ? rejected(bad) : { kind: 'ok', call }
-      }
+      case 'correct_movement':
       case 'delete_movement': {
         const bad = unseen(
           [call.input.id],
@@ -270,7 +263,10 @@ export function checkTurn(calls: readonly Call[], shown: Shown, message: string)
           'id',
           '"Últimos movimientos", a find_movements result or the pending question',
         )
-        return bad ? rejected(bad) : { kind: 'ok', call }
+        const version = shown.movements.get(call.input.id)
+        return bad
+          ? rejected(bad)
+          : { kind: 'ok', call: version === undefined ? call : { ...call, version } }
       }
       case 'ask_user': {
         const bad = unseen(
@@ -290,9 +286,14 @@ export function checkTurn(calls: readonly Call[], shown: Shown, message: string)
           call.input.movement_ids.length === 1 &&
           only === shown.sole
         ) {
+          const version = shown.movements.get(only)
           return {
             kind: 'ok',
-            call: { tool: 'correct_movement', input: { id: only, changes: then.changes } },
+            call: {
+              tool: 'correct_movement',
+              input: { id: only, changes: then.changes },
+              ...(version === undefined ? {} : { version }),
+            },
           }
         }
         return { kind: 'ok', call }

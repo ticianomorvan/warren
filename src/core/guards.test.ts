@@ -7,7 +7,10 @@ const env = { today: TODAY, now: NOW }
 const values = (tool: string, input: unknown) => checkValues(tool, input, env)
 const rejection = (c: Checked) => (c.kind === 'rejected' ? c.message : null)
 const shown = (o: Partial<Shown> = {}): Shown => ({
-  movements: new Set([41, 38]),
+  movements: new Map<number, number | undefined>([
+    [41, 410],
+    [38, 380],
+  ]),
   facts: new Set([7]),
   reminders: new Set([3]),
   ...o,
@@ -325,8 +328,26 @@ describe('checkTurn: the conversation', () => {
     }
     expect(turnOf([ask], '', shown({ sole: 41 }))[0]).toEqual({
       kind: 'ok',
-      call: { tool: 'correct_movement', input: { id: 41, changes: { amount: '4100' } } },
+      call: {
+        tool: 'correct_movement',
+        input: { id: 41, changes: { amount: '4100' } },
+        version: 410,
+      },
     })
     expect(turnOf([ask])[0]).toMatchObject({ kind: 'ok', call: { tool: 'ask_user' } })
+  })
+
+  it('a change to a movement carries the version it was shown at, which the model never sends', () => {
+    const del: Call = { tool: 'delete_movement', input: { id: 38 } }
+    const fix: Call = { tool: 'correct_movement', input: { id: 41, changes: { amount: '1' } } }
+    expect(turnOf([del])[0]).toEqual({ kind: 'ok', call: { ...del, version: 380 } })
+    expect(turnOf([fix])[0]).toEqual({ kind: 'ok', call: { ...fix, version: 410 } })
+    // The model's own `version` is not part of the input: the registry's schema drops it.
+    const parsed = values('delete_movement', { id: 38, version: 1 })
+    expect(parsed).toMatchObject({
+      kind: 'ok',
+      call: { tool: 'delete_movement', input: { id: 38 } },
+    })
+    expect('version' in (parsed.kind === 'ok' ? parsed.call : {})).toBe(false)
   })
 })

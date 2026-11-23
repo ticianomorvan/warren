@@ -89,7 +89,7 @@ describe('renderContext', () => {
     const ids = (re: RegExp) => [...ctx.text.matchAll(re)].map((x) => Number(x[1]))
     const listed = ids(/^\d+\. id=(\d+) /gm)
     expect(new Set(listed)).toEqual(new Set([905, 904]))
-    expect(ctx.shown.movements).toEqual(new Set([905, 904, 777]))
+    expect(new Set(ctx.shown.movements.keys())).toEqual(new Set([905, 904, 777]))
     expect(ctx.shown.facts).toEqual(new Set([3]))
     expect(ctx.shown.sole).toBe(777)
     expect(ctx.text).toContain('Pregunta pendiente: 1 = id 777')
