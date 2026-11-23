@@ -510,6 +510,33 @@ From `docs/rebuild/` review findings at 7aa5a6e, built in the order bugs, design
 
 **For the next builder (part 2).** MCP cleanups beyond D1 (`tools.ts` is one 500-line file), `AGENTS.md` does not yet describe the MCP tool list in detail, the SIGTERM hand-back wait (above), and `checkReminder`'s callers. `docs/rebuild/` review findings outside core, domain, agent and WhatsApp are part 2's.
 
+### As built (R9 fixes, part 2: MCP, auth, ops scripts)
+
+One line per item. The commands the thread runs are in `docs/runbook-cutover.md`.
+
+- **C1** fixed: the new database is `warren_v2` inside the existing Postgres (`CREATE DATABASE`), so `.railway/railway.ts` is unchanged for it and the rollback is the old URL. The script runs `railway config plan --detailed-exit-code` first and again before the switch, and aborts on any destroy. Production's definition gained `overlapSeconds` and `drainingSeconds` (15 s); the plan for production is now exactly those two changes.
+- **C2** fixed: the rollback runs `railway up <tree> --path-as-root -s warren -e <env> --ci` from the linked checkout and keeps stderr. Proven by `rollback --rehearse` on staging: `v1-final` deployed on a scratch database and probed with `--expect v1`, then the rebuild deployed with `railway up` and probed for its own deployment id. The note that the new database's later writes are not carried back is in the script and the runbook.
+- **C3** fixed: `/health` answers `ok` and an `x-warren-build` header (commit sha when Railway has one, plus the deployment id, which a `railway up` has alone); v1 sent none. `pnpm probe <env> --expect <sha or id>` polls until it matches (`--expect v1`: no header). Step 9 and the rollback use it.
+- **C4** fixed: the script stops the old deployment (`railway down`) and checks the newest deployment is not running and `/health` does not answer. `import-v1` reads in one `REPEATABLE READ READ ONLY` transaction and returns a snapshot per table (count, highest integer id, newest row version `xmin`, for every table of the old database, so a changed row shows too). Step 7 re-reads and aborts on any difference. Order: stop old, dump, import, verify, re-check, switch, deploy, probe. Meta retries a webhook that gets no 200 for up to 7 days (Meta's WhatsApp webhooks page), so messages sent in the gap arrive later.
+- **C5** fixed: after each `copyTable`, every serial or identity column's sequence is set past its copied rows (`link_request` included); a test imports and then takes the next id.
+- **C6** fixed: two md5 checks per account, one over every live movement's `direction|amount|currency|occurred_on|description|category|payment|confidence`, one over every live reminder's `what|schedule|next_due_at` (ordered by that text under `COLLATE "C"`); only match or mismatch is printed. The tamper tests swap a direction, shift a date, drop a payment and change a schedule.
+- **C7** fixed: `pg_dump` takes `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and `PGDATABASE` from its environment (Docker `-e NAME` copies them); `import-v1` reads `V1_DATABASE_URL` and `DATABASE_URL` (its `--from` and `--to` are gone); the cutover imports in its own process.
+- **C8** fixed: `createSink` throws without a token and the sink's process passes `SINK_TOKEN`; the staging probe asserts the variable is set and that `/sent` answers 401 with no token.
+- **M1** fixed: v1's bounds (200 characters for any text, 20 for an amount, a day, `from` and `to`; at most 10 words in `find_movements`'s text) in `mcp/tools.ts`, one function for the three tools that take free text. A 200 KB description is refused (test). They are not in `checkValues`, so WhatsApp and the cached prompt prefix are unchanged.
+- **M2** fixed: an MCP write whose strings are `sensitive` is committed with `scrub`, so `turn.calls[].input` keeps nothing. The movement row and the `mcp_request` result keep what the call stored, as v1's and WhatsApp's do (a secret is refused before that, by `checkValues`; what passes is a description).
+- **M3** fixed: the MCP block of `log_movements` has its own input with `confidence` defaulting to `high` (`McpBlock.input`); the client sees it as optional.
+- **M4** fixed: our own exact check, `new URL(origin).origin` against `https://<host>` of each client host plus our origin; `http://claude.ai`, `:8443` and a look-alike host are 403 (tests). The SDK helper compares hostnames only and cannot take origins.
+- **M5** partly: removed the second `try/catch` of the write path (`runTool` has the one). `tools.ts` is still about 500 lines, because the output views that its registry schemas ask for are most of it; collapsing them further would change the output schemas, which the brief excluded.
+- **M6** fixed: `door.ts`, `auth/link.ts` and `auth/routes.ts` use `whatsappAddress`.
+- **M7** fixed: no `waId` in `authInfo.extra`.
+- **M8** fixed: `CLIENT_HOSTS` is a list of hosts; origins are `https://<host>`; `name` is gone.
+- **M9** fixed: `app.ts` checks the host once (`AppOptions.publicHost`) for `/mcp` and the OAuth routes; `endpoint.ts` and `auth/routes.ts` no longer do.
+- **L1** fixed: the message sweep runs every 5 s, the reminder sweep every 30 s (`server.ts`; `Warren.sweepMessages` and `sweepReminders`, `sweep` runs both). An idle message sweep (its three queries over the open rows' partial index) took 0.35 ms on `postgres:17` with 100,000 done rows.
+- **L2** fixed: an undo counts its window from the message and restores a reminder from the commit clock (`undoLast` takes both); a test fails without it.
+- **L3** nothing to do: no D7 result file is committed (`results/*` is ignored but `latest.md` and `v1-baseline.json`).
+
+Proof at the last commit: `pnpm check` 996 passed, 15 skipped (PGlite); the whole suite on `postgres:17`, 1011 passed, 0 skipped; CI green on both jobs; `pnpm probe staging --expect <head>` passed (16 lines, 0 failures); `scripts/cutover.ts --dry-run` on a fresh dump of production: 17 checks match.
+
 ## Decisions (Ticiano, 2026-11-22)
 
 1. Rebuild from scratch on main, autonomously, with no manual testing in the middle.
