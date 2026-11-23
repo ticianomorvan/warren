@@ -17,6 +17,7 @@ const graph = createGraph({
   version: config.GRAPH_API_VERSION,
   phoneNumberId: config.WHATSAPP_PHONE_NUMBER_ID,
   token: config.WHATSAPP_ACCESS_TOKEN,
+  baseUrl: config.GRAPH_BASE_URL,
 })
 const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY, fetch: keepAliveFetch() })
 const { server, sweep, stop } = createWarren({
