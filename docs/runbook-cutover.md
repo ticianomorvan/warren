@@ -59,17 +59,17 @@ tsx scripts/cutover.ts
 
 What each step prints when it is fine:
 
-| Step | What it does | Prints |
-|---|---|---|
-| 1/9 | `railway config plan --environment production --detailed-exit-code`; abort on any destroy | `ok - Plan: 0 to add, 1 to change, 0 to destroy (~ Update warren deploy.drainingSeconds, deploy.overlapSeconds)` |
-| 2/9 | `railway down -s warren -e production --yes`, then polls until the newest deployment is not `SUCCESS` and `https://wa.heywarren.app/health` does not answer 200 | `ok - deployment xxxxxxxx is REMOVED; /health does not answer` |
-| 3/9 | `pg_dump` of database `railway` (connection in the `PG*` environment, never on the command line) | `ok - <n> KB in <workdir>/old.sql` |
-| 4/9 | `CREATE DATABASE "warren_v2"` in the same Postgres, then the migrations | `ok` (two `migration_applied` lines: `001_init.sql`, `002_auth.sql`) |
-| 5/9 | import-v1: the old database read in one `REPEATABLE READ READ ONLY` transaction | `ok - N accounts, N movements, N facts, N reminders, N wa messages` (today's dry run: 1, 19, 2, 3, 113) |
-| 6/9 | verify: counts, sums per currency, an md5 per account of what every live movement and reminder says, facts, reminder sends, auth tables, recent wamids | 17 lines starting `ok`, then `ok - 17 checks match`. Any `FAIL` line aborts before anything is switched |
-| 7/9 | re-reads the old database: per table row count, highest id and newest row version must equal what the import read; plans again | `ok - unchanged; Plan: ...`. A table named as changed aborts |
-| 8/9 | sets `DATABASE_URL` (the private URL of `warren_v2`, on stdin) with `--skip-deploys`; `railway config apply --environment production --yes`; `railway up -s warren -e production --ci` | `ok - deployment xxxxxxxx` |
-| 9/9 | `pnpm probe production --expect <that deployment id>`: polls `/health` until its `x-warren-build` header names the deployment (up to 10 minutes), then the read-only probes | `ok   health says build xxxxxxxxxxxx`, the probe lines, `ok - production probe passed`, then `cutover complete. Next: Ticiano sends one WhatsApp message and one Claude message.` |
+| Step | What it does                                                                                                                                                                           | Prints                                                                                                                                                                            |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1/9  | `railway config plan --environment production --detailed-exit-code`; abort on any destroy                                                                                              | `ok - Plan: 0 to add, 1 to change, 0 to destroy (~ Update warren deploy.drainingSeconds, deploy.overlapSeconds)`                                                                  |
+| 2/9  | `railway down -s warren -e production --yes`, then polls until the newest deployment is not `SUCCESS` and `https://wa.heywarren.app/health` does not answer 200                        | `ok - deployment xxxxxxxx is REMOVED; /health does not answer`                                                                                                                    |
+| 3/9  | `pg_dump` of database `railway` (connection in the `PG*` environment, never on the command line)                                                                                       | `ok - <n> KB in <workdir>/old.sql`                                                                                                                                                |
+| 4/9  | `CREATE DATABASE "warren_v2"` in the same Postgres, then the migrations                                                                                                                | `ok` (two `migration_applied` lines: `001_init.sql`, `002_auth.sql`)                                                                                                              |
+| 5/9  | import-v1: the old database read in one `REPEATABLE READ READ ONLY` transaction                                                                                                        | `ok - N accounts, N movements, N facts, N reminders, N wa messages` (today's dry run: 1, 19, 2, 3, 113)                                                                           |
+| 6/9  | verify: counts, sums per currency, an md5 per account of what every live movement and reminder says, facts, reminder sends, auth tables, recent wamids                                 | 17 lines starting `ok`, then `ok - 17 checks match`. Any `FAIL` line aborts before anything is switched                                                                           |
+| 7/9  | re-reads the old database: per table row count, highest id and newest row version must equal what the import read; plans again                                                         | `ok - unchanged; Plan: ...`. A table named as changed aborts                                                                                                                      |
+| 8/9  | sets `DATABASE_URL` (the private URL of `warren_v2`, on stdin) with `--skip-deploys`; `railway config apply --environment production --yes`; `railway up -s warren -e production --ci` | `ok - deployment xxxxxxxx`                                                                                                                                                        |
+| 9/9  | `pnpm probe production --expect <that deployment id>`: polls `/health` until its `x-warren-build` header names the deployment (up to 10 minutes), then the read-only probes            | `ok   health says build xxxxxxxxxxxx`, the probe lines, `ok - production probe passed`, then `cutover complete. Next: Ticiano sends one WhatsApp message and one Claude message.` |
 
 Then, by hand: the live check. Ticiano sends one WhatsApp message and one Claude message (`warren_summarize` over MCP is enough).
 
@@ -88,9 +88,9 @@ Afterwards: `rm <workdir>/old.sql` (the dump holds personal data; keep it only i
 tsx scripts/cutover.ts rollback
 ```
 
-| Step | Prints |
-|---|---|
-| `rollback 1/3` | `ok` (sets `DATABASE_URL` back to `${{Postgres.DATABASE_URL}}`, the old database, with `--skip-deploys`) |
+| Step           | Prints                                                                                                                                                                                                                                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rollback 1/3` | `ok` (sets `DATABASE_URL` back to `${{Postgres.DATABASE_URL}}`, the old database, with `--skip-deploys`)                                                                                                                                                                                                                                                |
 | `rollback 2/3` | `ok - 066eb87 answers (no build header)`: checks the tag `v1-final` out into a temporary worktree, runs `railway up <tree> --path-as-root -s warren -e production --ci` **from this linked checkout** (Railway has no link for a temp directory), removes the worktree, then probes with `--expect v1`. A failure keeps Railway's stderr in the message |
 
 Then `rolled back: run pnpm probe production --expect v1`. Run it. The rollback does not delete `warren_v2`; drop it when you are done looking at it. Anything written to `warren_v2` after the cutover is not in v1's database.
