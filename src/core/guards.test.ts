@@ -13,6 +13,8 @@ const shown = (o: Partial<Shown> = {}): Shown => ({
   ]),
   facts: new Set([7]),
   reminders: new Set([3]),
+  evidence: ['café 3500 11:40 $3.500'],
+  window: ['✓ Café $3.500'],
   ...o,
 })
 const turnOf = (calls: Call[], message = '', s: Shown = shown()) => checkTurn(calls, s, message)

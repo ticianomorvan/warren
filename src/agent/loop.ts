@@ -3,7 +3,7 @@ import { type Call, COMMANDS } from '../core/commands'
 import { capFind, checkTurn, checkValues, type Declined, type Shown } from '../core/guards'
 import type { MovementRow } from '../domain/movements'
 import type { TurnTiming } from '../timings'
-import { movementLine } from './context'
+import { movementLine, withFound } from './context'
 import { MODELS, type ModelKey, type Usage } from './models'
 import { SYSTEM_PROMPT } from './prompt'
 import { TOOLS } from './tools'
@@ -77,11 +77,6 @@ export interface AgentInput {
   env: AgentEnv
   /** Aborts the call and the SDK's retries: the message deadline and the shutdown. */
   signal?: AbortSignal
-  /**
-   * Why a `reply` text may not be sent (a number code did not give, a claim of a change), or null when it may. The loop gives the
-   * model the reason and another turn to write it again, so the person gets its words and not the fallback.
-   */
-  vet?: (text: string, found: readonly MovementRow[]) => string | null
   /** When the message's own deadline passes: each call's timeout is cut to fit before it. */
   deadlineAt?: number
 }
@@ -202,8 +197,8 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     : i.context
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: first }]
   const found = new Map<number, MovementRow>()
-  // The caller's set stays untouched: this loop adds what a search finds to its own copy.
-  const shown: Shown = { ...i.shown, movements: new Map(i.shown.movements) }
+  // The caller's value stays untouched: this loop adds what a search finds to its own copy.
+  let shown: Shown = { ...i.shown, movements: new Map(i.shown.movements) }
   const audit: AuditEntry[] = []
   const turnLog: TurnTiming[] = []
   const started = performance.now()
@@ -300,10 +295,12 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     const pending = checked.flatMap((c) =>
       c.verdict.kind === 'ok' ? [{ c, call: c.verdict.call }] : [],
     )
+    // What this turn's searches found is evidence now (a reply may quote it) but its ids are acted on only from the next turn.
     const second = checkTurn(
       pending.map((p) => p.call),
-      shown,
+      { ...shown, evidence: withFound(shown, [...found.values()]).evidence },
       i.message,
+      { last: turn === MAX_TURNS },
     )
     for (const [n, { c }] of pending.entries()) {
       const after = second[n]
@@ -320,23 +317,8 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       } else c.verdict = after
     }
 
-    // A reply's words are vetted here, while the model can still write them again (the last turn is sent as it is: `compose` falls back).
-    if (i.vet && turn < MAX_TURNS) {
-      for (const { c, call } of pending) {
-        if (call.tool !== 'reply' || c.verdict.kind !== 'ok') continue
-        const why = i.vet(call.input.text, [...found.values()])
-        if (why === null) continue
-        const message = `text refused: ${why}. Write it again with only numbers that are in the lists, a find_movements result or the message (no count, no number in words), and no claim of a change.`
-        c.verdict = { kind: 'rejected', message }
-        c.text = message
-        c.entry.status = 'rejected'
-        c.entry.detail = message
-      }
-    }
-
     // Ids found in this turn may be acted on only from the next one: one that appears in a search of this very turn was guessed.
-    for (const row of found.values())
-      shown.movements = new Map(shown.movements).set(row.id, row.version)
+    shown = withFound(shown, [...found.values()])
 
     const refused = checked.some((c) => c.verdict.kind === 'rejected')
     const searched = checked.some((c) => c.verdict.kind === 'read')

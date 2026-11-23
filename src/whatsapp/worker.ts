@@ -389,7 +389,6 @@ export function createWorker(o: WorkerOptions) {
             {
               rendered: await render(tx, accountId, [answer.call], today, help),
               declined: [],
-              evidence: { numbers: [], words: [], window: [] },
               redact: false,
             },
             done,

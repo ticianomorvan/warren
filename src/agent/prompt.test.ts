@@ -119,7 +119,7 @@ describe('renderContext', () => {
     expect(ctx.text).toContain('(persona, hace 9 min) café 2900\n(Warren) ✓ Café $2.900')
     expect(ctx.text).toContain('(Warren por MCP, hace 5 min) ✓ Súper $12.000')
     expect(ctx.text).toContain('(Warren, recordatorio, hace 1 min) ⏰ Recordatorio: pagar la Visa')
-    expect(ctx.window).toContain('⏰ Recordatorio: pagar la Visa')
+    expect(ctx.shown.window).toContain('⏰ Recordatorio: pagar la Visa')
   })
 
   it('tells a single-option question what to do with then', () => {

@@ -7,10 +7,10 @@ import type { Done, Question } from '../core/turn'
 import { findMovements } from '../domain/movements'
 import { argentinaToday } from '../time'
 import type { TurnTiming } from '../timings'
-import { contextInput, type Read, readState, renderContext, withFound } from './context'
+import { contextInput, type Read, readState, renderContext } from './context'
 import { type AgentResult, type AuditEntry, type Photo, runAgent } from './loop'
 import type { ModelKey, Usage } from './models'
-import { checkReply, compose, type HelpOptions, render } from './reply'
+import { compose, type HelpOptions, render } from './reply'
 
 /**
  * A message through the agent, to the calls handed to `core/turn.commit`: reads the person's state, renders the context the model
@@ -80,20 +80,10 @@ export async function understand(i: UnderstandInput): Promise<Understood> {
     today,
     now: i.now ?? i.at,
     env: { find: (filter) => findMovements(i.sql, i.accountId, filter) },
-    vet: (text, found) => {
-      const seen = withFound(ctx, found)
-      const checked = checkReply(text, {
-        numbers: seen.evidence,
-        words: seen.evidence,
-        window: seen.window,
-      })
-      return checked.ok ? null : checked.reason
-    },
     ...(i.signal ? { signal: i.signal } : {}),
     ...(i.deadlineAt !== undefined ? { deadlineAt: i.deadlineAt } : {}),
   })
   const redact = sensitive(i.text) || result.declined.includes('secret')
-  const seen = withFound(ctx, result.found)
   return {
     calls: result.calls,
     compose: async (tx, done, record) =>
@@ -101,7 +91,6 @@ export async function understand(i: UnderstandInput): Promise<Understood> {
         {
           rendered: await render(tx, i.accountId, result.calls, today, i.help),
           declined: result.declined,
-          evidence: { numbers: seen.evidence, words: seen.evidence, window: seen.window },
           ...(i.voice ? { heard: i.text } : {}),
           redact,
         },

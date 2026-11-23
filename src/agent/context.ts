@@ -22,11 +22,8 @@ import { addDays, argentinaTime, argentinaToday, weekdayName } from '../time'
 /** The ids a search found are shown too, and the rows are evidence for the numbers check. */
 export interface Context {
   text: string
+  /** The ids the guards accept and the evidence the numbers check reads. */
   shown: Shown
-  /** Where a number in the model's own words may come from (never an id). */
-  evidence: string[]
-  /** What Warren answered earlier in the conversation: the one proof a `reply` may lean on for a claim. */
-  window: string[]
 }
 
 export interface ConversationTurn {
@@ -213,10 +210,6 @@ export function renderContext(i: ContextInput): Context {
     facts: new Set(memory.map((f) => f.id)),
     reminders: new Set(reminders.map((r) => r.id)),
     ...(sole !== undefined ? { sole } : {}),
-  }
-  return {
-    text,
-    shown,
     evidence: [
       i.text,
       ...i.movements.map(movementFact),
@@ -228,20 +221,18 @@ export function renderContext(i: ContextInput): Context {
     ],
     window: i.conversation.map((t) => clip(t.reply)),
   }
+  return { text, shown }
 }
 
-/** The context with what a search found: the ids may be acted on in the next turn, and the rows are evidence. */
-export function withFound(ctx: Context, found: readonly MovementRow[]): Context {
+/** What a search found: the ids may be acted on from the next turn, and the rows are evidence for the numbers check. */
+export function withFound(shown: Shown, found: readonly MovementRow[]): Shown {
   return {
-    ...ctx,
-    shown: {
-      ...ctx.shown,
-      movements: new Map([
-        ...ctx.shown.movements,
-        ...found.map((m): [number, number] => [m.id, m.version]),
-      ]),
-    },
-    evidence: [...ctx.evidence, ...found.map(movementFact)],
+    ...shown,
+    movements: new Map([
+      ...shown.movements,
+      ...found.map((m): [number, number] => [m.id, m.version]),
+    ]),
+    evidence: [...shown.evidence, ...found.map(movementFact)],
   }
 }
 

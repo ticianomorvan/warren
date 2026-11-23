@@ -24,6 +24,8 @@ const shown = (...ids: number[]): Shown => ({
   movements: new Map(ids.map((id): [number, number] => [id, id * 10])),
   facts: new Set(),
   reminders: new Set(),
+  evidence: [],
+  window: [],
 })
 const cafe = {
   direction: 'out',
@@ -242,25 +244,50 @@ describe('runAgent', () => {
     const both = calls(['reply', { text: 'hola' }], ['help', {}])
     const { client } = fake(both, calls(['reply', { text: 'hola' }]))
     const r = await run(client)
-    expect(r.calls).toEqual([{ tool: 'reply', input: { text: 'hola' } }])
+    expect(r.calls).toEqual([
+      { tool: 'reply', input: { text: 'hola' }, verdict: { ok: true, text: 'hola' } },
+    ])
     expect(r.audit.map((x) => x.status)).toEqual(['rejected', 'skipped', 'accepted'])
   })
 
-  it('a reply the vetting refuses goes back to the model with the reason; the last turn is let through', async () => {
-    const vet = (text: string) => (text.includes('tres') ? 'number in words: tres' : null)
+  it('a reply the numbers check refuses goes back to the model with the reason; the last turn is let through with its verdict', async () => {
+    const known = { ...shown(), evidence: ['café 3500 $3.500'] }
     const { client, seen } = fake(
       calls(['reply', { text: 'tres cafés' }]),
       calls(['reply', { text: 'Anotados: $3.500' }]),
     )
-    const r = await run(client, { vet })
-    expect(r.calls).toEqual([{ tool: 'reply', input: { text: 'Anotados: $3.500' } }])
+    const r = await run(client, { shown: known })
+    expect(r.calls).toEqual([
+      {
+        tool: 'reply',
+        input: { text: 'Anotados: $3.500' },
+        verdict: { ok: true, text: 'Anotados: $3.500' },
+      },
+    ])
     expect(r.audit.map((x) => x.status)).toEqual(['rejected', 'accepted'])
-    expect(JSON.stringify(seen[1]?.params.messages)).toContain('number in words: tres')
+    expect(JSON.stringify(seen[1]?.params.messages)).toContain(
+      'number written in words not given by code: tres',
+    )
 
     const stubborn = fake(calls(['reply', { text: 'tres cafés' }]))
-    const last = await run(stubborn.client, { vet })
+    const last = await run(stubborn.client, { shown: known })
     expect(last.turns).toBe(MAX_TURNS)
-    expect(last.calls).toEqual([{ tool: 'reply', input: { text: 'tres cafés' } }])
+    expect(last.calls).toEqual([
+      {
+        tool: 'reply',
+        input: { text: 'tres cafés' },
+        verdict: { ok: false, reason: 'number written in words not given by code: tres' },
+      },
+    ])
+  })
+
+  it('what a search of this turn found is evidence for the reply of this turn', async () => {
+    const { client } = fake(
+      calls(['find_movements', { text: 'cafe' }], ['reply', { text: 'Encontré $2.900' }]),
+      calls(['reply', { text: 'Fue $2.900' }]),
+    )
+    const r = await run(client, { env: { find: async () => [row(7)] } })
+    expect(r.calls).toMatchObject([{ tool: 'reply', verdict: { ok: true, text: 'Fue $2.900' } }])
   })
 })
 

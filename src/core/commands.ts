@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { FirstSchema, RepeatSchema, type Schedule } from '../domain/reminders/schedule'
+import type { ReplyCheck } from './reply-check'
 
 /**
  * The tool registry: data only. One entry per tool holds everything the tool is: its input (zod, with real optionals and unions,
@@ -668,14 +669,16 @@ export type Input<T extends Tool> = z.infer<(typeof COMMANDS)[T]['input']>
  * A call: one tool and its input. Code adds what the model never sends, beside the input: a `set_reminder` that `checkValues` passed
  * carries the schedule it resolved (from the instant it checked at), so the commit point stores the schedule the guard approved; a
  * `correct_movement` or `delete_movement` the conversation checked carries the version of the movement the person was shown, so it
- * applies to that version or to nothing. Without them (an MCP client, who always sees the live state) a call is entity-only.
+ * applies to that version or to nothing; a `reply` carries the verdict of the numbers-and-claims check its words got. Without them (an MCP client, who always sees the live state) a call is entity-only.
  */
 export type Call = {
   [T in Tool]: { tool: T; input: Input<T> } & (T extends 'set_reminder'
     ? { schedule?: Schedule }
     : T extends 'correct_movement' | 'delete_movement'
       ? { version?: number }
-      : unknown)
+      : T extends 'reply'
+        ? { verdict?: ReplyCheck }
+        : unknown)
 }[Tool]
 export type CallOf<T extends Tool> = Extract<Call, { tool: T }>
 

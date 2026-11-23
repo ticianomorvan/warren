@@ -5,6 +5,7 @@ import { planRange } from '../domain/range'
 import { checkReminder, scheduleOf } from '../domain/reminders/guard'
 import { type Call, COMMANDS, type Input, isTool, MAX_FOUND, type Tool } from './commands'
 import { hasLongNumber, hasNumberWord, unwritten } from './numbers'
+import { checkReply } from './reply-check'
 import { holdsSecretValue } from './secrets'
 import {
   checkChanges,
@@ -221,6 +222,10 @@ export interface Shown {
   reminders: ReadonlySet<number>
   /** The id of the pending question's only option, when it has exactly one: a change in this message is about it. */
   sole?: number
+  /** Where a number or a number word in the model's own words may come from (never an id): the message, the lists, what searches found. */
+  evidence: readonly string[]
+  /** What Warren answered earlier in the conversation: the one proof a `reply` may lean on for a claim. */
+  window: readonly string[]
 }
 
 const ALONE =
@@ -242,7 +247,13 @@ function unseen(
  * The conversation rules over the whole turn: `calls` are already value-checked (`checkValues`), in the order the model sent
  * them, and each gets a verdict in the same order. `message` is the person's own message (or what was heard in a voice note).
  */
-export function checkTurn(calls: readonly Call[], shown: Shown, message: string): Checked[] {
+export function checkTurn(
+  calls: readonly Call[],
+  shown: Shown,
+  message: string,
+  /** The last turn the model has: a reply that fails its check is let through with its verdict, and the commit says the apology. */
+  o: { last?: boolean } = {},
+): Checked[] {
   let logged = 0
   const remembered = new Set<string>()
   const alone = new Set(calls.filter((c) => COMMANDS[c.tool].alone).map((c) => c.tool))
@@ -310,6 +321,21 @@ export function checkTurn(calls: readonly Call[], shown: Shown, message: string)
         }
         remembered.add(at)
         return ok('remember_fact', checked.fact)
+      }
+      case 'reply': {
+        // The model's own words: every number is one code gave, and no change is claimed that Warren did not make. A refusal goes back
+        // to the model while it can write it again.
+        const verdict = checkReply(call.input.text, {
+          numbers: shown.evidence,
+          words: shown.evidence,
+          window: shown.window,
+        })
+        if (!verdict.ok && !o.last) {
+          return rejected(
+            `text refused: ${verdict.reason}. Write it again with only numbers that are in the lists, a find_movements result or the message (no count, no number in words), and no claim of a change.`,
+          )
+        }
+        return { kind: 'ok', call: { ...call, verdict } }
       }
       case 'forget_fact': {
         const { target } = call.input
