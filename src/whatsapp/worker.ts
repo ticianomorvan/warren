@@ -546,6 +546,9 @@ export function createWorker(o: WorkerOptions) {
    * anything else is done with it. The app calls it after the 200, with the messages the webhook stored for the first time. The stamp
    * comes after the call succeeds; a lane still sends the indicator again when it claims the row (the reply to the message before may
    * have cleared this one). Cosmetic: a failure is only logged. Never throws.
+   *
+   * The stamp is an UPDATE of the row, which locks it for a moment, and the claim skips locked rows: a lane that looked in that moment
+   * found nothing and went idle. So once the stamps are in, the lanes look again (a lane that is running is only asked to).
    */
   async function acknowledge(messages: { id: string; from: string }[]): Promise<void> {
     await Promise.all(
@@ -560,6 +563,7 @@ export function createWorker(o: WorkerOptions) {
           }
         }),
     )
+    await kick(messages.map((m) => m.from))
   }
 
   /** Claims and processes these senders' messages now, if they are due. Never throws. */
