@@ -1,9 +1,9 @@
 import { defineRailway, github, postgres, project, service, volume } from 'railway/iac'
 
 /**
- * Production keeps the settings it has. `staging` (created by hand once: `railway environment new staging`, empty)
+ * Production differs from what it has today only in draining and overlap (15 s each; `railway config plan` shows just those). `staging` (created by hand once: `railway environment new staging`, empty)
  * gets its own Warren service on the `rebuild` branch, its own Postgres and the `graph-sink`, plus draining and
- * overlap. R9 applies draining and overlap to production at cutover and deletes staging afterwards.
+ * overlap. The cutover applies draining and overlap to production; staging is deleted afterwards.
  *
  * Variables are unmanaged, so no secret is in this file. Staging's secrets are set with `railway variables`:
  * fresh fake WhatsApp app secret, verify token and Graph token, a fresh BETTER_AUTH_SECRET, the real Anthropic and
@@ -32,7 +32,8 @@ export default defineRailway((ctx) => {
       restartPolicyType: 'ON_FAILURE',
       restartPolicyMaxRetries: 10,
       // The old deploy keeps running 15 s after the new one is up, then gets SIGTERM and 15 s to finish its work.
-      ...(staging ? { overlapSeconds: 15, drainingSeconds: 15 } : {}),
+      overlapSeconds: 15,
+      drainingSeconds: 15,
     },
     replicas: { 'us-east4-eqdc4a': 1 },
     ...(staging ? {} : { domains: ['wa.heywarren.app'] }),

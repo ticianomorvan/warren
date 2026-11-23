@@ -30,6 +30,10 @@ test('records typing, text and template sends made through the real Graph client
   expect(s[1]).toMatchObject({ to: '5491100000001', body: 'hola' })
 })
 
+test('refuses to start without a token', () => {
+  expect(() => createSink({ token: '' })).toThrow(/SINK_TOKEN/)
+})
+
 test('/sent needs the token and honours since', async () => {
   expect((await fetch(`${base}/sent`)).status).toBe(401)
   const { last } = await sent()

@@ -40,6 +40,8 @@ export interface WarrenDeps {
   interimMs?: number
   deadlineMs?: number
   clock?: () => Date
+  /** The deploy's identity, shown by `/health` so the cutover and the probe can tell which version answers. */
+  build?: string
 }
 
 export interface Warren {
@@ -123,6 +125,7 @@ export function createWarren(deps: WarrenDeps): Warren {
     ingest,
     config,
     worker,
+    ...(deps.build ? { build: deps.build } : {}),
     ...(auth ? { auth } : {}),
     ...(mcp ? { mcp } : {}),
   })

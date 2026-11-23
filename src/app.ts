@@ -17,6 +17,8 @@ export interface AppOptions {
   auth?: AuthRoutes
   /** `/mcp`: the MCP endpoint (its door, origin check and tools). Without it the path does not exist. */
   mcp?: (req: IncomingMessage, res: ServerResponse) => Promise<void>
+  /** Which deploy this is (the commit and the deployment id, space apart). `/health` says it in `x-warren-build`; v1 sent none. */
+  build?: string
 }
 
 /** The raw body, or null when it is over the limit. An oversized body is still read to the end. */
@@ -91,7 +93,13 @@ export function createApp(o: AppOptions): Server {
     } catch {
       return send(res, 400)
     }
-    if (url.pathname === '/health' && req.method === 'GET') return send(res, 200, 'ok')
+    if (url.pathname === '/health' && req.method === 'GET') {
+      res.writeHead(200, {
+        'content-type': 'text/plain',
+        ...(o.build ? { 'x-warren-build': o.build } : {}),
+      })
+      return void res.end('ok')
+    }
     if (url.pathname === '/webhook' && req.method === 'GET') return verify(url, res)
     if (url.pathname === '/webhook' && req.method === 'POST') return receive(req, res)
     if (url.pathname === '/mcp' && o.mcp) return o.mcp(req, res)

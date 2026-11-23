@@ -60,6 +60,41 @@ async function until<T>(
   }
 }
 
+/**
+ * `--expect <build>`: wait until `/health` says this deploy answers: the `x-warren-build` header has a commit sha or
+ * deployment id that starts with the one given, or, for `--expect v1`, the header is absent (v1 answers a plain `ok` and no build). A probe that
+ * passes against the version being replaced proves nothing; this is what the cutover and the rollback wait on.
+ */
+async function expectBuild(healthUrl: string, expected: string, timeoutMs = 600_000) {
+  await step(`health says build ${expected.slice(0, 12)}`, async () => {
+    let last = 'no answer'
+    await until(`${healthUrl} to report ${expected.slice(0, 12)}`, timeoutMs, async () => {
+      try {
+        const r = await fetch(healthUrl)
+        const build = r.headers.get('x-warren-build')
+        last =
+          r.status === 200
+            ? build
+              ? `build ${build.slice(0, 12)}`
+              : 'no build header (v1)'
+            : `status ${r.status}`
+        if (r.status !== 200) return false
+        return expected === 'v1'
+          ? !build
+          : (build ?? '').split(' ').some((id) => id.startsWith(expected))
+      } catch {
+        return false
+      }
+    }).catch((err) => {
+      throw new Error(`${err instanceof Error ? err.message : err}; the last answer was: ${last}`)
+    })
+  })
+}
+const expected = (() => {
+  const i = process.argv.indexOf('--expect')
+  return i >= 0 ? process.argv[i + 1] : undefined
+})()
+
 // ---------------------------------------------------------------------------------------------- production (read only)
 
 async function production() {
@@ -71,6 +106,7 @@ async function production() {
     '',
   )
   assert(publicUrl, 'no PUBLIC_URL')
+  if (expected) await expectBuild(`${webhookUrl}/health`, expected)
   await mcpAndOAuth(publicUrl)
   await step('health', async () => {
     const r = await fetch(`${webhookUrl}/health`)
@@ -137,6 +173,8 @@ async function staging() {
   ).replace(/\/$/, '')
   assert(base && sinkUrl && pg.DATABASE_PUBLIC_URL, 'staging settings missing')
   assert(!app.REMINDER_TEMPLATE, 'staging must not have REMINDER_TEMPLATE')
+  assert(sinkVars.SINK_TOKEN, 'the graph-sink has no SINK_TOKEN: /sent would be open')
+  if (expected) await expectBuild(`${base}/health`, expected)
   const GRAPH_BASE = app.GRAPH_BASE_URL ?? ''
   assert(GRAPH_BASE.includes('graph-sink'), 'staging GRAPH_BASE_URL does not point at the sink')
 
@@ -174,6 +212,10 @@ async function staging() {
     }
   }
   cursor = (await sinkGet(0)).last
+  await step('graph-sink: /sent refuses a request with no token', async () => {
+    const r = await fetch(`${sinkUrl}/sent`)
+    assert(r.status === 401, `status ${r.status}`)
+  })
 
   // --- WhatsApp
   const sig = (raw: string) =>
@@ -514,7 +556,7 @@ async function staging() {
 
 const mode = process.argv[2]
 if (mode !== 'staging' && mode !== 'production') {
-  console.error('usage: pnpm probe staging|production')
+  console.error('usage: pnpm probe staging|production [--expect <commit sha, deployment id or v1>]')
   process.exit(2)
 }
 console.log(`probe ${mode}`)

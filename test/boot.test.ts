@@ -25,6 +25,7 @@ describe('createWarren', () => {
       client: fakeModel().client,
       // After the reminder below is due (core `NOW` plus two days).
       clock: () => new Date('2026-11-22T15:00:00Z'),
+      build: 'abc123',
     })
     await new Promise<void>((r) => warren.server.listen(0, '127.0.0.1', r))
     base = `http://127.0.0.1:${(warren.server.address() as AddressInfo).port}`
@@ -37,6 +38,9 @@ describe('createWarren', () => {
   it('boots on a migrated database and answers /health with 200', async () => {
     const res = await fetch(`${base}/health`)
     expect(res.status).toBe(200)
+    expect(await res.text()).toBe('ok')
+    // Which deploy answers, and nothing else.
+    expect(res.headers.get('x-warren-build')).toBe('abc123')
   })
 
   it('answers the webhook handshake and refuses an unsigned post', async () => {

@@ -25,6 +25,11 @@ const { server, sweep, stop } = createWarren({
   config,
   graph,
   client,
+  // A deploy from GitHub has a commit; a `railway up` has none; both have a deployment id.
+  build:
+    [process.env.RAILWAY_GIT_COMMIT_SHA, process.env.RAILWAY_DEPLOYMENT_ID]
+      .filter(Boolean)
+      .join(' ') || undefined,
   maxAttempts: MAX_ATTEMPTS,
   staleMs: 120_000,
   transcriber: config.OPENROUTER_API_KEY

@@ -30,7 +30,9 @@ const FIXTURES: Record<string, { file: string; type: string }> = {
 }
 const dir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 
-export function createSink(opts: { token?: string } = {}) {
+export function createSink(opts: { token: string }) {
+  if (!opts.token)
+    throw new Error('SINK_TOKEN is required: /sent shows every message the sink recorded')
   const log: Sent[] = []
   let seq = 0
   const record = (s: Omit<Sent, 'seq' | 'at'>) => {
@@ -55,7 +57,7 @@ export function createSink(opts: { token?: string } = {}) {
     const path = url.pathname
     if (req.method === 'GET' && path === '/health') return json(res, 200, { ok: true })
     if (req.method === 'GET' && path === '/sent') {
-      if (opts.token && req.headers.authorization !== `Bearer ${opts.token}`)
+      if (req.headers.authorization !== `Bearer ${opts.token}`)
         return json(res, 401, { error: 'unauthorized' })
       const since = Number(url.searchParams.get('since') ?? 0) || 0
       return json(res, 200, { last: seq, sent: log.filter((s) => s.seq > since) })
@@ -118,7 +120,7 @@ export function createSink(opts: { token?: string } = {}) {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const port = Number(process.env.PORT ?? 4000)
-  createSink({ token: process.env.SINK_TOKEN }).listen(port, () =>
+  createSink({ token: process.env.SINK_TOKEN ?? '' }).listen(port, () =>
     console.log(`graph-sink on ${port}`),
   )
 }
