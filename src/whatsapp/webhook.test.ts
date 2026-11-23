@@ -109,7 +109,7 @@ describe('the webhook', () => {
       claimed_ms: expect.any(Number),
       stamp_ms: expect.any(Number),
     })
-    expect(app.calls.typing).toEqual(['wamid.B'])
+    expect(app.calls.typing).toEqual(['wamid.B', 'wamid.B']) // on receipt, and again at the claim
     expect(app.calls.sent).toHaveLength(1)
     const [turn] = await sql`SELECT * FROM turn WHERE id = ${r?.turn_id}`
     expect(turn).toMatchObject({

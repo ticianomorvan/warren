@@ -197,7 +197,7 @@ describe.skipIf(!realPostgres)('real Postgres: the worker under concurrency', ()
     ).map((r) => Number(r.ms))
     const at = (p: number) =>
       ms[Math.min(ms.length - 1, Math.ceil((p / 100) * ms.length) - 1)] as number
-    // The measurement the slice reports (sending it on receipt is R7's experiment): the typing indicator waits for the lane.
+    // The measurement the slice reports: the first signal goes out on receipt, whatever the lanes are doing.
     console.info(
       `FIRST_SIGNAL n=${ms.length} p50=${Math.round(at(50))}ms p95=${Math.round(at(95))}ms max=${Math.round(ms.at(-1) as number)}ms`,
     )

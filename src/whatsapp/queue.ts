@@ -124,20 +124,13 @@ export function createQueue(sql: Sql, o: QueueOptions) {
     },
 
     /**
-     * First signal on receipt: stamps the typing indicator of the sender's pending rows that wait behind an older open one (so their lane
-     * will not reach them for a while) and have none yet, and returns their wamids. Stamped before it is sent, so two kicks never both
-     * send it. It writes nothing but `typing_sent_at` on rows nobody owns; a claim that finds one locked skips it, so the caller kicks
-     * the lane again afterwards.
+     * The first signal went out on receipt (the read receipt and the typing indicator, before any lane looked at the row): stamps
+     * `typing_sent_at`, and only after the call succeeded. The first stamp stays, so `typing_sent_at - received_at` is the first signal.
      */
-    async signalWaiting(waId: string): Promise<string[]> {
-      const rows = await sql<{ wamid: string }[]>`
-        UPDATE wa_message m SET typing_sent_at = now()
-        WHERE m.wa_id = ${waId} AND m.status = 'pending' AND m.typing_sent_at IS NULL AND m.turn_id IS NULL
-          AND EXISTS (
-            SELECT 1 FROM wa_message o
-            WHERE o.wa_id = m.wa_id AND o.id < m.id AND o.status IN ('pending', 'processing') AND o.turn_id IS NULL)
-        RETURNING m.wamid`
-      return rows.map((r) => r.wamid)
+    async recordReceipt(wamid: string): Promise<void> {
+      await sql`
+        UPDATE wa_message SET typing_sent_at = COALESCE(typing_sent_at, now())
+        WHERE wamid = ${wamid} AND status IN ('pending', 'processing')`
     },
 
     /** Stamps the typing indicator (the first stamp stays). Returns ms since received (database clock), null if not owned. */

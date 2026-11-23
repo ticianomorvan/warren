@@ -256,6 +256,22 @@ describe('the first signal on receipt', () => {
     app.close()
   })
 
+  it('the receipt is stamped only after the call succeeded: a failed call leaves it null', async () => {
+    const fake = fakeGraph({
+      typing: async () => {
+        throw new Error('graph down')
+      },
+    })
+    const app = await setup({ fake })
+    // An older row of the sender is held by a live worker, so no lane touches the new one.
+    await seed('wamid.Y1', "status = 'processing', attempts = 1, claimed_at = now()")
+    await post(app.base, messageBody('wamid.Y2', WA, { text: { body: 'hola' } }))
+    await until(async () => fake.calls.typing.includes('wamid.Y2'))
+    await new Promise((r) => setTimeout(r, 50))
+    expect((await row('wamid.Y2'))?.typing_sent_at).toBeNull()
+    app.close()
+  })
+
   it('a sender who is not allowed gets no signal, and nothing is sent twice for a message the lane reaches', async () => {
     const stranger = '5491155559999'
     const app = await setup({ allowed: [WA] })
@@ -499,7 +515,7 @@ describe('a message that cannot be answered', () => {
     await post(app.base, messageBody('wamid.SLOW'))
     await until(() => app.calls.sent.length === 1)
     expect(bodies(app.calls)).toEqual([REPLY_INTERIM])
-    await until(() => app.calls.typing.length === 2) // typing again after the note
+    await until(() => app.calls.typing.length === 3) // on receipt, at the claim, and again after the note
     release.open()
     await until(() => doneCount(1))
     expect(bodies(app.calls)).toEqual([REPLY_INTERIM, RECORD])

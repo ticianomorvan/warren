@@ -542,36 +542,31 @@ export function createWorker(o: WorkerOptions) {
   }
 
   /**
-   * The first signal on receipt: a message that waits behind an older one of its sender gets the read receipt and the typing indicator
-   * now, not when its lane reaches it. Only for senders who get replies. Cosmetic: a failure is only logged.
+   * The first signal on receipt: the read receipt and the typing indicator, for each new message of a sender who gets replies, before
+   * anything else is done with it. The app calls it after the 200, with the messages the webhook stored for the first time. The stamp
+   * comes after the call succeeds; a lane still sends the indicator again when it claims the row (the reply to the message before may
+   * have cleared this one). Cosmetic: a failure is only logged. Never throws.
    */
-  async function firstSignal(senders: string[]): Promise<void> {
+  async function acknowledge(messages: { id: string; from: string }[]): Promise<void> {
     await Promise.all(
-      senders
-        .filter((waId) => isAllowed(o.allowed, waId))
-        .map(async (waId) => {
-          const wamids = await queue.signalWaiting(waId)
-          await Promise.all(
-            wamids.map((wamid) =>
-              graph
-                .markReadAndType(wamid)
-                .catch((err) => log('typing_failed', { wamid, error: errorText(err) })),
-            ),
-          )
+      messages
+        .filter((m) => isAllowed(o.allowed, m.from))
+        .map(async (m) => {
+          try {
+            await graph.markReadAndType(m.id)
+            await queue.recordReceipt(m.id)
+          } catch (err) {
+            log('typing_failed', { wamid: m.id, error: errorText(err) })
+          }
         }),
     )
   }
 
-  /** Claims and processes these senders' messages now, if they are due, and signals the ones that must wait. Never throws. */
+  /** Claims and processes these senders' messages now, if they are due. Never throws. */
   function kick(senders: string[]): Promise<void> {
     if (senders.length === 0 || shutdown.signal.aborted) return Promise.resolve()
-    const unique = [...new Set(senders)]
-    // The signal's UPDATE can hold a row a claim wanted for a moment (the claim skips locked rows): look at the lanes again after it.
-    const signalled = firstSignal(unique)
-      .catch((err) => log('typing_failed', { error: errorText(err) }))
-      .then(() => Promise.all(unique.map(lane)))
     return track(
-      Promise.all([...unique.map(lane), signalled]).then(
+      Promise.all([...new Set(senders)].map(lane)).then(
         () => {},
         (err) => log('kick_error', { error: errorText(err) }, 'error'),
       ),
@@ -619,7 +614,7 @@ export function createWorker(o: WorkerOptions) {
     await drain(ms)
   }
 
-  return { kick, sweep, drain, stop }
+  return { acknowledge, kick, sweep, drain, stop }
 }
 
 export type Worker = ReturnType<typeof createWorker>

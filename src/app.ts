@@ -68,8 +68,9 @@ export function createApp(o: AppOptions): Server {
 
     // Persist before answering: after the 200 Meta will not send this again. Every message goes in as `pending`; the worker decides
     // whether it is answered. If the batch fails halfway, the rows already stored are still processed now, and Meta's retry brings the rest.
+    const fresh: typeof messages = []
     try {
-      for (const m of messages) await ingest.message(m)
+      for (const m of messages) if (await ingest.message(m)) fresh.push(m)
       for (const s of statuses) await ingest.status(s)
     } catch (err) {
       void worker.kick(senders)
@@ -77,6 +78,8 @@ export function createApp(o: AppOptions): Server {
     }
 
     send(res, 200)
+    // The first signal, on receipt: for each message stored for the first time, before its lane has a turn.
+    void worker.acknowledge(fresh)
     // A retried batch has rows that are already stored but still pending: the lanes claim them too.
     void worker.kick(senders)
   }

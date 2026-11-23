@@ -118,7 +118,8 @@ describe('a photo', () => {
     const fake = fakeGraph({ media: { m1: RECEIPT }, download: () => download.promise })
     const app = await setup({ fake, model: script(logCall(farmacia)) })
     await post(app.base, photoBody('wamid.P3', 'm1', 'ticket', WA))
-    await until(() => fake.calls.typing.length === 1)
+    await until(() => fake.calls.downloads.length === 1)
+    expect(fake.calls.typing.length).toBeGreaterThanOrEqual(1) // on receipt, and again at the claim
     expect(fake.calls.downloads).toEqual(['m1']) // started, not finished
     expect(app.model.n).toBe(0)
     expect(app.calls.sent).toHaveLength(0)
@@ -289,7 +290,8 @@ describe('a voice note', () => {
       model: script(logCall(movement())),
     })
     await post(app.base, voiceBody('wamid.A4', 'a1', WA))
-    await until(() => fake.calls.typing.length === 1)
+    await until(() => fake.calls.downloads.length === 1)
+    expect(fake.calls.typing.length).toBeGreaterThanOrEqual(1)
     expect(fake.calls.downloads).toEqual(['a1'])
     expect(app.model.n).toBe(0)
     download.open()
