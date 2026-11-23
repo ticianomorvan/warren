@@ -201,6 +201,7 @@ describe.skipIf(!realPostgres)('real Postgres: the worker under concurrency', ()
     console.info(
       `FIRST_SIGNAL n=${ms.length} p50=${Math.round(at(50))}ms p95=${Math.round(at(95))}ms max=${Math.round(ms.at(-1) as number)}ms`,
     )
+    console.info(`FIRST_SIGNAL_MS ${ms.map((m) => Math.round(m)).join(',')}`)
     expect(ms).toHaveLength(senders * perSender)
     expect(at(95)).toBeLessThan(5000)
     app.close()

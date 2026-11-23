@@ -159,7 +159,9 @@ export function createWorker(o: WorkerOptions) {
       await interimAgain
     }
 
-    const typing = c.typingSent ? Promise.resolve(undefined) : sender.showTyping(c)
+    // Sent again at the claim even when the first signal went out on receipt: the reply to the message before may have cleared it.
+    const typing =
+      c.typingSent && c.attempts > 1 ? Promise.resolve(undefined) : sender.showTyping(c)
     const at = c.messageAt
     const today = argentinaToday(at)
     // "Now" for reminders: when the person wrote, or later if the message waited (see `WorkerOptions.clock`).
@@ -572,11 +574,37 @@ export function createWorker(o: WorkerOptions) {
     return state.done
   }
 
-  /** Claims and processes these senders' messages now, if they are due. Never throws. */
+  /**
+   * The first signal on receipt: a message that waits behind an older one of its sender gets the read receipt and the typing indicator
+   * now, not when its lane reaches it. Only for senders who get replies. Cosmetic: a failure is only logged.
+   */
+  async function firstSignal(senders: string[]): Promise<void> {
+    await Promise.all(
+      senders
+        .filter((waId) => isAllowed(o.allowed, waId))
+        .map(async (waId) => {
+          const wamids = await queue.signalWaiting(waId)
+          await Promise.all(
+            wamids.map((wamid) =>
+              graph
+                .markReadAndType(wamid)
+                .catch((err) => log('typing_failed', { wamid, error: errorText(err) })),
+            ),
+          )
+        }),
+    )
+  }
+
+  /** Claims and processes these senders' messages now, if they are due, and signals the ones that must wait. Never throws. */
   function kick(senders: string[]): Promise<void> {
     if (senders.length === 0 || shutdown.signal.aborted) return Promise.resolve()
+    const unique = [...new Set(senders)]
+    // The signal's UPDATE can hold a row a claim wanted for a moment (the claim skips locked rows): look at the lanes again after it.
+    const signalled = firstSignal(unique)
+      .catch((err) => log('typing_failed', { error: errorText(err) }))
+      .then(() => Promise.all(unique.map(lane)))
     return track(
-      Promise.all([...new Set(senders)].map(lane)).then(
+      Promise.all([...unique.map(lane), signalled]).then(
         () => {},
         (err) => log('kick_error', { error: errorText(err) }, 'error'),
       ),

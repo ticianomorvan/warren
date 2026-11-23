@@ -233,6 +233,42 @@ describe('recovery', () => {
   })
 })
 
+describe('the first signal on receipt', () => {
+  it('a message that waits behind an older one gets the typing indicator at once, not when its lane reaches it', async () => {
+    const hold = gate()
+    const app = await setup({
+      model: fakeModel(async () => {
+        await hold.promise
+        return [logCall(movement())]
+      }),
+    })
+    await post(app.base, messageBody('wamid.Q1', WA, { text: { body: 'café 3500 con la visa' } }))
+    await until(async () => app.calls.typing.includes('wamid.Q1'))
+    await post(app.base, messageBody('wamid.Q2', WA, { text: { body: 'café 3500 con la visa' } }))
+    // The first is still in the model, so its lane has not reached the second.
+    await until(async () => app.calls.typing.includes('wamid.Q2'))
+    expect(app.calls.sent).toHaveLength(0)
+    expect((await row('wamid.Q2'))?.status).toBe('pending')
+    expect((await row('wamid.Q2'))?.typing_sent_at).toBeInstanceOf(Date)
+    hold.open()
+    await until(() => doneCount(2))
+    expect(bodies(app.calls)).toHaveLength(2)
+    app.close()
+  })
+
+  it('a sender who is not allowed gets no signal, and nothing is sent twice for a message the lane reaches', async () => {
+    const stranger = '5491155559999'
+    const app = await setup({ allowed: [WA] })
+    // An older row of the stranger is held by a live worker, so the new one waits behind it.
+    await seed('wamid.X1', "status = 'processing', attempts = 1, claimed_at = now()", stranger)
+    await post(app.base, messageBody('wamid.X2', stranger, { text: { body: 'hola' } }))
+    await settle()
+    expect(app.calls.typing).not.toContain('wamid.X2')
+    expect((await row('wamid.X2'))?.typing_sent_at).toBeNull()
+    app.close()
+  })
+})
+
 describe('the owner of a row', () => {
   it('a slow worker whose row was taken over cannot send again or reopen the row', async () => {
     const slow = gate()
