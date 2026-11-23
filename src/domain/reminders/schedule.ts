@@ -231,7 +231,9 @@ export function normalizeSchedule(schedule: Schedule, now: Date): Schedule | nul
 const clock = z
   .string()
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
-  .describe('HH:MM, 24 hours. Leave out when the person gave no time.')
+  .describe(
+    'HH:MM, 24 hours, as said: "a las 8" is "08:00", never "20:00" (the evening is "a las 20" or "de la noche"). Leave out when the person gave no time.',
+  )
 
 /** How long from now, for "en 20 minutos", "en 2 horas", "en 3 días". */
 export const FIRST_UNITS = ['minutes', 'hours', 'days', 'weeks', 'months'] as const
