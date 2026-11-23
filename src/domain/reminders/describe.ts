@@ -14,7 +14,7 @@ import type { Schedule } from './schedule'
 
 /**
  * A schedule in Argentine Spanish, rendered by code from the typed fields, so the person sees what code understood and
- * not what the model said (docs/reminders-spec.md, Design 3). Pure; `today` is the Argentine day of the message.
+ * not what the model said (docs/history/reminders-spec.md, Design 3). Pure; `today` is the Argentine day of the message.
  */
 
 const ORDINAL: Record<number, string> = {

@@ -3,7 +3,7 @@ import type { Question } from '../core/turn'
 import { disconnectAccount } from './disconnect'
 import { askLink, confirmLink, declineLink } from './link'
 
-/** What the person is told while connecting an agent (claude.ai, Claude Code) to their account over WhatsApp (docs/mcp-spec.md, Design 3), and when cutting it. */
+/** What the person is told while connecting an agent (claude.ai, Claude Code) to their account over WhatsApp (docs/history/mcp-spec.md, Design 3), and when cutting it. */
 export const REPLY_LINK = {
   /** The one answer to a code that does not work: unknown, expired or already used. It says nothing about which. */
   refused: 'Ese código no sirve: venció o ya se usó. Pedí uno nuevo desde la pantalla de conexión.',

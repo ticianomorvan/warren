@@ -396,7 +396,7 @@ export function createWorker(o: WorkerOptions) {
           ),
       }
     }
-    // Connecting an agent (docs/mcp-spec.md, Design 3): no registry tool, the sign-in's own SQL, inside the commit transaction.
+    // Connecting an agent (docs/history/mcp-spec.md, Design 3): no registry tool, the sign-in's own SQL, inside the commit transaction.
     const tool = answer.kind === 'disconnect' ? 'mcp_disconnect' : answer.kind
     const audit = traced(tool, answer.kind === 'link_ask' ? { code: '[redacted]' } : {})
     const entry = audit[0] as AuditEntry

@@ -5,7 +5,7 @@
     "includes": [
       "**",
       "!evals/cases.jsonl",
-      "!docs/spec.md",
+      "!docs/history",
       "!docs/rebuild",
       "!docs/rebuild-spec.md",
       "!evals/scenarios/results"

@@ -17,7 +17,7 @@ const MAX_BODY = 256 * 1024
 const errorName = (error: unknown) => (error instanceof Error ? error.name : 'unknown')
 
 /**
- * `/mcp` (docs/mcp-spec.md, Design 5) as one web handler, mounted on node by the SDK's own adapter: the host and the origin first,
+ * `/mcp` (docs/history/mcp-spec.md, Design 5) as one web handler, mounted on node by the SDK's own adapter: the host and the origin first,
  * then the door, then a stateless MCP server, a new one for each request, whose tools can only reach the account the door named
  * (it travels in `authInfo`, which the door makes and the handler passes on: nothing of the request is mutated). A failure
  * inside answers 500 and is logged by name; none reaches the process.

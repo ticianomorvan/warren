@@ -79,7 +79,7 @@ function outputTokens(turns: TurnResult[]): Summary['outputTokens'] {
   return { mean: mean(called.map((t) => t.outputTokens ?? 0)), byAction }
 }
 
-/** Gate from docs/agent-spec.md: at least 95% of scenarios fully right, no silent wrong change, no invented number. */
+/** Gate from docs/history/agent-spec.md: at least 95% of scenarios fully right, no silent wrong change, no invented number. */
 export const GATE_PASS_RATE = 0.95
 
 export function summarize(results: ScenarioResult[]): Summary {
