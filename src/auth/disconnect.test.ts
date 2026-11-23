@@ -17,7 +17,7 @@ import {
 } from '../auth-test-kit'
 import { call, ok, rpc } from '../mcp-test-kit'
 import { sql, useDatabase } from '../test-harness'
-import { REPLY_DISCONNECT } from '../whatsapp/replies'
+import { REPLY_DISCONNECT } from './answer'
 
 /**
  * "desconectar" (`disconnect.ts`) end to end. It deletes better-auth's rows with SQL, one of them by a `LIKE` on the JSON value of a

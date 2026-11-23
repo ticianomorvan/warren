@@ -171,12 +171,24 @@ const VALUES = {
   list_reminders: (input) => ok('list_reminders', input),
 } satisfies { [T in Tool]: (input: Input<T>, env: Env) => Checked }
 
-/** The rules of a reminder, whoever sends it. `message` is the person's own, when there is one: a number in the text must be one they wrote. */
-function reminder(r: Input<'set_reminder'>, env: Env, message?: string): Checked {
+/**
+ * The rules of a reminder, whoever sends it. The call that comes out carries the schedule these rules approved, resolved from
+ * `env.now`: the commit point stores that one.
+ */
+function reminder(r: Input<'set_reminder'>, env: Env): Checked {
   const schedule = scheduleOf(r, env.now)
   if (typeof schedule === 'string') return rejected(schedule)
-  const checked = checkReminder({ what: r.what, schedule }, env.now, message)
-  if (checked.ok) return ok('set_reminder', { ...r, what: checked.what })
+  const checked = checkReminder({ what: r.what, schedule }, env.now)
+  if (checked.ok) {
+    return {
+      kind: 'ok',
+      call: {
+        tool: 'set_reminder',
+        input: { ...r, what: checked.what },
+        schedule: checked.schedule,
+      },
+    }
+  }
   if ('message' in checked) return rejected(checked.message)
   return declined(
     checked.refused === 'past'

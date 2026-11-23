@@ -92,6 +92,21 @@ describe('understand, then commit', () => {
     expect(committed.record).toBeNull()
   })
 
+  it('a read in the same turn as a write sees the write', async () => {
+    const a = await newAccount(sql)
+    const { client } = model([
+      ['log_movements', { movements: [cafe({ amount: '2800' })] }],
+      ['summarize', { range: { period: 'today' }, direction: 'out' }],
+      ['remember_fact', { kind: 'alias', key: 'visa', value: 'crédito visa' }],
+      ['list_facts', {}],
+    ])
+    const { committed } = await say(a, 'cafe 2800, cuanto llevo hoy? y acordate de visa', client)
+    expect(committed.reply).toContain('✓ Café $2.800')
+    expect(committed.reply).toContain('$2.800')
+    expect(committed.reply).not.toContain('no encontré gastos')
+    expect(committed.reply).toContain('visa')
+  })
+
   it('a reply with a number code did not give is replaced by the apology', async () => {
     const a = await newAccount(sql)
     const { client } = model([['reply', { text: 'Gastaste $99.999' }]])

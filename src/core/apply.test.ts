@@ -25,6 +25,7 @@ import { MAX_FACTS } from '../domain/facts'
 import { MAX_REMINDERS } from '../domain/reminders/guard'
 import type { Outcome } from './apply'
 import { schemaDir } from './db'
+import { checkValues } from './guards'
 
 useDatabase({ migrations: schemaDir })
 
@@ -318,6 +319,45 @@ describe('set_reminder and cancel_reminder', () => {
     await sql`UPDATE reminder SET next_due_at = NULL WHERE entity_id = 2`
     expect(await one(a, cancel(2))).toMatchObject({ status: 'gone' })
     expect(await allReminders(sql)).toHaveLength(2)
+  })
+
+  /** The call as `checkValues` returns it, at the instant the guard ran. */
+  const guarded = (input: unknown, at: Date) => {
+    const checked = checkValues('set_reminder', input, { today: '2026-11-20', now: at })
+    if (checked.kind !== 'ok') throw new Error(`not ok: ${checked.kind}`)
+    return checked.call
+  }
+
+  it('stores the schedule the guard approved, not one worked out from the message time again', async () => {
+    const a = await newAccount(sql)
+    // "todos los días a las 8, 3 veces" written at 07:59:50 and checked at 08:00:01: the guard moves the start to tomorrow.
+    const written = new Date('2026-11-20T10:59:50Z')
+    const checkedAt = new Date('2026-11-20T11:00:01Z')
+    const call = guarded(
+      { what: 'pastilla', first: { day: 'today', time: '08:00' }, every: 'day', count: 3 },
+      checkedAt,
+    )
+    await turn(sql, a, [call], { at: written, clock: () => new Date('2026-11-20T11:00:05Z') })
+    const [r] = await allReminders(sql)
+    expect(r?.due).toEqual(new Date('2026-11-21T11:00:00Z')) // tomorrow 08:00, not the 08:00 that has just gone by
+  })
+
+  it('a reminder redelivered late counts from the clock, not from the message time', async () => {
+    const a = await newAccount(sql)
+    const written = new Date('2026-11-20T14:00:00Z')
+    const clock = new Date('2026-11-20T15:00:00Z') // an hour late
+    const call = guarded({ what: 'llamar', first: { in: { n: 30, unit: 'minutes' } } }, clock)
+    await turn(sql, a, [call], { at: written, clock: () => clock })
+    const [r] = await allReminders(sql)
+    expect(r?.due).toEqual(new Date('2026-11-20T15:30:00Z'))
+  })
+
+  it('says past when the approved schedule has gone by before the commit point', async () => {
+    const a = await newAccount(sql)
+    const call = guarded({ what: 'x', first: { in: { n: 1, unit: 'minutes' } } }, NOW)
+    const t = await turn(sql, a, [call], { at: NOW, clock: () => minutes(5) })
+    expect(t.done[0]?.outcome).toMatchObject({ tool: 'set_reminder', status: 'past' })
+    expect(await allReminders(sql)).toEqual([])
   })
 
   it('a reminder never moves the ledger or the facts', async () => {

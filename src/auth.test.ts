@@ -3,6 +3,7 @@ import { request as httpRequest } from 'node:http'
 import { getMigrations } from 'better-auth/db/migration'
 import { describe, expect, it } from 'vitest'
 import { remember, turn } from '../test/core'
+import { REPLY_LINK } from './auth/answer'
 import { ipKey } from './auth/ip'
 import { cleanName, maskNumber } from './auth/routes'
 import {
@@ -45,7 +46,6 @@ import {
   useDatabase,
   VERIFY,
 } from './test-harness'
-import { REPLY_LINK } from './whatsapp/replies'
 
 /**
  * The authorization server of slice 5.1 end to end: a fake claude.ai (its client metadata document, PKCE, a

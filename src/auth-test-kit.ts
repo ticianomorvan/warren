@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto'
 import { request as httpRequest } from 'node:http'
 import { expect } from 'vitest'
+import { REPLY_LINK } from './auth/answer'
 import { bodies, messageBody, post, row, setup, until } from './test-harness'
-import { REPLY_LINK } from './whatsapp/replies'
 
 /** Shared by the auth and MCP tests: a fake claude.ai (its client metadata document, PKCE, a cookie jar) and the sign-in by WhatsApp. */
 

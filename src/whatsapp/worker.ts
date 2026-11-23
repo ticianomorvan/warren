@@ -5,8 +5,7 @@ import { AgentError, type AuditEntry } from '../agent/loop'
 import { estimateCostUsd, type ModelKey } from '../agent/models'
 import { compose, type HelpOptions, render } from '../agent/reply'
 import { understand } from '../agent/understand'
-import { disconnectAccount } from '../auth/disconnect'
-import { askLink, confirmLink, declineLink } from '../auth/link'
+import { answerSignIn, type SignInResult } from '../auth/answer'
 import { type Call, labelOf } from '../core/commands'
 import type { Sql } from '../core/db'
 import { sensitive } from '../core/secrets'
@@ -21,14 +20,7 @@ import type { Graph } from './graph'
 import { accountFor } from './ingest'
 import { fetchPhoto, hear } from './media'
 import { type Claim, createQueue } from './queue'
-import {
-  REPLY_AUDIO,
-  REPLY_DISCONNECT,
-  REPLY_IMAGE,
-  REPLY_INTERIM,
-  REPLY_LINK,
-  REPLY_NON_TEXT,
-} from './replies'
+import { REPLY_AUDIO, REPLY_IMAGE, REPLY_INTERIM, REPLY_NON_TEXT } from './replies'
 import { codeAnswer } from './resolve'
 import { createSender, errorText } from './send'
 
@@ -67,7 +59,11 @@ interface Worked {
   accountId: number
   /** The calls, how the reply is composed and what is stored beside the turn. */
   calls: Call[]
-  compose: (done: Done[], record: string | null) => { reply: string; question?: Question | null }
+  compose: (
+    tx: Sql,
+    done: Done[],
+    record: string | null,
+  ) => Promise<{ reply: string; question?: Question | null }>
   label?: string
   audit: AuditEntry[]
   turns: number
@@ -78,8 +74,8 @@ interface Worked {
   redact: boolean
   /** What was heard in a voice note, stored as the message's text. */
   heard?: string
-  /** Runs inside the commit transaction before the account lock (the sign-in's own SQL); false ends it. */
-  before?: (tx: Sql) => Promise<boolean>
+  /** Runs inside the commit transaction after the account lock (the sign-in's own SQL). */
+  guard?: (tx: Sql) => Promise<undefined>
 }
 
 /**
@@ -190,7 +186,7 @@ export function createWorker(o: WorkerOptions) {
       const notice = (reply: string, cause: string, detail: string): Worked => ({
         accountId,
         calls: [],
-        compose: () => ({ reply }),
+        compose: async () => ({ reply }),
         label: 'notice',
         audit: [
           {
@@ -310,10 +306,11 @@ export function createWorker(o: WorkerOptions) {
           accountId: w.accountId,
           channel: 'whatsapp',
           now: at,
+          clock,
           calls: w.calls,
           ...(w.label ? { label: w.label } : {}),
-          before: async (tx) =>
-            (await queue.holds(tx, c)) && (w.before ? await w.before(tx) : true),
+          claim: (tx) => queue.holds(tx, c),
+          ...(w.guard ? { guard: w.guard } : {}),
           compose: w.compose,
           scrub: redact,
           after: async (tx, turn) => {
@@ -376,15 +373,14 @@ export function createWorker(o: WorkerOptions) {
       { turn: 0, tool, input, status, ms: 0 },
     ]
     if (answer.kind === 'call') {
-      const rendered = await render(sql, accountId, [answer.call], today, help)
       return {
         ...base,
         calls: [answer.call],
         audit: traced(answer.call.tool, answer.call.input),
-        compose: (done, record) =>
+        compose: async (tx, done, record) =>
           compose(
             {
-              rendered,
+              rendered: await render(tx, accountId, [answer.call], today, help),
               declined: [],
               evidence: { numbers: [], words: [], window: [] },
               redact: false,
@@ -394,61 +390,26 @@ export function createWorker(o: WorkerOptions) {
           ),
       }
     }
-    // Connecting an agent (docs/mcp-spec.md, Design 3): no registry tool, the sign-in's own SQL, inside the commit transaction (so a message
-    // that is processed again, or never committed, has changed nothing). Code asks; the question the reply carries is the one only the very
-    // next "sí" or "no" can answer.
-    let reply = ''
-    let question: Question | null = null
-    const tool =
-      answer.kind === 'link_ask'
-        ? 'link_ask'
-        : answer.kind === 'link_confirm'
-          ? 'link_confirm'
-          : answer.kind === 'link_decline'
-            ? 'link_decline'
-            : 'mcp_disconnect'
+    // Connecting an agent (docs/mcp-spec.md, Design 3): no registry tool, the sign-in's own SQL, inside the commit transaction.
+    const tool = answer.kind === 'disconnect' ? 'mcp_disconnect' : answer.kind
     const audit = traced(tool, answer.kind === 'link_ask' ? { code: '[redacted]' } : {})
     const entry = audit[0] as AuditEntry
-    const run = async (tx: Sql): Promise<void> => {
-      switch (answer.kind) {
-        case 'link_ask': {
-          const asked = await askLink(tx, answer.code, accountId)
-          reply = asked ? REPLY_LINK.ask(asked.client) : REPLY_LINK.refused
-          entry.status = asked ? 'asked' : 'refused'
-          if (asked) question = { options: [], then: { do: 'link', link_id: asked.id } }
-          return
-        }
-        case 'link_confirm': {
-          const client = await confirmLink(tx, answer.linkId, accountId)
-          reply = client ? REPLY_LINK.done(client) : REPLY_LINK.refused
-          entry.status = client ? 'applied' : 'gone'
-          return
-        }
-        case 'link_decline': {
-          const closed = await declineLink(tx, answer.linkId, accountId)
-          reply = REPLY_LINK.declined
-          entry.status = closed ? 'applied' : 'gone'
-          return
-        }
-        case 'disconnect': {
-          const cut = await disconnectAccount(tx, accountId)
-          reply = cut === 0 ? REPLY_DISCONNECT.none : REPLY_DISCONNECT.done(cut)
-          entry.status = cut === 0 ? 'nothing' : 'applied'
-        }
-      }
-    }
-    const done: Worked = {
+    let result: SignInResult | undefined
+    return {
       ...base,
       calls: [],
       label: tool,
       audit,
-      compose: () => ({ reply, question }),
-      before: async (tx) => {
-        await run(tx)
-        return true
+      guard: async (tx) => {
+        result = await answerSignIn(tx, answer, accountId)
+        entry.status = result.status
+        return undefined
+      },
+      compose: async () => {
+        if (!result) throw new Error('the sign-in answer was not run')
+        return { reply: result.reply, question: result.question }
       },
     }
-    return done
   }
 
   /** A send that waits for the sender's earlier replies to be out first: a burst is answered in order. */

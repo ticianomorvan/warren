@@ -18,7 +18,7 @@ import { declineLine, REPLY } from '../core/describe'
 import { money } from '../core/es'
 import { checkValues } from '../core/guards'
 import type { Undone } from '../core/history'
-import { commit, lockAccount } from '../core/turn'
+import { commit } from '../core/turn'
 import { allLiveFacts, type FactRow } from '../domain/facts'
 import { findMovements, type MovementRow } from '../domain/movements'
 import { liveReminders, type ReminderRow } from '../domain/reminders/db'
@@ -287,19 +287,12 @@ const callHash = (call: Call) =>
     .update(stable({ tool: call.tool, input: call.input }))
     .digest('hex')
 
-/** Thrown inside the commit to roll it back: the call changed nothing, so it leaves no turn. Carries what the client is told. */
-class NothingWritten extends Error {
-  constructor(readonly result: Result) {
-    super('nothing written')
-  }
-}
-
-/** The client's view of what a write did. A write that changed nothing is a `NothingWritten`; the rest carry the turn and the line. */
+/**
+ * The client's view of what a write did: the turn and the line when it changed something, and what it came to when it did not (`turn`
+ * null for a no-op, a typed refusal for the rest). Built once, from the outcome.
+ */
 function presentWrite(o: Outcome, line: string, turn: number | null, today: string): Result {
   const base = { record: line, turn, replayed: false }
-  const nothing = (output: Record<string, unknown>) => {
-    throw new NothingWritten(done(output))
-  }
   switch (o.tool) {
     case 'log_movements':
       return done({
@@ -307,11 +300,10 @@ function presentWrite(o: Outcome, line: string, turn: number | null, today: stri
         movements: o.movements.map(movementView),
       } satisfies Out<'log_movements'>)
     case 'correct_movement':
-      if (o.status === 'gone') throw new NothingWritten(fail('gone', line))
+      if (o.status === 'gone') return fail('gone', line)
       if (o.status === 'unchanged') {
-        return nothing({
+        return done({
           ...base,
-          turn: null,
           changed: [],
           before: movementView(o.old),
           after: movementView(o.old),
@@ -324,21 +316,20 @@ function presentWrite(o: Outcome, line: string, turn: number | null, today: stri
         after: movementView(o.next),
       } satisfies Out<'correct_movement'>)
     case 'delete_movement':
-      if (o.status === 'gone') throw new NothingWritten(fail('gone', line))
+      if (o.status === 'gone') return fail('gone', line)
       return done({ ...base, deleted: movementView(o.old) } satisfies Out<'delete_movement'>)
     case 'undo_last':
-      if (o.status !== 'applied') throw new NothingWritten(fail(o.status, line))
+      if (o.status !== 'applied') return fail(o.status, line)
       return done({
         ...base,
         undone_turn: o.turn,
         items: o.items.map((u) => undoneItem(u, today)),
       } satisfies Out<'undo_last'>)
     case 'remember_fact':
-      if (o.status === 'full') throw new NothingWritten(fail('full', line))
+      if (o.status === 'full') return fail('full', line)
       if (o.status === 'unchanged') {
-        return nothing({
+        return done({
           ...base,
-          turn: null,
           status: 'unchanged',
           fact: factView(o.fact),
           previous_value: null,
@@ -351,16 +342,16 @@ function presentWrite(o: Outcome, line: string, turn: number | null, today: stri
         previous_value: o.before ?? null,
       } satisfies Out<'remember_fact'>)
     case 'forget_fact':
-      if (o.status === 'gone') throw new NothingWritten(fail('gone', line))
+      if (o.status === 'gone') return fail('gone', line)
       return done({ ...base, forgotten: o.facts.map(factView) } satisfies Out<'forget_fact'>)
     case 'set_reminder':
-      if (o.status !== 'applied') throw new NothingWritten(fail(o.status, line))
+      if (o.status !== 'applied') return fail(o.status, line)
       return done({
         ...base,
         reminder: reminderView(o.reminder, today),
       } satisfies Out<'set_reminder'>)
     case 'cancel_reminder':
-      if (o.status === 'gone') throw new NothingWritten(fail('gone', line))
+      if (o.status === 'gone') return fail('gone', line)
       return done({
         ...base,
         reminder: reminderView(o.reminder, today),
@@ -375,7 +366,7 @@ function presentWrite(o: Outcome, line: string, turn: number | null, today: stri
  * One MCP write: the same value guards as WhatsApp (`checkValues`), then `commit` on the channel `mcp`, with the same undo (every store).
  * `request_id` makes a retry safe: under the account lock, a request seen before returns its first answer when the call is the same one
  * (tool and checked input) and a typed refusal when it is another; the request's row is stored in the turn's own transaction. A call that
- * changes nothing (a refusal, a no-op) rolls back and leaves no turn and no row, so the same id can be sent again.
+ * changes nothing (a refusal, a no-op) leaves no turn and no row (`requireChange`), so the same id can be sent again.
  */
 async function write(
   c: ToolContext,
@@ -392,64 +383,62 @@ async function write(
   }
   const call = checked.call
   const hash = callHash(call)
-  let early: Result | undefined
-  let captured: Result | undefined
+  let presented: Result | undefined
   try {
     const committed = await commit(c.sql, {
       accountId: c.accountId,
       channel: 'mcp',
       now,
       calls: [call],
-      // Under the account lock (the caller's own turn takes it again, in the same transaction), before anything is written.
-      before: async (tx) => {
-        await lockAccount(tx, c.accountId)
+      requireChange: true,
+      guard: async (tx: Sql): Promise<{ stop: Result } | undefined> => {
         // A reminder is sent to WhatsApp: an account with no address there would hold one that is never sent.
         if (call.tool === 'set_reminder' && !(await whatsappAddress(tx, c.accountId))) {
-          early = fail('no_whatsapp_address', REPLY.noWhatsappAddress)
-          return false
+          return { stop: fail('no_whatsapp_address', REPLY.noWhatsappAddress) }
         }
-        if (requestId === undefined) return true
+        if (requestId === undefined) return undefined
         const [prior] = await tx<{ input_hash: string; result: Record<string, unknown> }[]>`
           SELECT input_hash, result FROM mcp_request WHERE account_id = ${c.accountId} AND request_id = ${requestId}`
-        if (!prior) return true
+        if (!prior) return undefined
         // The same call gets its first answer; another call under the same id gets neither that answer nor a write.
-        early =
-          prior.input_hash === hash
-            ? done({ ...prior.result, replayed: true })
-            : fail(
-                'request_id_reused',
-                'request_id was already used for a different call: send a new one.',
-              )
-        return false
+        return {
+          stop:
+            prior.input_hash === hash
+              ? done({ ...prior.result, replayed: true })
+              : fail(
+                  'request_id_reused',
+                  'request_id was already used for a different call: send a new one.',
+                ),
+        }
       },
-      compose: (results, record) => {
-        const [only] = results
-        if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
-        captured = presentWrite(only.outcome, only.line, null, today)
+      compose: (_tx, results, record) => {
+        const only = results[0]
+        if (!only?.line) throw new Error('an MCP write has one outcome')
         return { reply: record ?? only.line }
       },
       after: async (tx, turn) => {
-        const [only] = [captured]
-        if (!only) return
-        // The turn id is known only now: present again with it, and store what the client was told.
-        const result = withTurn(only, turn.id)
-        captured = result
+        const [only] = turn.done
+        if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
+        presented = presentWrite(only.outcome, only.line, turn.id, today)
         if (requestId !== undefined) {
           await tx`
             INSERT INTO mcp_request (account_id, request_id, input_hash, turn_id, result)
-            VALUES (${c.accountId}, ${requestId}, ${hash}, ${turn.id}, ${tx.json(result.structuredContent as never)})`
+            VALUES (${c.accountId}, ${requestId}, ${hash}, ${turn.id}, ${tx.json(presented.structuredContent as never)})`
         }
       },
     })
-    if (committed === null) return early ?? fail('unavailable', 'nothing was written')
-    return captured ?? fail('unavailable', 'nothing was written')
+    if (committed === null) return fail('unavailable', 'nothing was written')
+    if ('stop' in committed) return committed.stop
+    if ('unchanged' in committed) {
+      const [only] = committed.unchanged
+      if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
+      return presentWrite(only.outcome, only.line, null, today)
+    }
+    return presented ?? fail('unavailable', 'nothing was written')
   } catch (error) {
-    if (error instanceof NothingWritten) return error.result
     return unavailable(`warren_${tool}`, error)
   }
 }
-
-const withTurn = (r: Result, turn: number): Result => done({ ...r.structuredContent, turn })
 
 /** One call of a tool, as the server runs it: a failure of the database is an error result without detail, never a crash. */
 export async function runTool(

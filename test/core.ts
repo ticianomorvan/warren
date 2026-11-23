@@ -33,15 +33,16 @@ export function turn(
   sql: Sql,
   accountId: number,
   calls: Call[],
-  o: { at?: Date; channel?: Channel; stores?: readonly Store[] } = {},
+  o: { at?: Date; clock?: () => Date; channel?: Channel; stores?: readonly Store[] } = {},
 ): Promise<Committed> {
   return commit(sql, {
     accountId,
     channel: o.channel ?? 'whatsapp',
     now: o.at ?? NOW,
+    ...(o.clock ? { clock: o.clock } : {}),
     calls,
     ...(o.stores ? { stores: o.stores } : {}),
-    compose: (done) => ({
+    compose: (_tx, done) => ({
       reply:
         done
           .map((d) => d.line)

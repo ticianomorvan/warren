@@ -42,8 +42,12 @@ export interface UnderstandInput {
 export interface Understood {
   /** Handed to `commit` as `calls`. */
   calls: Call[]
-  /** Handed to `commit` as `compose`. */
-  compose: (done: Done[], record: string | null) => { reply: string; question?: Question | null }
+  /** Handed to `commit` as `compose`: renders the reads of the turn inside its transaction, after the writes, then the reply. */
+  compose: (
+    tx: Sql,
+    done: Done[],
+    record: string | null,
+  ) => Promise<{ reply: string; question?: Question | null }>
   /** The message held a secret (or the model tried to store one): `commit` is told to keep no input (`scrub`). */
   redact: boolean
   declined: Declined[]
@@ -88,15 +92,14 @@ export async function understand(i: UnderstandInput): Promise<Understood> {
     ...(i.signal ? { signal: i.signal } : {}),
     ...(i.deadlineAt !== undefined ? { deadlineAt: i.deadlineAt } : {}),
   })
-  const rendered = await render(i.sql, i.accountId, result.calls, today, i.help)
   const redact = sensitive(i.text) || result.declined.includes('secret')
   const seen = withFound(ctx, result.found)
   return {
     calls: result.calls,
-    compose: (done, record) =>
+    compose: async (tx, done, record) =>
       compose(
         {
-          rendered,
+          rendered: await render(tx, i.accountId, result.calls, today, i.help),
           declined: result.declined,
           evidence: { numbers: seen.evidence, words: seen.evidence, window: seen.window },
           ...(i.voice ? { heard: i.text } : {}),

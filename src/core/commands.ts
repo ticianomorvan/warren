@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { FirstSchema, RepeatSchema } from '../domain/reminders/schedule'
+import { FirstSchema, RepeatSchema, type Schedule } from '../domain/reminders/schedule'
 
 /**
  * The tool registry: data only. One entry per tool holds everything the tool is: its input (zod, with real optionals and unions,
@@ -744,8 +744,15 @@ export const COMMANDS = {
 
 export type Tool = keyof typeof COMMANDS
 export type Input<T extends Tool> = z.infer<(typeof COMMANDS)[T]['input']>
-/** A call: one tool and its input. */
-export type Call = { [T in Tool]: { tool: T; input: Input<T> } }[Tool]
+/**
+ * A call: one tool and its input. A `set_reminder` that `checkValues` passed also carries the schedule it resolved (from the instant it
+ * checked at), so the commit point stores the schedule the guard approved and does not work it out again from another instant.
+ */
+export type Call = {
+  [T in Tool]: { tool: T; input: Input<T> } & (T extends 'set_reminder'
+    ? { schedule?: Schedule }
+    : unknown)
+}[Tool]
 export type CallOf<T extends Tool> = Extract<Call, { tool: T }>
 
 /** The tools that change what Warren keeps. */

@@ -41,7 +41,9 @@ export interface ApplyContext {
   accountId: number
   /** The turn these writes belong to: reserved by `commit`, inserted last. Every version a call makes or ends carries it. */
   turnId: number
-  /** The instant of the message (an undo brings reminders back from it). WhatsApp gives its own; an MCP request is now. */
+  /** The instant of the message: `logged_at` of what is new, and what an undo counts its window from. WhatsApp gives its own; an MCP request is now. */
+  at: Date
+  /** The scheduling clock: when a reminder's schedule is counted from. Never before `at` (a message that waited is judged by the later one). */
   now: Date
   /** The stores this channel may undo. Default: all of them. */
   stores?: readonly Store[]
@@ -117,7 +119,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       const movements = await insertMovements(tx, {
         accountId,
         turnId,
-        now: ctx.now,
+        now: ctx.at,
         movements: call.input.movements,
       })
       return { tool: call.tool, status: 'applied', effect: 'logged', movements }
@@ -128,7 +130,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       const values = applyChanges(old, call.input.changes)
       const changed = changedFields(old, values)
       if (changed.length === 0) return { tool: call.tool, status: 'unchanged', effect: null, old }
-      const next = await supersede(tx, { accountId, turnId, now: ctx.now, old, next: values })
+      const next = await supersede(tx, { accountId, turnId, now: ctx.at, old, next: values })
       return { tool: call.tool, status: 'applied', effect: 'corrected', old, next, changed }
     }
     case 'delete_movement': {
@@ -141,14 +143,14 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
       const undone = await undoLast(tx, {
         accountId,
         turn: turnId,
-        now: ctx.now,
+        now: ctx.at,
         stores: ctx.stores ?? STORES,
       })
       return { tool: call.tool, effect: undone.status === 'applied' ? 'undone' : null, ...undone }
     }
     case 'remember_fact': {
       const { kind, key, value } = call.input
-      const stored = await rememberFact(tx, { accountId, turnId, now: ctx.now, kind, key, value })
+      const stored = await rememberFact(tx, { accountId, turnId, now: ctx.at, kind, key, value })
       if (stored.kind === 'full') {
         return { tool: call.tool, status: 'full', effect: null, max: MAX_FACTS }
       }
@@ -186,7 +188,8 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
         : { tool: call.tool, status: 'nothing', effect: null }
     }
     case 'set_reminder': {
-      const schedule = scheduleOf(call.input, ctx.now)
+      // The schedule the guard approved; a call that did not come through `checkValues` is worked out from the clock here.
+      const schedule = call.schedule ?? scheduleOf(call.input, ctx.now)
       if (typeof schedule === 'string' || !schedule || !nextOccurrence(schedule, ctx.now)) {
         return { tool: call.tool, status: 'past', effect: null }
       }
@@ -199,6 +202,7 @@ export async function applyCall(tx: Sql, ctx: ApplyContext, call: WriteCall): Pr
         what: call.input.what,
         schedule,
         now: ctx.now,
+        at: ctx.at,
       })
       return { tool: call.tool, status: 'applied', effect: 'reminded', reminder }
     }

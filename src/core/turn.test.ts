@@ -89,7 +89,7 @@ describe('commit', () => {
       channel: 'whatsapp',
       now: NOW,
       calls: [log(cafe({ description: 'a' })), log(cafe({ description: 'b' }))],
-      compose: (done, record) => ({
+      compose: (_tx, done, record) => ({
         reply: `${record}!`,
         question: { options: [{ n: 1, id: 1 }], then: { do: 'delete' } },
         ...(done.length === 2 ? {} : { reply: 'wrong' }),
@@ -118,7 +118,7 @@ describe('commit', () => {
       channel: 'whatsapp',
       now: NOW,
       calls: [log(cafe())],
-      before: async () => false,
+      claim: async () => false,
       compose: () => ({ reply: 'x' }),
     })
     expect(t).toBeNull()

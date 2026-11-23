@@ -1,3 +1,4 @@
+import type { SignInAnswer } from '../auth/answer'
 import type { Call } from '../core/commands'
 import type { Question } from '../core/turn'
 import { normalizeText } from '../core/values'
@@ -57,12 +58,7 @@ export function answerNumber(text: string, asked: number[]): number | null {
  * before it asks the model. A `call` goes through `commit` like the model's own; link and disconnect are the worker's (they have no
  * registry tool: they are not the person's ledger).
  */
-export type CodeAnswer =
-  | { kind: 'call'; call: Call }
-  | { kind: 'link_ask'; code: string }
-  | { kind: 'link_confirm'; linkId: number }
-  | { kind: 'link_decline'; linkId: number }
-  | { kind: 'disconnect' }
+export type CodeAnswer = { kind: 'call'; call: Call } | SignInAnswer
 
 export interface AnswerContext {
   /** The question Warren's newest turn asked, if it is recent enough to be answered (`turn.question`). */

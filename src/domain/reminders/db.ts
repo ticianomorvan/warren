@@ -101,7 +101,10 @@ export async function insertReminder(
     turnId: number
     what: string
     schedule: Schedule
+    /** What the first occurrence is counted from. */
     now: Date
+    /** When it was set, for `logged_at` (default `now`). */
+    at?: Date
     entity?: { id: number; loggedAt: Date }
   },
 ): Promise<ReminderRow> {
@@ -109,7 +112,7 @@ export async function insertReminder(
   if (!nextDueAt) throw new Error('the schedule has no occurrence after now')
   const [row] = await sql<RawRow[]>`
     INSERT INTO reminder (${r.entity ? sql`entity_id,` : sql``} logged_at, account_id, made_in, what, schedule, next_due_at)
-    VALUES (${r.entity ? sql`${r.entity.id},` : sql``} ${r.entity?.loggedAt ?? r.now}, ${r.accountId}, ${r.turnId}, ${tidyWhat(r.what)}, ${sql.json(r.schedule)}, ${nextDueAt})
+    VALUES (${r.entity ? sql`${r.entity.id},` : sql``} ${r.entity?.loggedAt ?? r.at ?? r.now}, ${r.accountId}, ${r.turnId}, ${tidyWhat(r.what)}, ${sql.json(r.schedule)}, ${nextDueAt})
     RETURNING ${columns(sql)}`
   return toRow(row as RawRow) as ReminderRow
 }
