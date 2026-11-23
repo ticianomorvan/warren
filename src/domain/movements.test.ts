@@ -156,6 +156,28 @@ describe('mentionedMovements', () => {
     ).toEqual(['nafta YPF'])
   })
 
+  it('reads an amount that ends in a full stop or a comma, or has thousands and decimals', async () => {
+    const a = await longLedger()
+    await turn(sql, a, [log(cafe({ description: 'lavadero', amount: '1500.50' }))])
+    // The 11th newest is now the veterinario's neighbour: push 'lavadero' out of the 10 newest.
+    await turn(sql, a, [
+      log(
+        ...Array.from({ length: 10 }, (_, k) =>
+          cafe({ description: `x${k}`, amount: `${200 + k}` }),
+        ),
+      ),
+    ])
+    for (const said of ['el de 21000.', 'el de 21.000,', 'el de 21.000!', '¿el de 21.000?']) {
+      expect(
+        (await mentionedMovements(sql, a, said)).map((m) => m.description),
+        said,
+      ).toEqual(['nafta YPF'])
+    }
+    expect((await mentionedMovements(sql, a, 'el de 1.500,50')).map((m) => m.description)).toEqual([
+      'lavadero',
+    ])
+  })
+
   it("never returns what the newest 10 already show, another account's rows, or a word of under 4 letters", async () => {
     const a = await longLedger()
     const b = await longLedger()

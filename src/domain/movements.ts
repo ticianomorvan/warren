@@ -1,5 +1,6 @@
 import type { Category, Changes } from '../core/commands'
 import type { Sql } from '../core/db'
+import { tokens } from '../core/numbers'
 import { canonicalAmount, normalizeText } from '../core/values'
 
 /** How many live movements the model is shown. 10 is the most one message can log, so a whole message can always be addressed. */
@@ -235,12 +236,9 @@ export function mentionedMovements(
   const words = [
     ...new Set(folded.split(/[^a-z0-9]+/).filter((w) => /[a-z]/.test(w) && w.length >= 4)),
   ]
+  // The amounts the message writes, read as the numbers check reads them (a full stop or comma after "3500." is not part of it).
   const amounts = [
-    ...new Set(
-      (folded.match(/\d[\d.,]*/g) ?? []).map((n) =>
-        /^\d{1,3}(\.\d{3})+$/.test(n) ? n.replaceAll('.', '') : n.replace(',', '.'),
-      ),
-    ),
+    ...new Set(tokens(folded).flatMap((t) => (t.needs.startsWith('n:') ? [t.needs.slice(2)] : []))),
   ].filter((n) => /^\d+(\.\d{1,2})?$/.test(n) && Number(n) > 0)
   if (words.length === 0 && amounts.length === 0) return Promise.resolve([] as MovementRow[])
   const like = (w: string) => `% ${w.replace(/[\\%_]/g, '\\$&')}%`
