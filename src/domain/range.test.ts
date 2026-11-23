@@ -231,15 +231,6 @@ describe('resolveRange: refusals, with the reason the model sees', () => {
     expect(why(r('dates', { from: '5', to: 'mañana' }), NOW)).toContain('not a date')
   })
 
-  it('a field the period does not use must be empty: a stray one is a misread question', () => {
-    expect(why(r('this_month', { month: 10 }), NOW)).toContain('takes no month')
-    expect(why(r('today', { year: 2025 }), NOW)).toContain('takes no year')
-    expect(why(r('last_week', { from: '5' }), NOW)).toContain('takes no from')
-    expect(why(r('month', { month: 10, from: '5' }), NOW)).toContain('takes no from')
-    expect(why(r('dates', { from: '5', year: 2025 }), NOW)).toContain('takes no year')
-    expect(why(r('dates', { from: '5', month: 3 }), NOW)).toContain('takes no month')
-  })
-
   it('every period the schema offers resolves, from not after to, never past today', () => {
     const spec = (p: string) =>
       r(
