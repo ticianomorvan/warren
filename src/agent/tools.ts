@@ -33,7 +33,7 @@ function definition(name: Tool, entry: Entry) {
   }
   return {
     name,
-    description: entry.description,
+    description: entry.alone ? `${entry.description} ${ALONE}` : entry.description,
     input_schema: strip(schema) as { type: 'object'; [key: string]: unknown },
   }
 }
@@ -42,6 +42,10 @@ function definition(name: Tool, entry: Entry) {
  * The tools the model is offered, in the registry's order, built once and never changed: its order and bytes are part of the cached
  * prefix. The tools are not `strict`; the input is parsed with the same zod schema and every value is checked by code.
  */
+/** Said once, for every tool that goes alone: the loop refuses it beside another action (`checkTurn`). */
+const ALONE =
+  'Goes alone in its turn: with any other action it is refused; use skip for the other part of the message.'
+
 const entries = Object.entries(COMMANDS) as [Tool, Entry][]
 
 export const TOOLS = entries

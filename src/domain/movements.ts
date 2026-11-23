@@ -1,10 +1,9 @@
-import type { Category, Changes } from '../core/commands'
+import { type Category, type Changes, RECENT_LIMIT } from '../core/commands'
 import type { Sql } from '../core/db'
 import { tokens } from '../core/numbers'
 import { canonicalAmount, normalizeText } from '../core/values'
 
-/** How many live movements the model is shown. 10 is the most one message can log, so a whole message can always be addressed. */
-export const RECENT_LIMIT = 10
+export { RECENT_LIMIT }
 
 /**
  * A live movement as the parser and the reply see it. `id` is the entity id: the same across every version of the movement,

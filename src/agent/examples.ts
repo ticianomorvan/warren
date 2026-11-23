@@ -433,6 +433,8 @@ export const EXAMPLES: Example[] = [
   { message: 'hola, que podes hacer?', calls: [call('help', {})] },
   { message: 'buen dia, para que sirve esto?', calls: [call('help', {})] },
   { message: 'ey, como funciona esto?', calls: [call('help', {})] },
+  { message: 'hola, todo bien por ahi?', calls: [call('help', {})] },
+  { message: 'buenas! que andas haciendo?', calls: [call('help', {})] },
   {
     message: 'cuanto sale el dolar oficial',
     calls: [call('reply', { text: 'Eso no lo sé: solo llevo tus gastos e ingresos.' })],

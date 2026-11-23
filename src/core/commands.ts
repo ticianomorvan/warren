@@ -55,6 +55,8 @@ export type FactKind = (typeof FACT_KINDS)[number]
 
 /** The most rows `find_movements` returns. */
 export const MAX_FOUND = 20
+/** How many of the newest live movements the model is shown in its context. 10 is the most one message can log, so a whole message can always be addressed. */
+export const RECENT_LIMIT = 10
 /** The most movements a message may name in `ask_user`. */
 export const MAX_ASKED = 10
 
@@ -373,8 +375,7 @@ export const COMMANDS = {
       amount: Amount.optional(),
       limit: z.int().optional(),
     }),
-    description:
-      "Search the person's whole history for a movement that is not in the list of the 10 newest. Returns up to 20 live movements with their ids, newest first. Leave out the filters you do not need.",
+    description: `Search the person's whole history for a movement that is not in the list of the ${RECENT_LIMIT} newest: an older item ("el alquiler", "lo del veterinario", "la nafta del 4/11"). Returns up to ${MAX_FOUND} live movements with their ids, newest first. Never call it when the movement is already in the list. Leave out the filters you do not need. Act on one of the results in your next turn.`,
     kind: 'read',
     label: 'find',
     mcp: {
@@ -444,7 +445,9 @@ export const COMMANDS = {
       compare: z
         .union([z.literal('previous'), RangeSchema])
         .optional()
-        .describe('"previous" for the period just before, or a second range the person named.'),
+        .describe(
+          '"previous" for "¿gasté más que el mes pasado?" or "comparado con antes": code takes the stretch right before (while the period is still running, the same days of the one before). Send a second range only when the person names a different one ("este mes vs septiembre"); never the whole period before as a range, that is "previous".',
+        ),
       direction: Direction.optional(),
       category: Category.optional(),
       payment: z.string().optional(),
@@ -480,7 +483,7 @@ export const COMMANDS = {
   reply: define({
     input: z.object({ text: z.string().max(280) }),
     description:
-      'Answer in words, for anything that is not a change to the ledger: a question about what you did or what is stored, small talk, something you cannot do, a request outside expenses, a change when the person has no movements at all (never when some exist and none fits: that is ask_user). Short, in Argentine Spanish. The text may use only numbers that code gave you. Sent alone.',
+      'Your own words, for a message that changes nothing: a question about what you did or what is stored, thanks, chit-chat that asks nothing about what Warren does, something outside their money movements (exchange rates, advice, news, jokes), a request you cannot do, a request to cut Claude\'s or another agent\'s access ("desconectá a Claude": you have no tool for it, so reply that to disconnect they send exactly "desconectar"), or a change or delete when the list says (ninguno) because they have no movements. When they have movements and none fits, that is ask_user: never a reply that says "No encontré". Short, in Argentine Spanish; see "Your words" for what the text may hold.',
     kind: 'answer',
     label: 'reply',
     alone: true,
@@ -509,7 +512,7 @@ export const COMMANDS = {
   help: define({
     input: Nothing,
     description:
-      'Send the canned help text: only when the person asks for help or what you can do, or greets you.',
+      'Code sends the canned help text; you write nothing. For a message that asks what Warren is or does, however it is worded ("ayuda", "qué podés hacer", "en qué me ayudás", "para qué sirve esto", "qué es esto", "cómo funciona"), with or without a greeting before it; for a bare greeting ("hola"); for ANY question addressed to Warren itself after a greeting, even a social one ("hola, ¿todo bien por ahí?", "buenas, ¿qué andás haciendo?", "¿cómo va tu día?"): a greeting does not make it chit-chat; and for a message you cannot make any sense of. Not for a bare thanks, nor for a request outside expenses (an exchange rate): those are reply.',
     kind: 'answer',
     label: 'reply',
   }),
@@ -517,7 +520,7 @@ export const COMMANDS = {
   undo_last: define({
     input: Nothing,
     description:
-      'Undo the person\'s LAST batch of changes as a whole (everything one earlier message logged, corrected or deleted): "deshacer", "volvé atrás", "anulá lo que hiciste", "no, eso no" right after a record. Code finds the batch and writes what it undid; you send no id. Never for one named movement (that is delete_movement or correct_movement), and never together with another action.',
+      'Undo the person\'s LAST batch of changes as a whole (everything one earlier message logged, corrected or deleted): "deshacer", "volvé atrás", "anulá lo que hiciste". Code finds the batch and writes what it undid; you send no id. Never for one named movement (that is delete_movement or correct_movement).',
     kind: 'write',
     label: 'undo',
     alone: true,
@@ -578,7 +581,7 @@ export const COMMANDS = {
   forget_all_facts: define({
     input: Nothing,
     description:
-      'The person asks you to forget everything you know about them ("olvidate de todo lo que sabés de mí"). Code asks "¿Seguro?" and only their "sí" confirms; you never do. Never together with another action.',
+      'The person asks you to forget everything you know about them ("olvidate de todo lo que sabés de mí"). Code asks "¿Seguro?" and only their "sí" confirms; you never do.',
     kind: 'ask',
     label: 'forget',
     alone: true,

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { COMMANDS, type Tool } from '../core/commands'
+import { COMMANDS, MAX_FOUND, RECENT_LIMIT, type Tool } from '../core/commands'
 import { type ContextInput, renderContext } from './context'
 import { EXAMPLES, renderExamples } from './examples'
 import { SYSTEM_PROMPT } from './prompt'
+import { TOOLS } from './tools'
 
 describe('the prompt', () => {
   it('every example call parses with its tool schema', () => {
@@ -21,9 +22,23 @@ describe('the prompt', () => {
     for (const name of Object.keys(COMMANDS) as Tool[]) {
       if (COMMANDS[name].by !== 'code') expect(SYSTEM_PROMPT).toContain(name)
     }
-    expect(SYSTEM_PROMPT).toContain('at most 20 movements')
-    expect(SYSTEM_PROMPT).toContain('the 10 newest')
     expect(SYSTEM_PROMPT).toContain(renderExamples())
+  })
+
+  it("a tool's contract lives in its description, with the registry limits interpolated there", () => {
+    const find = TOOLS.find((t) => t.name === 'find_movements')?.description ?? ''
+    expect(find).toContain(`up to ${MAX_FOUND} live movements`)
+    expect(find).toContain(`the ${RECENT_LIMIT} newest`)
+    // The prompt keeps the policy across tools, not what one tool says of itself.
+    expect(SYSTEM_PROMPT).not.toContain('- find_movements reads')
+  })
+
+  it('says that a tool goes alone once, in each description that has it, not in the prompt', () => {
+    const alone = TOOLS.filter((t) => t.description.includes('Goes alone in its turn')).map(
+      (t) => t.name,
+    )
+    expect(alone.sort()).toEqual(['forget_all_facts', 'reply', 'undo_last'].sort())
+    expect(SYSTEM_PROMPT).not.toMatch(/goes alone/i)
   })
 
   it('has no field of the old tool shapes: no text on actions, no sentinels, no question', () => {
