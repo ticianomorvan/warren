@@ -237,30 +237,6 @@ export const CASES: Case[] = [
     },
   ]),
   {
-    name: 'undo stale: a movement',
-    outcome: {
-      tool: 'undo_last',
-      status: 'stale',
-      effect: null,
-      turn: 5,
-      moved: { movements: [nafta], facts: [], reminders: [] },
-    },
-  },
-  {
-    name: 'undo stale: movements, a fact and a reminder',
-    outcome: {
-      tool: 'undo_last',
-      status: 'stale',
-      effect: null,
-      turn: 5,
-      moved: {
-        movements: [cafe, sueldo],
-        facts: [visa],
-        reminders: [reminder({ id: 3, what: 'llamar', schedule: { start: '2026-12-10' } })],
-      },
-    },
-  },
-  {
     name: 'remember a new alias',
     outcome: { tool: 'remember_fact', status: 'applied', effect: 'remembered', fact: visa },
   },

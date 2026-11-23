@@ -13,7 +13,7 @@ import type { Outcome } from './apply'
 import type { SkipReason, Then } from './commands'
 import { CATEGORY_LABEL, capitalize, money, shortDate } from './es'
 import type { Declined } from './guards'
-import type { Affected, Undone } from './history'
+import type { Blocking, Undone } from './history'
 
 /**
  * The one Spanish rendering of what a write did, for both channels: `describe(outcome, {today, newest})` is the line (or lines) of
@@ -173,33 +173,17 @@ function undoneLine(items: Undone[], today: string): string {
   return ['↩︎ Deshice:', ...items.map((u) => `${BULLET}${undoLine(u, today)}`)].join('\n')
 }
 
-/** What an undo could not touch, as the turn left it: movements, facts, reminders. */
-function whatMoved(c: Affected, today: string): string[] {
-  return [
-    ...c.movements.map((m) => `${movementText(m)}${when(m.date, today)}`),
-    ...c.facts.map((f) => `🧠 ${factText(f)}`),
-    ...c.reminders.map((r) => `⏰ ${r.what}`),
-  ]
-}
-
-function staleLine(moved: Affected, today: string): string {
-  const what = whatMoved(moved, today)
-  return `No deshice nada: ${what.join(' · ')} ${what.length === 1 ? 'cambió' : 'cambiaron'} después. Decime qué querés cambiar.`
-}
-
 /**
  * The strict stack's answer: a change that can never be undone blocks the older ones. It names the change, says why, and points to
  * fixing the older thing directly.
  */
-function blockedLine(blocking: Affected, why: string[], today: string): string {
-  const what = whatMoved(blocking, today)
+function blockedLine(blocking: Blocking, why: string[]): string {
+  const what = blocking.reminders.map((r) => `⏰ ${r.what}`)
   const reason = why.includes('sent')
     ? 'ya se mandó'
     : why.includes('past')
       ? 'ya pasó su fecha'
-      : why.includes('unreadable')
-        ? 'tiene una fecha que no puedo leer'
-        : 'no entra: ya tenés el máximo'
+      : 'tiene una fecha que no puedo leer'
   return `No deshice nada: ${what.join(' · ')} ${reason} y no se puede deshacer, así que tampoco lo anterior. Si querés cambiar algo más viejo, decime qué, por ejemplo "corregí el café".`
 }
 
@@ -212,10 +196,8 @@ function undoText(o: Extract<Outcome, { tool: 'undo_last' }>, today: string): st
       return REPLY.undoNothing
     case 'expired':
       return REPLY.undoExpired
-    case 'stale':
-      return staleLine(o.moved, today)
     case 'blocked':
-      return blockedLine(o.blocking, o.why, today)
+      return blockedLine(o.blocking, o.why)
   }
 }
 

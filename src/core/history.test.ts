@@ -22,9 +22,7 @@ import {
   undo,
 } from '../../test/core'
 import { sql, useDatabase } from '../../test/db'
-import { MAX_FACTS } from '../domain/facts'
 import { recentMovements } from '../domain/movements'
-import { MAX_REMINDERS } from '../domain/reminders/guard'
 import type { Outcome } from './apply'
 import { schemaDir } from './db'
 import { describe as say } from './describe'
@@ -277,44 +275,8 @@ describe('the time limit', () => {
   })
 })
 
-describe('the staleness check: all or nothing', () => {
-  /** A turn that `lastTurn` no longer sees (an undo marker points at it) though nothing brought back what it did. */
-  const hide = (a: number, turnId: number) =>
-    sql`INSERT INTO turn (account_id, channel, label, calls, reply, undoes) VALUES (${a}, 'cli', 'marker', '[]', 'x', ${turnId})`
-
-  it('refuses a turn whose movement something else deleted: stale, naming it, writing nothing', async () => {
-    const a = await newAccount(sql)
-    const t1 = await turn(sql, a, [log(cafe(), cafe({ description: 'super', amount: '12000' }))])
-    const t2 = await turn(sql, a, [remove(2)], { at: minutes(5) })
-    await hide(a, t2.turn)
-    const before = await allMovements(sql)
-    const u = await undoAt(a, minutes(6))
-    expect(u).toMatchObject({ status: 'stale', turn: t1.turn, effect: null })
-    if (u.status === 'stale') expect(u.moved.movements.map((m) => m.id)).toEqual([2])
-    expect(say(u, views)).toBe(
-      'No deshice nada: Súper $12.000 cambió después. Decime qué querés cambiar.'.replace(
-        'Súper',
-        'Super',
-      ),
-    )
-    expect(await allMovements(sql)).toEqual(before)
-    expect(await liveMovements(sql)).toEqual([{ entity: 1, amount: '3500', description: 'café' }])
-  })
-
-  it('is all or nothing: one moved movement stops the whole turn, and every one that moved is named', async () => {
-    const a = await newAccount(sql)
-    await turn(sql, a, [
-      log(cafe(), cafe({ description: 'super', amount: '12000' }), cafe({ description: 'nafta' })),
-    ])
-    const t2 = await turn(sql, a, [remove(1), remove(2)], { at: minutes(5) })
-    await hide(a, t2.turn)
-    const u = await undoAt(a, minutes(6))
-    expect(u).toMatchObject({ status: 'stale' })
-    if (u.status === 'stale') expect(u.moved.movements.map((m) => m.id)).toEqual([1, 2])
-    expect(await liveMovements(sql)).toHaveLength(1)
-  })
-
-  it('a later turn that was undone does not make the earlier one stale', async () => {
+describe('what the turn left stands as it left it', () => {
+  it('a later turn that was undone does not matter: the earlier one is undone next', async () => {
     const a = await newAccount(sql)
     await turn(sql, a, [log(cafe())])
     await turn(sql, a, [correct(1, { amount: '9' })], { at: minutes(5) })
@@ -322,12 +284,15 @@ describe('the staleness check: all or nothing', () => {
     expect(await undoAt(a, minutes(7))).toMatchObject({ status: 'applied' })
   })
 
-  it('a refusal is audited with its reason', async () => {
+  it('asserts it: a write outside commit (a delete no turn made, hidden by a marker) throws and writes nothing', async () => {
     const a = await newAccount(sql)
-    await turn(sql, a, [log(cafe())])
-    const t2 = await turn(sql, a, [remove(1)], { at: minutes(5) })
-    await hide(a, t2.turn)
-    expect(undoDetail(await undoAt(a, minutes(6)))).toBe('stale: 1')
+    await turn(sql, a, [log(cafe(), cafe({ description: 'super', amount: '12000' }))])
+    const t2 = await turn(sql, a, [remove(2)], { at: minutes(5) })
+    // What no code path does: the turn that deleted it is made to look settled while the movement stays deleted.
+    await sql`INSERT INTO turn (account_id, channel, label, calls, reply, undoes) VALUES (${a}, 'cli', 'marker', '[]', 'x', ${t2.turn})`
+    const before = await allMovements(sql)
+    await expect(undoAt(a, minutes(6))).rejects.toThrow(/not as the turn left it/)
+    expect(await allMovements(sql)).toEqual(before)
   })
 })
 
@@ -439,43 +404,14 @@ describe('undo of a fact', () => {
     expect(await liveFactList(sql)).toEqual([{ entity: 1, key: 'la visa', value: 'galicia' }])
   })
 
-  it('does not restore a forgotten fact over one the person said again since: stale, writing nothing', async () => {
+  it('a fact forgotten and said again: the strict stack takes the new one back first, and then the forget', async () => {
     const a = await newAccount(sql)
     await turn(sql, a, [remember('cobro', 'el 5')])
-    const t2 = await turn(sql, a, [forget({ key: 'cobro' })], { at: minutes(5) })
+    await turn(sql, a, [forget({ key: 'cobro' })], { at: minutes(5) })
     await turn(sql, a, [remember('cobro', 'el 7')], { at: minutes(6) })
-    // The newest turn is the new remember: undoing it first is what the strict stack does, and then the forget comes back.
     expect(kinds(await undoAt(a, minutes(7)))).toEqual(['fact_removed'])
     expect(kinds(await undoAt(a, minutes(8)))).toEqual(['fact_restored'])
-    expect(t2.turn).toBeGreaterThan(0)
-    // With the new fact standing and the forget turn the last that counts, it is refused.
-    await turn(sql, a, [forget({ key: 'cobro' })], { at: minutes(9) })
-    const t5 = await turn(sql, a, [remember('cobro', 'el 9')], { at: minutes(10) })
-    await sql`INSERT INTO turn (account_id, channel, label, calls, reply, undoes) VALUES (${a}, 'cli', 'marker', '[]', 'x', ${t5.turn})`
-    const before = await allFacts(sql)
-    const u = await undoAt(a, minutes(11))
-    expect(u).toMatchObject({ status: 'stale' })
-    if (u.status === 'stale') expect(u.moved.facts.map((f) => f.key)).toEqual(['cobro'])
-    expect(await allFacts(sql)).toEqual(before)
-  })
-
-  it('the cap applies when facts come back: nothing is restored over MAX_FACTS (blocked)', async () => {
-    const a = await newAccount(sql)
-    await turn(sql, a, [remember('primero', 'x'), remember('segundo', 'x')])
-    await turn(sql, a, [forgetAll], { at: minutes(5) })
-    const fill = Array.from({ length: MAX_FACTS }, (_, i) => remember(`dato ${i}`, 'x'))
-    for (let i = 0; i < fill.length; i += 25)
-      await turn(sql, a, fill.slice(i, i + 25), { at: minutes(6) })
-    // Hide the fill turns, so the forget-everything turn is the last that counts.
-    const fills = await sql<{ id: number }[]>`SELECT id::int FROM turn WHERE id > 2 ORDER BY id`
-    for (const f of fills) {
-      await sql`INSERT INTO turn (account_id, channel, label, calls, reply, undoes) VALUES (${a}, 'cli', 'marker', '[]', 'x', ${f.id})`
-    }
-    const u = await undoAt(a, minutes(20))
-    expect(u).toMatchObject({ status: 'blocked', why: ['cap'] })
-    if (u.status === 'blocked')
-      expect(u.blocking.facts.map((f) => f.key)).toEqual(['primero', 'segundo'])
-    expect(await liveFactList(sql)).toHaveLength(MAX_FACTS)
+    expect(await liveFactList(sql)).toEqual([{ entity: 1, key: 'cobro', value: 'el 5' }])
   })
 
   it('one person’s undo never touches another’s facts', async () => {
@@ -541,21 +477,6 @@ describe('undo of a reminder', () => {
     const u = await undoAt(a, minutes(45))
     expect(u).toMatchObject({ status: 'blocked', why: ['past'] })
     expect(await liveReminderList(sql)).toEqual([])
-  })
-
-  it('does not exceed the cap when it brings them back (blocked)', async () => {
-    const a = await newAccount(sql)
-    await turn(sql, a, [remind('uno'), remind('dos')])
-    await turn(sql, a, [cancel(1), cancel(2)], { at: minutes(5) })
-    for (let i = 0; i < MAX_REMINDERS; i++)
-      await turn(sql, a, [remind(`n${i}`)], { at: minutes(6 + i) })
-    // The newest turns are the new reminders: make the cancel turn the last that counts.
-    const marker = await sql<{ id: number }[]>`SELECT id::int FROM turn WHERE id > 2 ORDER BY id`
-    for (const m of marker)
-      await sql`INSERT INTO turn (account_id, channel, label, calls, reply, undoes) VALUES (${a}, 'cli', 'marker', '[]', 'x', ${m.id})`
-    const u = await undoAt(a, minutes(40))
-    expect(u).toMatchObject({ status: 'blocked', why: ['cap'] })
-    expect(await liveReminderList(sql)).toHaveLength(MAX_REMINDERS)
   })
 
   it('a stored reminder whose schedule no longer parses blocks the undo of its turn, by name, and the turn stays the last', async () => {

@@ -47,7 +47,6 @@ describe('describe() against what v1 rendered', () => {
         'undo_last:restricted',
         'undo_last:expired',
         'undo_last:applied',
-        'undo_last:stale',
         'remember_fact:applied',
         'remember_fact:unchanged',
         'remember_fact:full',

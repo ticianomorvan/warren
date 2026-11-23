@@ -1,13 +1,11 @@
-import { countLiveFacts, endFact, type FactRow, insertFact, MAX_FACTS } from '../domain/facts'
+import { endFact, type FactRow, insertFact } from '../domain/facts'
 import { endVersion, insertMovements, type MovementRow } from '../domain/movements'
 import {
-  countLiveReminders,
   endReminder,
   insertReminder,
   type ReminderRow,
   toRow as toReminder,
 } from '../domain/reminders/db'
-import { MAX_REMINDERS } from '../domain/reminders/guard'
 import { nextOccurrence } from '../domain/reminders/schedule'
 import type { Sql } from './db'
 
@@ -22,10 +20,13 @@ import type { Sql } from './db'
  *
  * It undoes the account's newest turn that is not an undo, is not undone and did something (`lastBatch`, in commit order, which is
  * turn-id order), all or nothing. The stack is strict: if that turn cannot be undone, nothing older is reached (the person is told
- * why, and that an older change is fixed directly). It cannot be undone when
- *   - an entity is no longer as the turn left it (`stale`: a version that no undone turn made came after, or it was ended); or
- *   - a store's rules say it can never come back (`blocked`: a one-off reminder already sent, one with no occurrence left, the cap).
- * Policy (which stores a channel may undo) comes in as `stores`. The caller holds the account lock.
+ * why, and that an older change is fixed directly). It cannot be undone when a reminder's rules say it can never come back
+ * (`blocked`: a one-off already sent, one with no occurrence left, a schedule that cannot be read).
+ *
+ * There is no "something changed it since" case: the caller holds the account lock and the turn is the newest one that is neither an
+ * undo nor undone, so every later turn is settled and what the turn left stands as it left it. That is asserted (`asLeft`), not
+ * handled: a failure means something wrote to the person's data outside `commit`.
+ * Policy (which stores a channel may undo) comes in as `stores`.
  */
 
 /** How long a turn can be undone: past it, the person is told and nothing is touched. */
@@ -54,17 +55,12 @@ export type Undone =
   | { kind: 'reminder_restored'; reminder: ReminderRow }
 
 /** Why a change can never be undone, so nothing older can be reached either. */
-export type BlockedBy = 'sent' | 'past' | 'cap' | 'unreadable'
+export type BlockedBy = 'sent' | 'past' | 'unreadable'
 
-/** The entities of a turn that an undo found stale or blocked, by store, as the turn left them. */
-export interface Affected {
-  movements: MovementRow[]
-  facts: FactRow[]
-  /** By what they say: a reminder whose stored schedule cannot be read has no more than that. */
+/** The reminders of a turn that can never be undone, as the turn left them (a stored schedule that cannot be read has no more than what it says). */
+export interface Blocking {
   reminders: Pick<ReminderRow, 'id' | 'what'>[]
 }
-const nothing = (): Affected => ({ movements: [], facts: [], reminders: [] })
-const count = (c: Affected) => c.movements.length + c.facts.length + c.reminders.length
 
 export type UndoResult =
   | { status: 'applied'; turn: number; items: Undone[] }
@@ -74,10 +70,8 @@ export type UndoResult =
   | { status: 'expired' }
   /** The turn changed a store this channel may not undo. Nothing was changed. */
   | { status: 'restricted' }
-  /** An entity of the turn is no longer as the turn left it: nothing was changed. `moved` are those. */
-  | { status: 'stale'; turn: number; moved: Affected }
   /** A change of the turn can never be undone, which blocks the older ones too: nothing was changed. */
-  | { status: 'blocked'; turn: number; blocking: Affected; why: BlockedBy[] }
+  | { status: 'blocked'; turn: number; blocking: Blocking; why: BlockedBy[] }
 
 // ---- The versions of a store, read the same way for all three.
 
@@ -112,16 +106,6 @@ interface Adapter<R extends { id: number; version: number; loggedAt: Date }> {
   end(tx: Sql, version: number, turn: number): Promise<boolean>
   /** The next version of an entity, with the values of `from`. */
   restore(tx: Sql, o: { accountId: number; turn: number; from: R; now: Date }): Promise<R>
-  /**
-   * Store rules beyond "as the turn left it". `reclaimed`: entities the turn cannot restore because something else holds their
-   * place now. `never`: changes that can never be undone, and why.
-   */
-  rules(
-    tx: Sql,
-    accountId: number,
-    plan: Plan<R>,
-    now: Date,
-  ): Promise<{ reclaimed: R[]; never: { row: R; why: BlockedBy }[] }>
 }
 
 interface Plan<R extends { version: number }> {
@@ -157,7 +141,6 @@ const movementAdapter: Adapter<MovementRow> = {
     })
     return row as MovementRow
   },
-  rules: async () => ({ reclaimed: [], never: [] }),
 }
 
 const factAdapter: Adapter<FactRow> = {
@@ -185,32 +168,6 @@ const factAdapter: Adapter<FactRow> = {
       value: from.value,
       entity: { id: from.id, loggedAt: from.loggedAt },
     }),
-  /**
-   * A fact comes back only into a free place: someone who said the key again since keeps it (`reclaimed`), except where this very
-   * undo removes the fact that holds it. And the account stays within `MAX_FACTS` (`cap`).
-   */
-  async rules(tx, accountId, plan) {
-    const comes = [...plan.changed.map((c) => c.pre), ...plan.ended.map((e) => e.pre)]
-    if (comes.length === 0) return { reclaimed: [], never: [] }
-    const going = new Set([
-      ...plan.made.map((m) => m.head.id),
-      ...plan.changed.map((c) => c.head.id),
-    ])
-    const live = await tx<{ id: number; kind: string; key: string }[]>`
-      SELECT entity_id AS id, kind, key FROM fact WHERE account_id = ${accountId} AND ended_at IS NULL`
-    const reclaimed = plan.ended
-      .map((e) => e.pre)
-      .filter((pre) =>
-        live.some(
-          (l) => l.kind === pre.kind && l.key === pre.key && l.id !== pre.id && !going.has(l.id),
-        ),
-      )
-    const total = (await countLiveFacts(tx, accountId)) - plan.made.length + plan.ended.length
-    return {
-      reclaimed,
-      never: total > MAX_FACTS ? plan.ended.map((e) => ({ row: e.pre, why: 'cap' as const })) : [],
-    }
-  },
 }
 
 const reminderAdapter: Adapter<ReminderRow> = {
@@ -255,32 +212,21 @@ const reminderAdapter: Adapter<ReminderRow> = {
       now,
       entity: { id: from.id, loggedAt: from.loggedAt },
     }),
-  /**
-   * A one-off already sent has nothing left to take back (`sent`); one with no occurrence after now cannot come back (`past`);
-   * and what comes back must fit the cap (`cap`).
-   */
-  async rules(tx, accountId, plan, now) {
-    const never: { row: ReminderRow; why: BlockedBy }[] = []
-    for (const { head } of plan.made)
-      if (head.nextDueAt === null) never.push({ row: head, why: 'sent' })
-    const comes = [...plan.changed.map((c) => c.pre), ...plan.ended.map((e) => e.pre)]
-    for (const pre of comes)
-      if (!nextOccurrence(pre.schedule, now)) never.push({ row: pre, why: 'past' })
-    if (comes.length > 0) {
-      const live = await countLiveReminders(tx, accountId)
-      if (live - plan.made.length + comes.length > MAX_REMINDERS) {
-        for (const pre of comes) never.push({ row: pre, why: 'cap' })
-      }
-    }
-    return { reclaimed: [], never }
-  },
 }
 
-const ADAPTERS = {
-  movement: movementAdapter,
-  fact: factAdapter,
-  reminder: reminderAdapter,
-} as const
+/**
+ * What can never come back, which blocks the turn and everything older: a one-off the sweep already sent has nothing left to take
+ * back (`sent`), and one with no occurrence after now cannot be brought back (`past`).
+ */
+function reminderRules(plan: Plan<ReminderRow>, now: Date): { row: ReminderRow; why: BlockedBy }[] {
+  const never: { row: ReminderRow; why: BlockedBy }[] = []
+  for (const { head } of plan.made)
+    if (head.nextDueAt === null) never.push({ row: head, why: 'sent' })
+  const comes = [...plan.changed.map((c) => c.pre), ...plan.ended.map((e) => e.pre)]
+  for (const pre of comes)
+    if (!nextOccurrence(pre.schedule, now)) never.push({ row: pre, why: 'past' })
+  return never
+}
 
 // ---- The newest turn that can be undone
 
@@ -307,16 +253,6 @@ export async function lastTurn(tx: Sql, accountId: number, now: Date): Promise<L
       AND (${effect('movement')} OR ${effect('fact')} OR ${effect('reminder')})
     ORDER BY t.id DESC LIMIT 1`
   return row ?? null
-}
-
-/** The turns, among these, that are settled: an undo, or undone. What they made does not count as "something came after". */
-async function settledTurns(tx: Sql, turns: number[]): Promise<Set<number>> {
-  if (turns.length === 0) return new Set()
-  const rows = await tx<{ id: number }[]>`
-    SELECT t.id AS id FROM turn t
-    WHERE t.id = ANY(${turns}::bigint[])
-      AND (t.undoes IS NOT NULL OR EXISTS (SELECT 1 FROM turn u WHERE u.undoes = t.id))`
-  return new Set(rows.map((r) => r.id))
 }
 
 /** Groups the versions by entity and derives each entity's state around `turn`. */
@@ -378,7 +314,7 @@ export async function undoLast(
     return {
       status: 'blocked',
       turn: last.id,
-      blocking: { ...nothing(), reminders: read.reminder.unreadable },
+      blocking: { reminders: read.reminder.unreadable },
       why: ['unreadable'],
     }
   }
@@ -387,68 +323,46 @@ export async function undoLast(
     fact: read.fact.versions,
     reminder: read.reminder.versions,
   }
-  const settled = await settledTurns(tx, [
-    ...new Set(Object.values(loaded).flatMap((vs) => vs.map((v) => v.madeIn))),
-  ])
   const plans: Plans = { movement: emptyPlan(), fact: emptyPlan(), reminder: emptyPlan() }
-  const stale = nothing()
   const touched = new Set<Store>()
 
   const classify = <R extends { id: number; version: number; loggedAt: Date }>(
     store: Store,
     versions: Version<R>[],
     plan: Plan<R>,
-    movedInto: Pick<R, 'id'>[],
   ) => {
     for (const e of entitiesOf(versions, last.id)) {
       touched.add(store)
-      // As the turn left it: what it made is still live, and whatever came after was made by a turn that was undone or is an undo.
-      // An entity the turn ended is as it left it when nothing has been made since (it is still ended).
-      const asLeft = e.post
-        ? e.head.live && e.later.every((v) => settled.has(v.madeIn))
-        : e.later.length === 0 && !e.head.live
+      // As the turn left it: what it made is still live (a later turn that changed it was undone, so its version is live again),
+      // what it ended is still ended. Under the account lock this always holds; if it does not, something wrote outside `commit`.
+      const asLeft = e.post ? e.head.live : !e.head.live
       if (!asLeft) {
-        movedInto.push((e.post ?? e.pre) as R)
-        continue
+        throw new Error(
+          `undo of turn ${last.id}: ${store} ${(e.post ?? e.pre)?.id} is not as the turn left it, and no later turn is open`,
+        )
       }
       if (e.post && !e.pre) plan.made.push({ post: e.post, head: e.head.row })
       else if (e.post && e.pre) plan.changed.push({ pre: e.pre, post: e.post, head: e.head.row })
       else if (e.pre) plan.ended.push({ pre: e.pre })
     }
   }
-  classify('movement', loaded.movement, plans.movement, stale.movements)
-  classify('fact', loaded.fact, plans.fact, stale.facts)
-  classify('reminder', loaded.reminder, plans.reminder, stale.reminders)
+  classify('movement', loaded.movement, plans.movement)
+  classify('fact', loaded.fact, plans.fact)
+  classify('reminder', loaded.reminder, plans.reminder)
 
   if (touched.size === 0) return { status: 'nothing' }
   if ([...touched].some((s) => !o.stores.includes(s))) return { status: 'restricted' }
-  if (count(stale) > 0) return { status: 'stale', turn: last.id, moved: stale }
 
-  // The stores' own rules: a fact that someone said again since is stale; what can never come back blocks.
-  const blocking = nothing()
-  const why = new Set<BlockedBy>()
-  for (const store of STORES) {
-    const plan = plans[store] as Plan<never>
-    const { reclaimed, never } = await (ADAPTERS[store] as Adapter<never>).rules(
-      tx,
-      o.accountId,
-      plan,
-      o.now,
-    )
-    if (store === 'fact') stale.facts.push(...(reclaimed as FactRow[]))
-    for (const n of never) {
-      why.add(n.why)
-      const into =
-        store === 'movement'
-          ? blocking.movements
-          : store === 'fact'
-            ? blocking.facts
-            : blocking.reminders
-      ;(into as unknown[]).push(n.row)
+  // What can never come back blocks the turn, and so everything older.
+  const never = reminderRules(plans.reminder, o.now)
+  if (never.length > 0) {
+    return {
+      status: 'blocked',
+      turn: last.id,
+      blocking: { reminders: never.map((n) => n.row) },
+      why: [...new Set(never.map((n) => n.why))],
     }
   }
-  if (count(stale) > 0) return { status: 'stale', turn: last.id, moved: stale }
-  if (count(blocking) > 0) return { status: 'blocked', turn: last.id, blocking, why: [...why] }
 
   const items: Undone[] = []
   const done = async <R extends { id: number; version: number; loggedAt: Date }>(
@@ -502,8 +416,6 @@ export async function undoLast(
 
 /** What an undo did, for an audit entry: which turn and what became of each entity; nothing for an undo that did nothing. */
 export function undoDetail(undo: UndoResult): string | undefined {
-  const ids = (c: Affected) =>
-    [...c.movements, ...c.facts, ...c.reminders].map((r) => r.id).join(', ')
   if (undo.status === 'applied') {
     const item = (u: Undone) =>
       'reminder' in u
@@ -515,7 +427,8 @@ export function undoDetail(undo: UndoResult): string | undefined {
             : u.from.id
     return `undid turn ${undo.turn}: ${undo.items.map((u) => `${u.kind} ${item(u)}`).join(', ')}`
   }
-  if (undo.status === 'stale') return `stale: ${ids(undo.moved)}`
-  if (undo.status === 'blocked') return `blocked (${undo.why.join(', ')}): ${ids(undo.blocking)}`
+  if (undo.status === 'blocked') {
+    return `blocked (${undo.why.join(', ')}): ${undo.blocking.reminders.map((r) => r.id).join(', ')}`
+  }
   return undefined
 }

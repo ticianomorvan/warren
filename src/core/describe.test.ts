@@ -20,14 +20,14 @@ describe('the lines code says that v1 did not', () => {
 
   it('a blocked undo names what blocks it and points to fixing the older change directly', () => {
     const reminder = SAID.reminders[0] as (typeof SAID.reminders)[number]
-    const blocked = (why: 'sent' | 'past' | 'cap') =>
+    const blocked = (why: 'sent' | 'past' | 'unreadable') =>
       say(
         {
           tool: 'undo_last',
           status: 'blocked',
           effect: null,
           turn: 3,
-          blocking: { movements: [], facts: [], reminders: [reminder] },
+          blocking: { reminders: [reminder] },
           why: [why],
         },
         { today: TODAY, newest: null },
@@ -36,8 +36,8 @@ describe('the lines code says that v1 did not', () => {
       'ya se mandó y no se puede deshacer, así que tampoco lo anterior',
     )
     expect(blocked('past')).toContain('ya pasó su fecha')
-    expect(blocked('cap')).toContain('no entra: ya tenés el máximo')
-    for (const why of ['sent', 'past', 'cap'] as const)
+    expect(blocked('unreadable')).toContain('tiene una fecha que no puedo leer')
+    for (const why of ['sent', 'past', 'unreadable'] as const)
       expect(blocked(why)).toContain('decime qué, por ejemplo "corregí el café"')
   })
 

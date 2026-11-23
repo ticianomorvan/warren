@@ -49,21 +49,6 @@ export interface ApplyContext {
   stores?: readonly Store[]
 }
 
-/** The one closed vocabulary of how a write came out. */
-export const STATUSES = [
-  'applied',
-  'unchanged',
-  'gone',
-  'full',
-  'past',
-  'nothing',
-  'expired',
-  'restricted',
-  'stale',
-  'blocked',
-] as const
-export type Status = (typeof STATUSES)[number]
-
 /** What a forget was asked for: an entity id, or the key's words. */
 export type ForgetTarget = { id: number } | { key: string }
 
