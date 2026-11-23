@@ -105,7 +105,12 @@ export function createWorker(o: WorkerOptions) {
     ...(o.helpContact ? { helpContact: o.helpContact } : {}),
     disconnect: o.signIn === true,
   }
-  const queue = createQueue(sql, { staleMs: o.staleMs, maxAttempts: o.maxAttempts })
+  const queue = createQueue(sql, {
+    staleMs: o.staleMs,
+    maxAttempts: o.maxAttempts,
+    // A voice note goes through the agent only when something can transcribe it.
+    blocking: o.transcriber ? ['text', 'image', 'audio'] : ['text', 'image'],
+  })
   const sender = createSender({ graph, queue, maxAttempts: o.maxAttempts })
   const inflight = new Set<Promise<unknown>>()
   /** Aborted by `stop`: runs that have not reached the commit point give their rows back. */

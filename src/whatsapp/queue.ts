@@ -35,6 +35,12 @@ export interface QueueOptions {
   /** A `processing` row older than this is presumed abandoned. */
   staleMs: number
   maxAttempts: number
+  /**
+   * The kinds of message whose rows hold their sender's next message back until they have a turn: the ones that go through the agent.
+   * Any other kind (a sticker, a reaction, an audio no one can transcribe) writes nothing the next message could depend on, so its reply
+   * being sent never holds the sender back. This is the one place that rule lives.
+   */
+  blocking: readonly string[]
 }
 
 /** A `processing` row whose claim is older than `staleMs`: its worker is presumed gone. */
@@ -66,6 +72,7 @@ export function createQueue(sql: Sql, o: QueueOptions) {
             AND NOT EXISTS (
               SELECT 1 FROM wa_message o
               WHERE o.wa_id = m.wa_id AND o.id < m.id AND o.status IN ('pending', 'processing') AND o.turn_id IS NULL
+                AND o.kind IN ${sql([...o.blocking])}
                 AND NOT (o.status = 'processing' AND o.claimed_at < now() - make_interval(secs => ${secs})))
           ORDER BY m.id LIMIT 1
           FOR UPDATE OF m SKIP LOCKED),

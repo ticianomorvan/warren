@@ -4,6 +4,8 @@ import {
   bodies,
   count,
   doneCount,
+  fakeGraph,
+  gate,
   messageBody,
   movements,
   post,
@@ -159,6 +161,35 @@ describe('the webhook', () => {
     expect(app.model.n).toBe(0)
     expect((await row('wamid.D'))?.turn_id).toBeNull()
     expect(await count('wa_message')).toBe(1)
+    app.close()
+  })
+
+  it('a sticker then a log from the same sender are both answered with no sweep in between', async () => {
+    const hold = gate()
+    let first = true
+    const fake = fakeGraph({
+      send: async (n) => {
+        // The sticker's reply is slow: the log arrives while it is still going out.
+        if (first) {
+          first = false
+          await hold.promise
+        }
+        return `wamid.OUT${n}`
+      },
+    })
+    const app = await setup({ fake })
+    await post(
+      app.base,
+      messageBody('wamid.S1', '5491100000000', { type: 'sticker', text: undefined }),
+    )
+    await until(async () => (await row('wamid.S1'))?.send_started_at != null)
+    await post(app.base, messageBody('wamid.S2', '5491100000000', { text: { body: 'cafe 3500' } }))
+    hold.open()
+    await until(async () => (await row('wamid.S2'))?.status === 'done', {
+      what: 'the log after the sticker, with no sweep',
+    })
+    expect(app.calls.sent).toHaveLength(2)
+    expect(app.calls.sent[0]?.body).toBe(REPLY_NON_TEXT)
     app.close()
   })
 
