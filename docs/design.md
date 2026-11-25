@@ -171,5 +171,3 @@ Settled choices, each measured or argued once. Do not reopen without new evidenc
   MCP 401 and metadata, discovery). Steps assert on the sink and on a read-only database connection.
 - `--expect <sha or id>` waits until `/health` names that build, in the `x-warren-build` header. It needs 3 matching answers in a row,
   a second apart, because Railway's edge briefly answered 404 right after a new build first answered.
-- `scripts/cutover.ts`, `scripts/import-v1.ts` and `test/v1-schema/` are one-time cutover tools. Delete them after Ticiano's live
-  check. The rollback needs them until then.

@@ -62,8 +62,7 @@ async function until<T>(
 
 /**
  * `--expect <build>`: wait until `/health` says this deploy answers: the `x-warren-build` header has a commit sha or
- * deployment id that starts with the one given, or, for `--expect v1`, the header is absent (v1 answers a plain `ok` and no build). A probe that
- * passes against the version being replaced proves nothing; this is what the cutover and the rollback wait on.
+ * deployment id that starts with the one given. A probe that passes against the version being replaced proves nothing.
  * It takes 3 matching answers in a row, a second apart: Railway's edge answered 404 for a moment right after a new build first
  * answered, so one match is not enough to start the read-only steps.
  */
@@ -81,13 +80,10 @@ async function expectBuild(healthUrl: string, expected: string, timeoutMs = 600_
           r.status === 200
             ? build
               ? `build ${build.slice(0, 12)}`
-              : 'no build header (v1)'
+              : 'no build header'
             : `status ${r.status}`
         const matches =
-          r.status === 200 &&
-          (expected === 'v1'
-            ? !build
-            : (build ?? '').split(' ').some((id) => id.startsWith(expected)))
+          r.status === 200 && (build ?? '').split(' ').some((id) => id.startsWith(expected))
         streak = matches ? streak + 1 : 0
         if (streak >= CONSECUTIVE_MATCHES) return true
         // `until` waits 500 ms after a false; a match waits another 500 so the answers are a second apart.
@@ -568,7 +564,7 @@ async function staging() {
 
 const mode = process.argv[2]
 if (mode !== 'staging' && mode !== 'production') {
-  console.error('usage: pnpm probe staging|production [--expect <commit sha, deployment id or v1>]')
+  console.error('usage: pnpm probe staging|production [--expect <commit sha or deployment id>]')
   process.exit(2)
 }
 console.log(`probe ${mode}`)

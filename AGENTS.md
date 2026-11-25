@@ -54,7 +54,7 @@ src/app.ts     node:http: /health, /webhook (signature, store, 200, first signal
 src/warren.ts  createWarren(deps): the one wiring, used by server.ts, the tests and the eval
 test/          the kit: db.ts (useDatabase: a schema per file on PG_TEST_URL, PGlite otherwise), fakes.ts, until.ts, core.ts, golden/
 evals/scenarios/  the scenario eval (scenarios.jsonl, long-ledger.jsonl, drive.ts, grade.ts, report.ts, results/)
-scripts/       probe.ts (staging and production probe), import-v1.ts, cutover.ts, graph-sink/ (staging only)
+scripts/       probe.ts (staging and production probe), graph-sink/ (staging only)
 docs/          design.md (how Warren works and why)
 ```
 
@@ -83,7 +83,6 @@ pnpm eval:scenarios [--split dev|test|all] [--only s001,s002] [--file evals/scen
 pnpm eval:report     # writes evals/scenarios/results/latest.md from the newest three *-all.json runs
 pnpm probe staging|production   # signed webhooks, MCP and a reminder against the environment (staging) or a read-only check (production)
 pnpm template:status | pnpm reminder:try-template <wa_id>   # the reminder template at Meta; the second sends a REAL message
-pnpm tsx scripts/import-v1.ts / scripts/cutover.ts   # one-time cutover tools (v1 import, cutover with --dry-run and rollback), deleted after the live check
 ```
 
 The eval's `test` split is held out: never print or tune on it. `pnpm eval:report` is the only writer of `latest.md`; never edit it by
@@ -124,4 +123,3 @@ hand. The bar a change to the agent must meet is in `docs/design.md` ("Tests and
 - MCP and sign-in are off unless `PUBLIC_URL` (`https://heywarren.app`) is set; they then need `BETTER_AUTH_SECRET` (32+ characters) and
   `WHATSAPP_DISPLAY_NUMBER`. The routes answer only on `PUBLIC_URL`'s host. Reminders send text inside 23 h of the person's last message and
   the template `REMINDER_TEMPLATE` (`warren_reminder`, `es_AR`) outside it; unset, no template is ever sent.
-- The previous version's tag `v1-final` is what `scripts/cutover.ts rollback` deploys.

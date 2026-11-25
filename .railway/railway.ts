@@ -1,9 +1,8 @@
 import { defineRailway, github, postgres, project, service, volume } from 'railway/iac'
 
 /**
- * Production differs from what it has today only in draining and overlap (15 s each; `railway config plan` shows just those). `staging` (created by hand once: `railway environment new staging`, empty)
- * gets its own Warren service on the `rebuild` branch, its own Postgres and the `graph-sink`, plus draining and
- * overlap. The cutover applies draining and overlap to production; staging is deleted afterwards.
+ * Both environments drain and overlap for 15 s. `staging` (created by hand once: `railway environment new staging`, empty)
+ * gets its own Warren service, its own Postgres and the `graph-sink`.
  *
  * Variables are unmanaged, so no secret is in this file. Staging's secrets are set with `railway variables`:
  * fresh fake WhatsApp app secret, verify token and Graph token, a fresh BETTER_AUTH_SECRET, the real Anthropic and
