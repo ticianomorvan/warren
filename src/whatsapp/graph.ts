@@ -155,8 +155,6 @@ export interface GraphOptions {
   phoneNumberId: string
   token: string
   fetch?: typeof fetch
-  /** Where Graph calls go. Default Meta's; staging points it at the graph-sink. */
-  baseUrl?: string
   /** One budget for a photo's lookup and download together. Default 8 s. */
   mediaBudgetMs?: number
 }
@@ -171,8 +169,7 @@ const keptAliveFetch = keepAliveFetch({ connections: 1 })
 
 export function createGraph(o: GraphOptions): Graph {
   const doFetch = o.fetch ?? keptAliveFetch
-  const base = new URL(o.baseUrl ?? 'https://graph.facebook.com')
-  const root = base.origin
+  const root = 'https://graph.facebook.com'
   const url = `${root}/${o.version}/${o.phoneNumberId}/messages`
 
   async function post(body: unknown): Promise<{ messages?: { id: string }[] }> {
@@ -280,9 +277,7 @@ export function createGraph(o: GraphOptions): Graph {
     } catch {
       throw new MediaError('unavailable', 'no media url')
     }
-    // A configured base (the staging sink) is trusted for its own host and scheme; Meta's host is checked as before.
-    const isBase = o.baseUrl !== undefined && url.origin === root
-    if (!isBase && (url.protocol !== 'https:' || !metaHost.test(url.hostname))) {
+    if (url.protocol !== 'https:' || !metaHost.test(url.hostname)) {
       throw new MediaError('unavailable', `media host ${url.hostname} is not Meta's`)
     }
     const res = await doFetch(url.href, { headers, signal: budget, redirect: 'error' })

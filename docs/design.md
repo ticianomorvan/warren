@@ -166,8 +166,8 @@ Settled choices, each measured or argued once. Do not reopen without new evidenc
 ## Ops
 
 - Railway settings are code (`.railway/railway.ts`). The app is one replica with a 15 s drain and overlap. See `AGENTS.md` for the rest.
-- `pnpm probe staging|production`: staging sends signed webhooks through a `graph-sink` that records sends (so it never messages a
-  real phone), makes MCP calls with a minted token, and lets a reminder fire once. Production is read-only (health, handshake,
-  MCP 401 and metadata, discovery). Steps assert on the sink and on a read-only database connection.
+- `pnpm probe` checks production from outside, read-only: health, the webhook handshake, the MCP 401 and its metadata, OAuth
+  discovery. There is no staging environment: with no users yet, it was deleted after the rebuild (git history has it, with a
+  stand-in for Meta's Graph API and a probe that drove the whole product through it). Bring it back before changes that need it.
 - `--expect <sha or id>` waits until `/health` names that build, in the `x-warren-build` header. It needs 3 matching answers in a row,
   a second apart, because Railway's edge briefly answered 404 right after a new build first answered.

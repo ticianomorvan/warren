@@ -54,7 +54,7 @@ src/app.ts     node:http: /health, /webhook (signature, store, 200, first signal
 src/warren.ts  createWarren(deps): the one wiring, used by server.ts, the tests and the eval
 test/          the kit: db.ts (useDatabase: a schema per file on PG_TEST_URL, PGlite otherwise), fakes.ts, until.ts, core.ts, golden/
 evals/scenarios/  the scenario eval (scenarios.jsonl, long-ledger.jsonl, drive.ts, grade.ts, report.ts, results/)
-scripts/       probe.ts (staging and production probe), graph-sink/ (staging only)
+scripts/       probe.ts (read-only production probe)
 docs/          design.md (how Warren works and why)
 ```
 
@@ -81,7 +81,7 @@ pnpm latency [--last N]   # p50/p95 by turn label and by stage, from DATABASE_UR
 pnpm eval:scenarios [--split dev|test|all] [--only s001,s002] [--file evals/scenarios/long-ledger.jsonl] [--budget 0.30] [--concurrency 4]
                      # multi-turn scenarios through the real pipeline and model; needs .env and spends money (a whole run is about US$0.17)
 pnpm eval:report     # writes evals/scenarios/results/latest.md from the newest three *-all.json runs
-pnpm probe staging|production   # signed webhooks, MCP and a reminder against the environment (staging) or a read-only check (production)
+pnpm probe [--expect <sha>]   # read-only check of production; --expect waits for that build
 pnpm template:status | pnpm reminder:try-template <wa_id>   # the reminder template at Meta; the second sends a REAL message
 ```
 
@@ -105,8 +105,8 @@ hand. The bar a change to the agent must meet is in `docs/design.md` ("Tests and
 
 ## Deploy
 
-- Railway project `warren` (US East), services `warren` (the app) and `Postgres`, plus a `staging` environment with its own service,
-  Postgres and `graph-sink` (it records sends so staging never messages a real phone). Deploy by hand with `railway up -s warren`.
+- Railway project `warren` (US East), one environment `production`, services `warren` (the app) and `Postgres`. Deploy by hand with
+  `railway up -s warren`.
 - Railway settings live in `.railway/railway.ts` (Infrastructure as Code): build, start `pnpm start`, healthcheck `/health`, restart on
   failure, one replica, the domain and the Postgres proxy (a 15 s drain and an overlap for a deploy, in both environments). Variables are unmanaged: the file
   never holds secrets; set them with `railway variables`. Run `railway config plan` before `apply`: a plan that is not "already up to date"
@@ -116,7 +116,6 @@ hand. The bar a change to the agent must meet is in `docs/design.md` ("Tests and
 - The app reaches Postgres on the private network (`DATABASE_URL=${{Postgres.DATABASE_URL}}`). Never print a connection URL or a token.
 - Webhook host `wa.heywarren.app`; the Meta subscription is set by API, not in the dashboard. `ALLOWED_WA_IDS` (comma-separated, `+` and
   spaces ignored) is who gets a reply: `*` answers everyone (dev), empty answers nobody (messages are stored, `ignored`).
-- `GRAPH_BASE_URL` (an origin, no path) points Graph calls somewhere else; staging points it at the graph-sink. Unset is Meta's.
 - **Meta test number:** it only delivers to its recipient list, matched exactly; Argentine mobiles are saved without the `9`, while webhooks
   give `549…`. `graph.sendText` retries once with the short form after a 131030 and remembers it. The symptom is `131030 Recipient phone
   number not in allowed list` on every send while read and typing still work.

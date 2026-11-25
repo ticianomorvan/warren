@@ -32,17 +32,6 @@ const fields = z.object({
   WHATSAPP_PHONE_NUMBER_ID: z.string().min(1),
   WHATSAPP_ACCESS_TOKEN: z.string().min(1),
   GRAPH_API_VERSION: z.string().regex(/^v\d+\.\d+$/),
-  // Where Graph calls go. Unset, Meta's. Staging points it at the graph-sink so it never messages a real phone.
-  GRAPH_BASE_URL: z
-    .string()
-    .optional()
-    .transform((s) => s?.trim().replace(/\/$/, '') || undefined)
-    .pipe(
-      z
-        .url()
-        .refine((u) => new URL(u).pathname === '/', 'GRAPH_BASE_URL is an origin: no path')
-        .optional(),
-    ),
   // Comma-separated WhatsApp ids that get a reply. `*` answers everyone (dev mode). Empty or unset
   // answers nobody: messages are still stored, as `ignored`.
   ALLOWED_WA_IDS: list,
