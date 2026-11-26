@@ -18,7 +18,8 @@
     "latency": "tsx src/latency.ts",
     "template:status": "tsx src/domain/reminders/cli.ts template-status",
     "reminder:try-template": "tsx src/domain/reminders/cli.ts try-template",
-    "probe": "tsx scripts/probe.ts"
+    "probe": "tsx scripts/probe.ts",
+    "import:movements": "tsx src/import.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.10.0",

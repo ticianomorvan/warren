@@ -43,7 +43,7 @@ src/core/      Pure rules and the one write path. commands.ts (the tool registry
                history.ts (versions and the undo engine), describe.ts (the Spanish line of an outcome), es.ts (names, money, dates), numbers.ts,
                secrets.ts, values.ts, fit.ts, db.ts (postgres.js, migrations, bigint ids as numbers), schema/001_init.sql and 002_auth.sql
 src/domain/    movements.ts, facts.ts, totals.ts, run-summary.ts, range.ts, summary.ts, render-summary.ts, reminders/ (schedule, describe, guard,
-               db, send: the sender)
+               db, send: the sender), import.ts (a backlog as one cli turn)
 src/agent/     understand.ts (a message to the calls for commit), context.ts (state read and the context the model is shown), prompt.ts,
                examples.ts, tools.ts (the registry shaped for the Anthropic API), loop.ts, reply.ts (what code renders beside the writes), models.ts
 src/whatsapp/  payload.ts, ingest.ts, queue.ts (wa_message as a queue), worker.ts (lanes per sender), send.ts (stamp, then send), media.ts,
@@ -80,6 +80,8 @@ docker run --rm -d --name warren-pg -p 55432:5432 -e POSTGRES_PASSWORD=postgres 
 PG_TEST_URL=postgres://postgres:postgres@localhost:55432/postgres pnpm test      # RACE_RUNS=5 repeats each race; stop the container after
 pnpm start           # the server: DATABASE_URL, ANTHROPIC_API_KEY, the WhatsApp variables (src/config.ts); OPENROUTER_API_KEY turns voice notes on
 pnpm latency [--last N]   # p50/p95 by turn label and by stage, from DATABASE_URL
+pnpm import:movements <file.jsonl> --wa <wa_id> [--check]   # a backlog (one log_movements movement per line) as one turn on DATABASE_URL;
+                     # --check runs the guards and writes nothing; one "deshacer" takes the whole import back within 24 h
 pnpm eval:scenarios [--split dev|test|all] [--only s001,s002] [--file evals/scenarios/long-ledger.jsonl] [--budget 0.30] [--concurrency 4]
                      # multi-turn scenarios through the real pipeline and model; needs .env and spends money (a whole run is about US$0.17)
 pnpm eval:report     # writes evals/scenarios/results/latest.md from the newest three *-all.json runs
