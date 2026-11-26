@@ -2,6 +2,7 @@ import { requireMcpAuth } from '@better-auth/mcp'
 import { createResourceServerChallenge } from '@better-auth/oauth-provider'
 import type { AuthInfo } from '@modelcontextprotocol/server'
 import { APIError } from 'better-auth/api'
+import { ensureAccount } from '../auth/account'
 import { type Auth, mcpUrl, SCOPES } from '../auth/config'
 import type { Sql } from '../core/db'
 import { log } from '../log'
@@ -133,11 +134,14 @@ export function createDoor(o: DoorOptions): Door {
     if (typeof sub !== 'string' || !UUID.test(sub)) return refused(request, 'subject')
     let person: { id: number; revoked: number | null } | undefined
     try {
-      const [row] = await o.sql<{ id: number; revoked: number | null }[]>`
+      const find = () => o.sql<{ id: number; revoked: number | null }[]>`
         SELECT a.id::int, extract(epoch FROM a.mcp_revoked_at)::float8 AS revoked
         FROM auth_user u
         JOIN account a ON a.id = u.warren_account_id
         WHERE u.id = ${sub}::uuid`
+      let [row] = await find()
+      // A user whose account was never made (its create hook failed) is repaired here, once; a user that does not exist stays unknown.
+      if (!row && (await ensureAccount(o.sql, sub)) !== null) [row] = await find()
       person = row
     } catch (error) {
       // The database is down, which is not the client's fault: it must not be sent to sign in.

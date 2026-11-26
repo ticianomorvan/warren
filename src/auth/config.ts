@@ -7,6 +7,7 @@ import { jwt } from 'better-auth/plugins'
 import { PostgresJSDialect } from 'kysely-postgres-js'
 import type { Sql } from '../core/db'
 import { clientIdAllowed } from '../mcp/clients'
+import { ensureAccount } from './account'
 
 /** What a token may be used for. `offline_access` is the refresh token. */
 export const SCOPES = ['ledger:read', 'ledger:write', 'offline_access'] as const
@@ -45,6 +46,8 @@ export interface AuthSettings {
   /** `https://heywarren.app`: the issuer, and the host the OAuth routes answer on. */
   publicUrl: string
   secret: string
+  /** What makes the account of a new user (tests make it fail once). Default `ensureAccount`. */
+  makeAccount?: typeof ensureAccount
   /** The OAuth client of "Continuar con Google". */
   google: { clientId: string; clientSecret: string }
   /** How a client's metadata document is fetched. A test passes a fake; the default pins the DNS answer. */
@@ -94,13 +97,17 @@ export function createAuth(s: AuthSettings) {
         create: {
           // A user exists only when Google's callback made it: not by email, not by any other route a plugin may add.
           before: async (_user, ctx) => (ctx?.path === GOOGLE_CALLBACK ? undefined : false),
-          // The person: one `account` row, linked to the user. Runs once, when the user is first made.
+          // The person: one `account` row, linked to the user. If it fails, sign-in goes on and the account is made on next use
+          // (`ensureAccount` in the account page and the door): a person is never locked out by one failed insert.
           after: async (user) => {
-            await s.sql.begin(async (tx) => {
-              const [row] = await tx<{ id: number }[]>`
-                INSERT INTO account DEFAULT VALUES RETURNING id::int AS id`
-              await tx`UPDATE auth_user SET warren_account_id = ${(row as { id: number }).id} WHERE id = ${user.id}::uuid`
-            })
+            try {
+              await (s.makeAccount ?? ensureAccount)(s.sql, user.id)
+            } catch (error) {
+              s.log?.(
+                'error',
+                `account not made for a new user: ${error instanceof Error ? error.name : 'unknown'}`,
+              )
+            }
           },
         },
       },
@@ -120,9 +127,8 @@ export function createAuth(s: AuthSettings) {
       // (docs.railway.com, Specs & Limits; staff: "for client-IP rate limiting, X-Real-IP is the header to use"). Not
       // X-Forwarded-For: its hop count is not guaranteed. Services in our own private network can set it freely, and none
       // is there. Where the header is absent, better-auth's limiter has no address and does not count (in development and
-      // test it falls back to 127.0.0.1); the /sign-in limit instead falls back to the socket's address (`routes.ts`), so
-      // requests without the header share one bucket there. better-auth keys an IPv6 address by its /64 and an
-      // IPv4-mapped one as IPv4 (one subscriber holds the whole prefix); `src/auth/ip.ts` does the same for /sign-in.
+      // test it falls back to 127.0.0.1). better-auth keys an IPv6 address by its /64 and an IPv4-mapped one as IPv4 (one
+      // subscriber holds the whole prefix).
       ipAddress: { ipAddressHeaders: ['x-real-ip'], ipv6Subnet: 64 },
       // Explicit, so the origin check also holds under NODE_ENV=test, where better-auth skips it by default.
       disableOriginCheck: false,

@@ -60,6 +60,16 @@ export function renderMarkdown(md: string): string {
       out.push(`<ul>${items.map((t) => `<li>${inline(t)}</li>`).join('')}</ul>`)
       continue
     }
+    const numbered = /^\d+\. (.+)$/.exec(line)
+    if (numbered) {
+      flush(para)
+      const items: string[] = []
+      while (i < lines.length && /^\d+\. /.test(lines[i] ?? '')) {
+        items.push((lines[i++] ?? '').replace(/^\d+\. /, ''))
+      }
+      out.push(`<ol>${items.map((t) => `<li>${inline(t)}</li>`).join('')}</ol>`)
+      continue
+    }
     if (line.trim() === '') {
       flush(para)
       i += 1

@@ -172,10 +172,10 @@ describe('a second undo', () => {
 })
 
 describe('what the undo reaches: the newest turn, in commit order', () => {
-  it('skips a turn that only read or answered, and one that made and ended the same thing', async () => {
+  it('skips a turn that changed nothing, and one that made and ended the same thing', async () => {
     const a = await newAccount(sql)
     await turn(sql, a, [log(cafe())])
-    await turn(sql, a, [{ tool: 'list_facts', input: {} }], { at: minutes(2) })
+    await turn(sql, a, [correct(99, { amount: '1' })], { at: minutes(2) }) // gone: it changed nothing
     await turn(sql, a, [remember('cobro', 'el 5'), forget({ key: 'cobro' })], { at: minutes(3) })
     expect(await undoAt(a, minutes(4))).toMatchObject({ status: 'applied' })
     expect(await liveMovements(sql)).toEqual([])

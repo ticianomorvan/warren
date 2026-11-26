@@ -85,7 +85,20 @@ Settled choices. Do not reopen without new evidence:
 - The door (`door.ts`) is authentication only: signature, issuer, audience, expiry, `typ: at+jwt`, `azp`, a user that stands for an
   account, and that account has not disconnected since the token was issued. Every refusal is one 401. A database that cannot answer
   is a 503. Scope is each tool's (`ledger:read`, `ledger:write`). The `azp` is the `client` of every turn.
-- Origin is checked exactly (`new URL(origin).origin` against the allowed hosts), because the SDK helper compares hostnames only.
+- Origin is checked exactly (`new URL(origin).origin` against `CLIENT_HOSTS` and our own origin), because the SDK helper compares
+  hostnames only. Browser-hosted MCP clients other than Claude's (a web page of another site calling `/mcp` directly) are refused at this
+  check. Warren uses no cookies on `/mcp` (the bearer token is the credential), so this is not about CSRF; the check stays against DNS
+  rebinding and drive-by pages that find a token. A request with no `Origin` is not a browser and passes: desktop and CLI agents are
+  unaffected. Add a browser client's host to `CLIENT_HOSTS` to allow it.
+- "Disconnect all agents" sets `mcp_revoked_at` and, in the same transaction, revokes the person's refresh and access tokens and
+  deletes their consents, so a refresh token cannot mint a newer token that the door would accept.
+- A user whose `account` row could not be made in the create hook is not locked out: `ensureAccount` (under a row lock, idempotent)
+  repairs it on the next call of the door or the account page.
+- Consent names a client by its document's host (CIMD) or, for a client that registered itself (DCR) and chose its own name, as
+  "no verificado" with the host it sends the person back to. A self-registered client nobody consented to in 24 hours is deleted
+  (`auth/clients.ts`, at start and hourly).
+- Start refuses a database made by the old schema (`turn.client` missing or `wa_message` present): the migrations are skipped by file
+  name, so the shape is checked too.
 - Tools come from the registry, named `warren_<tool>`, plus `request_id`, `limit`, `cursor`. A call that changes nothing leaves no turn
   and no `mcp_request` row, so the id can be reused. The same `request_id` with the same input replays the first answer.
 - Free text is bounded to 200 characters, and `find_movements` text to 10 words, in `mcp/tools.ts`.

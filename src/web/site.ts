@@ -1,18 +1,11 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { documentPage } from '../auth/pages'
-import { landing, llms, privacy, setup, terms } from './content'
+import { llms, PAGES, setup } from './content'
 import { renderMarkdown } from './markdown'
-import { newNonce, sendHtml, sendText } from './send'
+import { sendHtml, sendText } from './send'
 
 /** Serves the public documents; false when the path is not one of them. */
 export type Site = (req: IncomingMessage, res: ServerResponse, url: URL) => boolean
-
-/** The documents people read as pages; each also has a Markdown twin for agents. */
-const DOCUMENTS = {
-  '/': { title: 'Warren', md: landing, twin: '/index.md' },
-  '/privacy': { title: 'Política de privacidad', md: privacy, twin: '/privacy.md' },
-  '/terms': { title: 'Términos de uso', md: terms, twin: '/terms.md' },
-} as const
 
 /** Whether the client asks for Markdown before HTML (`Accept: text/markdown`), the way an agent reads a page. */
 function wantsMarkdown(req: IncomingMessage): boolean {
@@ -32,35 +25,43 @@ function wantsMarkdown(req: IncomingMessage): boolean {
 /**
  * The agent-readable web (docs/design.md, "The web"): the landing, `/privacy` and `/terms` as pages with a Markdown twin
  * (`/privacy.md`, `/terms.md`, and `Accept: text/markdown` on `/`), `/setup.md` for agents, and `/llms.txt` that indexes them.
- * Every document takes the public URL, so a command or a link names the host that serves it.
+ * Every document takes the public URL, so a command or a link names the host that serves it. They are built once, here.
  */
 export function createSite(publicUrl: string): Site {
+  const setupMd = setup(publicUrl)
+  const llmsTxt = llms(publicUrl)
+  const documents = PAGES.map((p) => {
+    const md = p.md(publicUrl)
+    return {
+      route: p.route as string,
+      twin: p.twin as string,
+      title: p.title,
+      md,
+      html: renderMarkdown(md),
+    }
+  })
   return (req, res, url) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return false
     const path = url.pathname
     if (path === '/setup.md') {
-      sendText(res, 'markdown', setup(publicUrl))
+      sendText(res, 'markdown', setupMd)
       return true
     }
     if (path === '/llms.txt') {
-      sendText(res, 'plain', llms(publicUrl))
+      sendText(res, 'plain', llmsTxt)
       return true
     }
-    for (const [route, doc] of Object.entries(DOCUMENTS)) {
-      const md = doc.md(publicUrl)
+    for (const doc of documents) {
       if (path === doc.twin) {
-        sendText(res, 'markdown', md)
+        sendText(res, 'markdown', doc.md)
         return true
       }
-      if (path === route) {
+      if (path === doc.route) {
         if (wantsMarkdown(req)) {
-          sendText(res, 'markdown', md, { vary: 'Accept' })
+          sendText(res, 'markdown', doc.md, { vary: 'Accept' })
           return true
         }
-        const nonce = newNonce()
-        sendHtml(res, 200, documentPage(doc.title, renderMarkdown(md), nonce), nonce, {
-          vary: 'Accept',
-        })
+        sendHtml(res, 200, (nonce) => documentPage(doc.title, doc.html, nonce), { vary: 'Accept' })
         return true
       }
     }

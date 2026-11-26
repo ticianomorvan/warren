@@ -1,6 +1,7 @@
 import { request as httpRequest } from 'node:http'
 import { getMigrations } from 'better-auth/db/migration'
 import { describe, expect, it } from 'vitest'
+import { expireUnconsentedClients } from './auth/clients'
 import { cleanName } from './auth/routes'
 import {
   authorizeUrl,
@@ -19,6 +20,7 @@ import {
   token,
   withClaude,
 } from './auth-test-kit'
+import { call } from './mcp-test-kit'
 import { sql, useDatabase } from './test-harness'
 
 /**
@@ -59,7 +61,8 @@ describe('the whole flow', () => {
     const consentPage = await b.go(consent.pathname + consent.search)
     const consentHtml = await consentPage.text()
     expect(consentPage.status).toBe(200)
-    expect(consentHtml).toContain(`${CLIENT} quiere acceder a tu Warren`)
+    expect(consentHtml).toContain('«Claude» (claude.ai) quiere acceder a tu Warren')
+    expect(consentHtml).not.toContain('no verificado')
     expect(consentHtml).toContain(`<dd>${EMAIL_A}</dd>`)
     expect(consentHtml).toContain('Después te lleva a</dt><dd>claude.ai')
     expect(consentHtml).toContain('Ver tus movimientos')
@@ -200,6 +203,71 @@ describe('the whole flow', () => {
   })
 })
 
+describe('what the consent page says of a client that registered itself', () => {
+  const register = (app: { base: string }, name: string) =>
+    fetch(`${app.base}/api/auth/oauth2/register`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-real-ip': `10.9.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`,
+      },
+      body: JSON.stringify({
+        client_name: name,
+        redirect_uris: ['https://agent.example/oauth/callback'],
+        token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+      }),
+    }).then(async (r) => {
+      const body = (await r.json()) as { client_id: string }
+      expect(r.status, JSON.stringify(body)).toBeLessThan(300)
+      return body
+    })
+
+  it('shows it as unverified with the host it sends the person to in the heading; a document client shows its document’s host', async () => {
+    const { app } = await withClaude()
+    const { client_id } = await register(app, 'Banco Oficial')
+    const b = browser(app.base)
+    const authorize = await b.go(
+      `/api/auth/oauth2/authorize?${new URLSearchParams({
+        response_type: 'code',
+        client_id,
+        redirect_uri: 'https://agent.example/oauth/callback',
+        scope: 'ledger:read',
+        state: 's',
+        code_challenge: pkce().challenge,
+        code_challenge_method: 'S256',
+        resource: `${app.base}/mcp`,
+      })}`,
+    )
+    const to = new URL(authorize.headers.get('location') ?? '', app.base)
+    const signIn = await (await b.go(to.pathname + to.search)).text()
+    expect(signIn).toContain('Banco Oficial (agent.example) (no verificado)')
+    const back = await signInWithGoogle(b, { email: EMAIL_A, search: to.search })
+    const consent = new URL(back.headers.get('location') ?? '', app.base)
+    const html = await (await b.go(consent.pathname + consent.search)).text()
+    expect(html).toContain('«Banco Oficial» (agent.example) quiere acceder a tu Warren')
+    expect(html).toContain('Cliente no verificado')
+    app.close()
+  })
+
+  it('forgets one nobody consented to within a day, and keeps the recent, the consented and the document ones', async () => {
+    const { app } = await withClaude()
+    const old = await register(app, 'viejo')
+    const recent = await register(app, 'reciente')
+    const consented = await register(app, 'usado')
+    await sql`UPDATE auth_oauth_client SET "createdAt" = now() - interval '25 hours' WHERE "clientId" IN (${old.client_id}, ${consented.client_id})`
+    await connect(app, browser(app.base), { challenge: pkce().challenge }) // a document client, consented
+    await sql`INSERT INTO auth_oauth_consent ("clientId", "userId", scopes, "createdAt", "updatedAt")
+      SELECT ${consented.client_id}, id, '[]'::jsonb, now(), now() FROM auth_user`
+    await sql`UPDATE auth_oauth_client SET "createdAt" = now() - interval '48 hours' WHERE "clientId" = ${CLIENT_ID}`
+    expect(await expireUnconsentedClients(sql)).toBe(1)
+    const left = (await sql`SELECT "clientId" FROM auth_oauth_client`).map((r) => r.clientId)
+    expect(left.sort()).toEqual([CLIENT_ID, consented.client_id, recent.client_id].sort())
+    app.close()
+  })
+})
+
 describe('Google sign-in is the only way in, and it is open', () => {
   it('a first sign-in makes the user and its account row; the same person again makes nothing new', async () => {
     const { app } = await withClaude()
@@ -266,6 +334,32 @@ describe('Google sign-in is the only way in, and it is open', () => {
       .catch(() => null)
     expect(await sql`SELECT 1 FROM auth_user`).toHaveLength(0)
     expect(await sql`SELECT 1 FROM account`).toHaveLength(0)
+    app.close()
+  })
+
+  it('a person whose account could not be made on first sign-in is not locked out: the next use repairs it', async () => {
+    let failures = 1
+    const { app } = await withClaude({
+      makeAccount: async (...args) => {
+        if (failures-- > 0) throw new Error('database blip')
+        return (await import('./auth/account')).ensureAccount(...args)
+      },
+    })
+    const a = await mint(app, EMAIL_A)
+    // The hook failed once: the user exists with no account yet...
+    expect(failures).toBe(0)
+    expect(await sql`SELECT 1 FROM account`).toHaveLength(0)
+    expect((await sql`SELECT warren_account_id AS id FROM auth_user`)[0]?.id).toBeNull()
+    // ...the first call of its token makes the account.
+    expect((await call(app, a.access_token, 'warren_list_facts')).isError).toBeFalsy()
+    expect((await sql`SELECT warren_account_id AS id FROM auth_user`)[0]?.id).toEqual(
+      expect.any(Number),
+    )
+    // The account page repairs it too.
+    await sql`UPDATE auth_user SET warren_account_id = NULL`
+    await sql`DELETE FROM account`
+    expect(await (await a.b.go('/account')).text()).toContain(EMAIL_A)
+    expect(await sql`SELECT 1 FROM account`).toHaveLength(1)
     app.close()
   })
 

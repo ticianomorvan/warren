@@ -12,7 +12,6 @@ import {
   undo,
 } from '../../test/core'
 import { sql, useDatabase } from '../../test/db'
-import type { Call } from './commands'
 import { schemaDir } from './db'
 import { commit } from './turn'
 
@@ -55,12 +54,6 @@ describe('commit', () => {
         effect: 'remembered',
       },
     ])
-  })
-
-  it('has no record when nothing was changed', async () => {
-    const a = await newAccount(sql)
-    const t = await turn(sql, a, [{ tool: 'list_facts', input: {} } as Call])
-    expect(t.record).toBeNull()
   })
 
   it('a line that changed nothing (gone, unchanged) is not a record of a change', async () => {

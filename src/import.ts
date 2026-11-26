@@ -71,9 +71,14 @@ if (checkOnly) {
   if (!url) usage('Set DATABASE_URL.')
   const sql: Sql = connect(url, { max: 1 })
   try {
-    const accountId = accountFlag ? Number(accountFlag) : await accountOfEmail(sql, email)
+    const accountId = accountFlag
+      ? ((await sql`SELECT id::int AS id FROM account WHERE id = ${Number(accountFlag)}`)[0]?.id ??
+        null)
+      : await accountOfEmail(sql, email)
     if (accountId === null) {
-      console.error('No account has that email.')
+      console.error(
+        accountFlag ? `No account has the id ${accountFlag}.` : 'No account has that email.',
+      )
       process.exitCode = 1
     } else {
       report(await importMovements({ rows, into: { sql, accountId } }))

@@ -34,6 +34,8 @@ export async function setup(
     /** The clock the account page judges "a fresh sign-in" by. */
     accountNow?: () => Date
     callsPerMinute?: number
+    /** What makes the account of a new user: a test makes it fail. */
+    makeAccount?: Parameters<typeof createAuth>[0]['makeAccount']
   } = {},
 ) {
   const db = opts.sql ?? sql
@@ -57,6 +59,7 @@ export async function setup(
     secret: AUTH_SECRET,
     google: { clientId: 'google-client-id', clientSecret: 'google-client-secret' },
     fetchClientMetadataResource: opts.fetchClient,
+    ...(opts.makeAccount ? { makeAccount: opts.makeAccount } : {}),
   })
   routes = createAuthRoutes({
     auth,

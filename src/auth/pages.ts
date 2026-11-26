@@ -2,6 +2,8 @@
 // public documents (landing, privacy, terms). Server-rendered, no framework, no outside assets: one inline stylesheet and, where a
 // button needs it, one small script, both under a CSP nonce. Mostly opened on a phone.
 
+import { PAGES } from '../web/content'
+
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
 const STYLE = `
@@ -184,6 +186,10 @@ export const scopeText = (scope: string) => SCOPE_TEXT[scope] ?? `Permiso “${s
 export interface ConsentView {
   nonce: string
   client: string
+  /** Where the client comes from (its document's host, or the host it sends the person back to). */
+  clientHost: string
+  /** The client has a metadata document; false for one that registered itself and chose its own name. */
+  verified: boolean
   /** The Google email of the person signed in: whose account this connects. */
   account: string
   /** The host the client is sent back to with the code. */
@@ -221,7 +227,8 @@ export function consentPage(v: ConsentView): string {
   return shell(
     'Permitir acceso a Warren',
     `<div class="card">
-<h1>${esc(v.client)} quiere acceder a tu Warren</h1>
+<h1>«${esc(v.client)}»${v.clientHost ? ` (${esc(v.clientHost)})` : ''} quiere acceder a tu Warren</h1>
+${v.verified ? '' : '<p class="status bad" role="alert">Cliente no verificado: se registró solo y eligió su propio nombre. Seguí solo si empezaste esta conexión vos y reconocés ese destino.</p>'}
 <dl>
 ${v.account ? `<dt>Se conecta a la cuenta de</dt><dd>${esc(v.account)}</dd>` : ''}
 <dt>Después te lleva a</dt><dd>${esc(v.redirectHost)}</dd>
@@ -314,7 +321,7 @@ ${
 export function documentPage(title: string, html: string, nonce: string): string {
   return shell(
     title,
-    `<div class="card doc">${html}<nav class="links"><a href="/">Inicio</a><a href="/privacy">Privacidad</a><a href="/terms">Términos</a><a href="/setup.md">Setup (para agentes)</a><a href="/account">Mi cuenta</a></nav></div>`,
+    `<div class="card doc">${html}<nav class="links">${[...PAGES.map((p) => [p.route, p.link]), ['/setup.md', 'Setup (para agentes)'], ['/account', 'Mi cuenta']].map(([href, label]) => `<a href="${href}">${label}</a>`).join('')}</nav></div>`,
     nonce,
     '',
     { indexable: true, wide: true },

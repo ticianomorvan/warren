@@ -1,4 +1,4 @@
-import type { Call, Movement } from '../src/core/commands'
+import type { Movement, WriteCall } from '../src/core/commands'
 import type { Sql } from '../src/core/db'
 import { type Committed, commit } from '../src/core/turn'
 
@@ -31,7 +31,7 @@ export const cafe = (o: Partial<Movement> = {}): Movement => ({
 export function turn(
   sql: Sql,
   accountId: number,
-  calls: Call[],
+  calls: WriteCall[],
   o: { at?: Date; client?: string } = {},
 ): Promise<Committed> {
   return commit(sql, {
@@ -42,11 +42,11 @@ export function turn(
   }) as Promise<Committed>
 }
 
-export const log = (...movements: Movement[]): Call => ({
+export const log = (...movements: Movement[]): WriteCall => ({
   tool: 'log_movements',
   input: { movements },
 })
-export const undo: Call = { tool: 'undo_last', input: {} }
+export const undo: WriteCall = { tool: 'undo_last', input: {} }
 
 /** Every version of every movement, oldest first, as plain values. */
 export const allMovements = (sql: Sql) => sql<
@@ -79,20 +79,20 @@ export const allFacts = (sql: Sql) =>
   >`SELECT id::int, entity_id::int AS entity, made_in::int AS made, ended_in::int AS ended, kind, key, value FROM fact ORDER BY id`
 export const liveFactList = (sql: Sql) => sql<{ entity: number; key: string; value: string }[]>`
   SELECT entity_id::int AS entity, key, value FROM fact WHERE ended_at IS NULL ORDER BY id`
-export const correct = (id: number, changes: Record<string, string>): Call => ({
+export const correct = (id: number, changes: Record<string, string>): WriteCall => ({
   tool: 'correct_movement',
   input: { id, changes },
 })
-export const remove = (id: number): Call => ({ tool: 'delete_movement', input: { id } })
+export const remove = (id: number): WriteCall => ({ tool: 'delete_movement', input: { id } })
 export const remember = (
   key: string,
   value: string,
   kind: 'alias' | 'category' | 'note' = 'note',
-): Call => ({
+): WriteCall => ({
   tool: 'remember_fact',
   input: { kind, key, value },
 })
-export const forget = (target: { id: number } | { key: string }): Call => ({
+export const forget = (target: { id: number } | { key: string }): WriteCall => ({
   tool: 'forget_fact',
   input: { target },
 })

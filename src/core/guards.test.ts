@@ -16,6 +16,33 @@ describe('checkValues: what a call says', () => {
     )
   })
 
+  it('declines a secret or contact data in a movement’s words, as in a fact, for a log and for a correction', () => {
+    const declined = (kind: 'secret' | 'contact') => ({ kind: 'declined', declined: kind })
+    for (const description of ['clave del wifi perro', 'mi contraseña es azul']) {
+      expect(values('log_movements', { movements: [cafe({ description })] })).toEqual(
+        declined('secret'),
+      )
+    }
+    expect(
+      values('log_movements', {
+        movements: [cafe({ description: 'transferencia a juan@mail.com' })],
+      }),
+    ).toEqual(declined('contact'))
+    expect(
+      values('log_movements', { movements: [cafe({ payment: 'cbu 0170099220000067797370' })] }),
+    ).toEqual(declined('secret'))
+    expect(
+      values('correct_movement', { id: 1, changes: { description: 'clave del wifi perro' } }),
+    ).toEqual(declined('secret'))
+    expect(values('correct_movement', { id: 1, changes: { payment: 'juan@mail.com' } })).toEqual(
+      declined('contact'),
+    )
+    // Plain words are not.
+    expect(
+      values('log_movements', { movements: [cafe({ description: 'café con juan' })] }).kind,
+    ).toBe('ok')
+  })
+
   it('accepts a log and keeps it as sent', () => {
     expect(values('log_movements', { movements: [cafe()] })).toEqual({
       kind: 'ok',
@@ -56,7 +83,10 @@ describe('checkValues: what a call says', () => {
     expect(rejection(values('find_movements', { amount: 'abc' }))).toMatch(/decimal/)
     expect(rejection(values('find_movements', { from: '2026-13-01' }))).toMatch(/from/)
     const read = values('find_movements', { text: 'nafta', limit: 500 })
-    expect(read).toMatchObject({ kind: 'read', filter: { text: 'nafta', limit: 500 } })
+    expect(read).toMatchObject({
+      kind: 'ok',
+      call: { tool: 'find_movements', input: { text: 'nafta', limit: 500 } },
+    })
   })
 
   it('checks a summary’s range and comparison in code', () => {

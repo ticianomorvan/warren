@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { cafe } from '../../test/core'
 import { type App, EMAIL_A, EMAIL_B, mint, withClaude } from '../auth-test-kit'
@@ -45,6 +46,7 @@ describe('the cap on live movements', () => {
   it('refuses a log that would go past it with the typed code movement_limit, writes nothing, and lets deleting make room', async () => {
     ;({ app } = await withClaude())
     const a = await mint(app, EMAIL_A)
+    const c = a
     const [account] = await sql`SELECT warren_account_id AS id FROM auth_user LIMIT 1`
     const id = account?.id as number
     // Fills the account to 2 below the cap in one statement: logging 100k rows through the tool would only slow the test.
@@ -73,6 +75,24 @@ describe('the cap on live movements', () => {
       await call(app, a.access_token, 'warren_log_movements', { movements: [movement()] }),
       'movement_limit',
     )
+    // A retry of the write that reached the cap gets its first answer, not movement_limit.
+    const requestId = randomUUID()
+    ok(await call(app, c.access_token, 'warren_delete_movement', { id: 1 }), 'delete_movement')
+    const first = ok(
+      await call(app, c.access_token, 'warren_log_movements', {
+        movements: [movement()],
+        request_id: requestId,
+      }),
+      'log_movements',
+    )
+    const retry = ok(
+      await call(app, c.access_token, 'warren_log_movements', {
+        movements: [movement()],
+        request_id: requestId,
+      }),
+      'log_movements',
+    )
+    expect(retry).toEqual({ ...first, replayed: true })
     // The cap is the account's own: another person is not held by it.
     const b = await mint(app, EMAIL_B)
     ok(

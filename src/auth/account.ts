@@ -5,6 +5,26 @@ import type { Sql } from '../core/db'
  * delete it all. Each takes the account from the signed-in session, never from the request.
  */
 
+/**
+ * The account a user stands for, made if the user has none yet. Idempotent and safe to race: the user row is locked, so two callers
+ * make one account. The user's create hook calls it, and so do the account page and the door, so a person whose hook failed once is
+ * repaired on next use instead of locked out.
+ */
+export async function ensureAccount(sql: Sql, userId: string): Promise<number | null> {
+  return sql.begin(async (tx) => {
+    const [user] = await tx<{ account: number | null }[]>`
+      SELECT warren_account_id AS account FROM auth_user WHERE id = ${userId}::uuid FOR UPDATE`
+    if (!user) return null
+    if (user.account !== null) return user.account
+    const [row] = await tx<
+      { id: number }[]
+    >`INSERT INTO account DEFAULT VALUES RETURNING id::int AS id`
+    const id = (row as { id: number }).id
+    await tx`UPDATE auth_user SET warren_account_id = ${id} WHERE id = ${userId}::uuid`
+    return id
+  })
+}
+
 /** A delete needs a sign-in younger than this: the session proves the person is at the keyboard now. */
 export const FRESH_SIGN_IN_MS = 5 * 60 * 1000
 
@@ -13,11 +33,18 @@ export const isFreshSignIn = (createdAt: Date, now: Date = new Date()): boolean 
   now.getTime() - createdAt.getTime() <= FRESH_SIGN_IN_MS
 
 /**
- * "Disconnect all agents": the door refuses every access token issued at or before now. The agents sign in again when the person
- * lets them. Returns when it took effect.
+ * "Disconnect all agents": the door refuses every access token issued at or before now, and in the same transaction the person's
+ * refresh and access tokens are revoked and their consents deleted, so a refresh token cannot mint a newer one and every agent has
+ * to ask (and be allowed) again.
  */
 export async function disconnectAgents(sql: Sql, accountId: number): Promise<void> {
-  await sql`UPDATE account SET mcp_revoked_at = now() WHERE id = ${accountId}`
+  await sql.begin(async (tx) => {
+    await tx`UPDATE account SET mcp_revoked_at = now() WHERE id = ${accountId}`
+    const user = tx`(SELECT id FROM auth_user WHERE warren_account_id = ${accountId})`
+    await tx`UPDATE auth_oauth_refresh_token SET revoked = now() WHERE "userId" = ${user} AND revoked IS NULL`
+    await tx`UPDATE auth_oauth_access_token SET revoked = now() WHERE "userId" = ${user} AND revoked IS NULL`
+    await tx`DELETE FROM auth_oauth_consent WHERE "userId" = ${user}`
+  })
 }
 
 /** Everything Warren keeps for the account, every version of every row, as plain data. */

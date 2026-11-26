@@ -2,18 +2,23 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { cafe } from '../../test/core'
+import { until } from '../../test/until'
 import {
   type App,
   browser,
+  CLIENT_ID,
   type Connected,
   EMAIL_A,
   EMAIL_B,
   mint,
   signInWithGoogle,
+  token,
   withClaude,
 } from '../auth-test-kit'
 import { call, ok, rpc } from '../mcp-test-kit'
 import { sql, TODAY, useDatabase } from '../test-harness'
+import { createAuth } from './config'
+import { clearedCookies } from './routes'
 
 /** The account page: disconnect every agent, download everything, delete it all behind a fresh sign-in. */
 useDatabase({ max: 12 })
@@ -86,15 +91,29 @@ describe('disconnect all agents', () => {
   it('cuts the access tokens issued so far, only of this person, and a new sign-in works again', async () => {
     expect((await rpc(app, a.access_token, 'tools/list')).status).toBe(200)
     const res = await post(a, '/account/disconnect')
+    const revokedAt = Number(
+      (await sql`SELECT extract(epoch FROM mcp_revoked_at) * 1000 AS t FROM account ORDER BY id`)[0]
+        ?.t,
+    )
     expect(res.status).toBe(200)
     expect(
       (await sql`SELECT mcp_revoked_at FROM account ORDER BY id`)[0]?.mcp_revoked_at,
     ).toBeInstanceOf(Date)
     expect((await rpc(app, a.access_token, 'tools/list')).status).toBe(401)
     expect((await rpc(app, b.access_token, 'tools/list')).status).toBe(200)
+    // A refresh token cannot mint a newer one: it is revoked with the rest, and the consent is gone.
+    const refreshed = await token(a.b, {
+      grant_type: 'refresh_token',
+      refresh_token: a.refresh_token,
+      client_id: CLIENT_ID,
+    })
+    expect(refreshed.status).toBe(400)
+    expect(((await refreshed.json()) as { error: string }).error).toBe('invalid_grant')
+    expect(await sql`SELECT 1 FROM auth_oauth_consent WHERE "userId" = ${a.userId}`).toHaveLength(0)
+    expect(await sql`SELECT 1 FROM auth_oauth_consent WHERE "userId" = ${b.userId}`).toHaveLength(1)
     // The data is untouched, and a token issued after the disconnect is let in.
     expect((await rowsOf(EMAIL_A))[0]?.account).toBe(1)
-    await new Promise((r) => setTimeout(r, 1100)) // a token's `iat` is in whole seconds
+    await until(() => Date.now() / 1000 > Math.floor(revokedAt / 1000) + 1) // a token's `iat` is in whole seconds
     const again = await mint(app, EMAIL_A)
     expect((await rpc(app, again.access_token, 'tools/list')).status).toBe(200)
   })
@@ -204,6 +223,24 @@ describe('delete the account', () => {
     const again = await mint(app, EMAIL_A)
     const found = await call(app, again.access_token, 'warren_find_movements')
     expect((found.structuredContent as { movements: unknown[] }).movements).toEqual([])
+  })
+})
+
+describe('clearing the session cookie', () => {
+  it('uses better-auth’s own name and attributes: under https, __Secure- and Secure, HttpOnly, SameSite=Lax', async () => {
+    const https = createAuth({
+      sql,
+      publicUrl: 'https://heywarren.app',
+      secret: 'x'.repeat(40),
+      google: { clientId: 'x', clientSecret: 'x' },
+    })
+    const lines = await clearedCookies(https, {})
+    const session = lines.find((l) => l.includes('session_token='))
+    expect(session).toMatch(/^__Secure-/)
+    expect(session).toMatch(/Max-Age=0/i)
+    expect(session).toMatch(/Secure/)
+    expect(session).toMatch(/HttpOnly/i)
+    expect(session).toMatch(/SameSite=Lax/i)
   })
 })
 

@@ -392,3 +392,22 @@ describe('the platform', () => {
     expect(v?.v).toMatch(realPostgres ? /PostgreSQL 17/ : /PostgreSQL/)
   })
 })
+
+describe('a database made by the old schema', () => {
+  it('is refused at start, not served: the files are skipped by name, so the shape is checked', async () => {
+    const old = await createTestDatabase({ migrations: false })
+    try {
+      await old.sql`CREATE TABLE schema_migration (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`
+      await old.sql`INSERT INTO schema_migration (name) VALUES ('001_init.sql'), ('002_auth.sql')`
+      await old.sql`CREATE TABLE turn (id bigserial PRIMARY KEY, channel text NOT NULL)`
+      await old.sql`CREATE TABLE wa_message (id bigserial PRIMARY KEY)`
+      await expect(migrate(old.sql, schemaDir)).rejects.toThrow(/old WhatsApp schema/)
+    } finally {
+      await old.close()
+    }
+  })
+
+  it('and a fresh one passes, every start', async () => {
+    await expect(migrate(sql, schemaDir)).resolves.toBeUndefined()
+  })
+})

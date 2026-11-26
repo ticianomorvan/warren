@@ -125,7 +125,7 @@ Solo vos y los agentes que autorizás. El proveedor de infraestructura (Railway,
 
 ## Cómo los borrás
 
-En [tu cuenta](${url}/account) podés desconectar todos los agentes, descargar todos tus datos en JSON y borrar tu cuenta: se borran al instante tu cuenta y todos tus movimientos y notas, sin vuelta atrás. Warren no guarda copias de seguridad, así que no queda ninguna copia.
+En [tu cuenta](${url}/account) podés desconectar todos los agentes, descargar todos tus datos en JSON y borrar tu cuenta: se borran tu cuenta y todos tus movimientos y notas al instante y sin vuelta atrás. Una copia puede quedar hasta 7 días en las copias de seguridad diarias, hasta que vencen; se usan solo para recuperar el servicio después de una falla.
 
 ## Tus derechos
 
@@ -186,3 +186,19 @@ To set Warren up, read the setup page and follow it in your own client.
 - [Terms](${url}/terms.md): the terms of use.
 - [Source](${REPO}): code, issues and security reports.
 `
+
+/**
+ * The documents people read as pages, each also served as Markdown for agents (its twin). One list feeds the server (`site.ts`) and
+ * the links at the foot of every page (`auth/pages.ts`).
+ */
+export const PAGES = [
+  { route: '/', twin: '/index.md', title: 'Warren', link: 'Inicio', md: landing },
+  {
+    route: '/privacy',
+    twin: '/privacy.md',
+    title: 'Política de privacidad',
+    link: 'Privacidad',
+    md: privacy,
+  },
+  { route: '/terms', twin: '/terms.md', title: 'Términos de uso', link: 'Términos', md: terms },
+] as const

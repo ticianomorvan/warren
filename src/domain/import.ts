@@ -1,4 +1,4 @@
-import type { Call } from '../core/commands'
+import { type WriteCall, writes } from '../core/commands'
 import type { Sql } from '../core/db'
 import { checkValues } from '../core/guards'
 import { commit } from '../core/turn'
@@ -43,12 +43,12 @@ export async function importMovements(o: {
       problems: [{ rows: [MAX_ROWS + 1, o.rows.length], message: `at most ${MAX_ROWS} rows` }],
     }
   }
-  const calls: Call[] = []
+  const calls: WriteCall[] = []
   const problems: Problem[] = []
   for (let start = 0; start < o.rows.length; start += PER_CALL) {
     const chunk = o.rows.slice(start, start + PER_CALL)
     const checked = checkValues('log_movements', { movements: chunk }, env)
-    if (checked.kind === 'ok') calls.push(checked.call)
+    if (checked.kind === 'ok' && writes(checked.call)) calls.push(checked.call)
     else
       problems.push({
         rows: [start + 1, start + chunk.length],

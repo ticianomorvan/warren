@@ -48,5 +48,25 @@ export async function migrate(sql: Sql, dir: URL = schemaDir): Promise<void> {
       await tx`INSERT INTO schema_migration (name) VALUES (${name})`
       log('migration_applied', { name })
     }
+    await assertCurrentSchema(tx as unknown as Sql)
   })
+}
+
+/**
+ * The migrations are skipped by file name, so a database made by an earlier shape of the same files (the WhatsApp one, whose
+ * `001_init.sql` had the same name) would start healthy and fail every call. Refuse to start on it: this schema has `turn.client`
+ * and no `wa_message`.
+ */
+export async function assertCurrentSchema(sql: Sql): Promise<void> {
+  const [row] = await sql<{ client: boolean; old: boolean }[]>`
+    SELECT
+      EXISTS (SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'turn' AND column_name = 'client') AS client,
+      EXISTS (SELECT 1 FROM information_schema.tables
+        WHERE table_schema = current_schema() AND table_name = 'wa_message') AS old`
+  if (!row?.client || row.old) {
+    throw new Error(
+      'This database holds the old WhatsApp schema (001_init.sql was rewritten for MCP-only). Refusing to start: use a new, empty database.',
+    )
+  }
 }

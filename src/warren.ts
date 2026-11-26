@@ -22,7 +22,7 @@ export interface WarrenDeps {
   clock?: () => Date
   /** The host of `/mcp`, the OAuth server and the web; default `config.auth`'s. A function, so a test can bind it after it listens. */
   publicHost?: () => string
-  /** The deploy's identity, shown by `/health` so `pnpm probe --expect` can tell which version answers. */
+  /** The deploy's identity, shown by `/health` so a deploy check can tell which version answers. */
   build?: string
 }
 

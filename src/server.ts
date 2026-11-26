@@ -1,3 +1,4 @@
+import { expireUnconsentedClients } from './auth/clients'
 import { loadConfig } from './config'
 import { connect, migrate, schemaDir } from './core/db'
 import { log } from './log'
@@ -16,6 +17,15 @@ const { server } = createWarren({
       .filter(Boolean)
       .join(' ') || undefined,
 })
+
+// Open registration: a client nobody ever consented to is forgotten after a day.
+const sweep = () =>
+  expireUnconsentedClients(sql).then(
+    () => {},
+    (err) => log('client_sweep_failed', { error: String(err) }, 'error'),
+  )
+void sweep()
+setInterval(sweep, 60 * 60 * 1000).unref()
 
 server.listen(config.PORT, () => log('listening', { port: config.PORT }))
 

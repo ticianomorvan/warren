@@ -1,9 +1,9 @@
 import type { z } from 'zod'
 import { checkFactValues, normalizeKey } from '../domain/facts'
-import type { FindFilter } from '../domain/movements'
 import { planRange } from '../domain/range'
 import { type Call, COMMANDS, type Input, isTool, type Tool } from './commands'
 import { hasLongNumber } from './numbers'
+import { looksContact, looksSecret } from './secrets'
 import {
   checkChanges,
   checkCount,
@@ -29,8 +29,6 @@ export type Declined = (typeof DECLINES)[number]
 export type Checked =
   /** Run it: the call, with its values as code keeps them (a key normalized). */
   | { kind: 'ok'; call: Call }
-  /** A lookup to run before the turn goes on. */
-  | { kind: 'read'; filter: FindFilter }
   /** What the client is told, to send it again. */
   | { kind: 'rejected'; message: string }
   /** Refused by code: the client cannot fix it by sending it again. */
@@ -60,9 +58,24 @@ export function issueList(error: z.ZodError): string {
   return lines.length > MAX_ISSUES ? `${shown}; and ${lines.length - MAX_ISSUES} more` : shown
 }
 
+/**
+ * The words a client wants stored in a movement (description, payment): a secret or contact data is declined, as in a fact, and the
+ * client is not asked to fix it. Returns the first code found.
+ */
+function declinedWords(
+  values: { description?: string | null; payment?: string | null }[],
+): Checked | null {
+  for (const v of values) {
+    const text = [v.description, v.payment].filter((w): w is string => w != null).join(' ')
+    if (looksSecret(text)) return declined('secret')
+    if (looksContact(text)) return declined('contact')
+  }
+  return null
+}
+
 /** The value rule of each tool. A tool without a rule of its own takes any input of the right shape. */
 const VALUES = {
-  find_movements: (f, _env) => {
+  find_movements: (f) => {
     const issues = [
       ...(f.amount != null && !isDecimalAmount(f.amount) ? ['amount is not a decimal string'] : []),
       ...(['from', 'to'] as const).flatMap((field) => {
@@ -73,24 +86,17 @@ const VALUES = {
     ]
     if (issues.length > 0) return rejected(issues.join('; '))
     // The size of a page is the caller's.
-    return {
-      kind: 'read',
-      filter: {
-        text: f.text ?? null,
-        from: f.from ?? null,
-        to: f.to ?? null,
-        category: f.category ?? null,
-        payment: f.payment ?? null,
-        amount: f.amount ?? null,
-        limit: Math.max(f.limit ?? 10, 1),
-      },
-    }
+    return ok('find_movements', f)
   },
   log_movements: (input, env) => {
+    const words = declinedWords(input.movements)
+    if (words) return words
     const issues = [...checkLog(input.movements, env.today), ...checkCount(input.movements.length)]
     return issues.length > 0 ? rejected(issueText(issues)) : ok('log_movements', input)
   },
   correct_movement: (input, env) => {
+    const words = declinedWords([input.changes])
+    if (words) return words
     const issues = checkChanges(input.changes, env.today)
     if (issues.length > 0) return rejected(issueText(issues))
     if (!hasChanges(input.changes)) {

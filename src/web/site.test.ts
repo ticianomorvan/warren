@@ -127,6 +127,7 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('# T\n\nuna **marca** y `code <b>` y [a](/x)\n\n- uno\n- dos')).toBe(
       '<h1>T</h1>\n<p>una <strong>marca</strong> y <code>code &#60;b&#62;</code> y <a href="/x">a</a></p>\n<ul><li>uno</li><li>dos</li></ul>',
     )
+    expect(renderMarkdown('1. uno\n2. dos')).toBe('<ol><li>uno</li><li>dos</li></ol>')
     expect(renderMarkdown('```sh\nx <y>\n```')).toBe('<pre><code>x &#60;y&#62;</code></pre>')
     expect(renderMarkdown('<script>alert(1)</script>')).toBe(
       '<p>&#60;script&#62;alert(1)&#60;/script&#62;</p>',

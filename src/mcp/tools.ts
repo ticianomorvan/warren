@@ -223,9 +223,10 @@ async function find(c: ToolContext, input: Record<string, unknown>) {
   if (long) return fail('invalid', long)
   const now = c.now()
   const checked = checkValues('find_movements', filter, { today: argentinaToday(now) })
-  if (checked.kind !== 'read') {
+  if (checked.kind !== 'ok' || checked.call.tool !== 'find_movements') {
     return fail('invalid', checked.kind === 'rejected' ? checked.message : 'invalid input')
   }
+  const f = checked.call.input
   let beforeEntity: number | undefined
   if (cursor !== undefined) {
     const decoded = decodeCursor(cursor)
@@ -237,7 +238,15 @@ async function find(c: ToolContext, input: Record<string, unknown>) {
   const rows = await findMovements(
     c.sql,
     c.accountId,
-    { ...checked.filter, limit: limit + 1 },
+    {
+      text: f.text ?? null,
+      from: f.from ?? null,
+      to: f.to ?? null,
+      category: f.category ?? null,
+      payment: f.payment ?? null,
+      amount: f.amount ?? null,
+      limit: limit + 1,
+    },
     beforeEntity ? { beforeEntity } : {},
   )
   const page = rows.slice(0, limit)
@@ -396,22 +405,26 @@ async function write(
     // A secret in what the client sent is stored nowhere: the turn keeps no input.
     scrub: sensitive([...strings(input)].map(([, v]) => v).join(' ')),
     guard: async (tx: Sql): Promise<{ stop: Result } | undefined> => {
-      // The cap on what one account keeps, counted under the lock so two calls cannot both squeeze under it.
-      if (call.tool === 'log_movements') {
-        const live = await countLive(tx, c.accountId)
-        if (live + call.input.movements.length > MAX_LIVE_MOVEMENTS) {
-          return {
-            stop: fail(
-              'movement_limit',
-              `This account holds ${live} movements and the limit is ${MAX_LIVE_MOVEMENTS}. Delete some before logging more.`,
-            ),
+      const [prior] =
+        requestId === undefined
+          ? []
+          : await tx<{ input_hash: string; result: Record<string, unknown> }[]>`
+          SELECT input_hash, result FROM mcp_request WHERE account_id = ${c.accountId} AND request_id = ${requestId}`
+      if (!prior) {
+        // A request seen before is answered first, whatever the account holds now; only a new one meets the cap. // It is counted under the lock, so two calls cannot both squeeze under it.
+        if (call.tool === 'log_movements') {
+          const live = await countLive(tx, c.accountId)
+          if (live + call.input.movements.length > MAX_LIVE_MOVEMENTS) {
+            return {
+              stop: fail(
+                'movement_limit',
+                `This account holds ${live} movements and the limit is ${MAX_LIVE_MOVEMENTS}. Delete some before logging more.`,
+              ),
+            }
           }
         }
+        return undefined
       }
-      if (requestId === undefined) return undefined
-      const [prior] = await tx<{ input_hash: string; result: Record<string, unknown> }[]>`
-          SELECT input_hash, result FROM mcp_request WHERE account_id = ${c.accountId} AND request_id = ${requestId}`
-      if (!prior) return undefined
       // The same call gets its first answer; another call under the same id gets neither that answer nor a write.
       return {
         stop:

@@ -114,9 +114,12 @@ describe('the door', () => {
     ).toBe(200)
   })
 
-  it('a user whose account mapping is gone is refused', async () => {
+  it('a user whose account mapping is gone is repaired on its next call, not locked out', async () => {
     await sql`UPDATE auth_user SET warren_account_id = NULL WHERE id = ${a.userId}`
-    expect((await rpc(a.access_token, 'tools/list')).status).toBe(401)
+    expect((await rpc(a.access_token, 'tools/list')).status).toBe(200)
+    expect(
+      (await sql`SELECT warren_account_id AS id FROM auth_user WHERE id = ${a.userId}`)[0]?.id,
+    ).toEqual(expect.any(Number))
   })
 
   it('a database that cannot answer is a 503, not a reason to sign in again', async () => {

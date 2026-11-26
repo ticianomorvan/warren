@@ -97,18 +97,36 @@ describe('warren_log_movements', () => {
     )
   })
 
-  it('keeps no input of a turn that held a secret, and keeps it otherwise', async () => {
-    ok(await write('log_movements', { movements: [movement()] }), 'log_movements')
-    ok(
+  it('declines a secret or contact data in a movement’s words, with a typed code, and stores nothing', async () => {
+    refused(
       await write('log_movements', {
-        movements: [movement({ description: 'clave: hunter2 del wifi' })],
+        movements: [movement({ description: 'clave del wifi perro' })],
       }),
-      'log_movements',
+      'secret',
     )
-    const rows = await sql<{ calls: { input?: unknown }[] }[]>`SELECT calls FROM turn ORDER BY id`
-    expect(rows).toHaveLength(2)
-    expect(rows[0]?.calls[0]?.input).toBeDefined()
-    expect(rows[1]?.calls[0]?.input).toBeUndefined()
+    refused(
+      await write('log_movements', {
+        movements: [movement({ description: 'transferencia a juan@mail.com' })],
+      }),
+      'contact',
+    )
+    const m = ok(await write('log_movements', { movements: [movement()] }), 'log_movements')
+      .movements[0]?.id
+    refused(
+      await write('correct_movement', {
+        id: m,
+        changes: { payment: 'cbu 0170099220000067797370' },
+      }),
+      'secret',
+    )
+    refused(
+      await write('correct_movement', { id: m, changes: { description: 'mail juan@mail.com' } }),
+      'contact',
+    )
+    // Only the plain log was written: the declined calls left no turn and no row.
+    expect(await live()).toHaveLength(1)
+    expect(await turns()).toHaveLength(1)
+    expect(JSON.stringify(await sql`SELECT calls, record FROM turn`)).not.toMatch(/wifi|juan/)
   })
 
   it('refuses what a table cannot hold, with the reason, and writes nothing', async () => {
@@ -124,7 +142,7 @@ describe('warren_log_movements', () => {
       await write('log_movements', {
         movements: [movement({ description: 'tarjeta 4111111111111111' })],
       }),
-      'invalid',
+      'secret',
     )
     expect(await live()).toHaveLength(0)
     expect(await turns()).toHaveLength(0)
