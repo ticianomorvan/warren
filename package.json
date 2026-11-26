@@ -2,7 +2,7 @@
   "name": "warren",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.18.0",
+  "packageManager": "pnpm@12.23.0",
   "engines": {
     "node": ">=24"
   },
@@ -22,12 +22,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.10.0",
-    "@better-auth/cimd": "1.7.26",
-    "@better-auth/mcp": "1.7.26",
-    "@better-auth/oauth-provider": "1.7.26",
+    "@better-auth/cimd": "1.7.27",
+    "@better-auth/mcp": "1.7.27",
+    "@better-auth/oauth-provider": "1.7.27",
     "@modelcontextprotocol/node": "2.1.2",
     "@modelcontextprotocol/server": "2.4.0",
-    "better-auth": "1.7.26",
+    "better-auth": "1.7.27",
     "kysely-postgres-js": "5.1.0",
     "postgres": "^4.1.1",
     "tsx": "^4.23.15",
