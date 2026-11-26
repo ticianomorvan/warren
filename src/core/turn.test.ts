@@ -19,36 +19,31 @@ import { commit } from './turn'
 useDatabase({ migrations: schemaDir })
 
 describe('commit', () => {
-  it('logs, and the turn row is the commit point: record, reply, label, channel and the time of the message', async () => {
+  it('logs, and the turn row is the commit point: record, client and the time of the call', async () => {
     const a = await newAccount(sql)
-    const t = await turn(sql, a, [log(cafe())], { channel: 'mcp' })
-    expect(t.reply).toBe('✓ Café $3.500')
+    const t = await turn(sql, a, [log(cafe())], { client: 'https://claude.ai/client.json' })
     expect(t.record).toBe('✓ Café $3.500')
-    const [row] = await sql`
-      SELECT label, channel, record, reply, question, undoes, created_at FROM turn WHERE id = ${t.turn}`
+    const [row] =
+      await sql`SELECT client, record, undoes, created_at FROM turn WHERE id = ${t.turn}`
     expect(row).toEqual({
-      label: 'log',
-      channel: 'mcp',
+      client: 'https://claude.ai/client.json',
       record: '✓ Café $3.500',
-      reply: '✓ Café $3.500',
-      question: null,
       undoes: null,
       created_at: NOW,
     })
     expect((await allMovements(sql)).map((m) => m.made)).toEqual([t.turn])
   })
 
-  it('stores what each call came to, and nothing of the input for a message that must be scrubbed', async () => {
+  it('stores what each call came to, and nothing of the input when it must be scrubbed', async () => {
     const a = await newAccount(sql)
     const t = await commit(sql, {
       accountId: a,
-      channel: 'whatsapp',
+      client: 'test',
       now: NOW,
       calls: [remember('cobro', 'el 5')],
       scrub: true,
-      compose: () => ({ reply: 'x' }),
     })
-    const [row] = await sql`SELECT calls FROM turn WHERE id = ${t?.turn ?? 0}`
+    const [row] = await sql`SELECT calls FROM turn WHERE id = ${t.turn}`
     expect(row?.calls).toEqual([{ tool: 'remember_fact', status: 'applied', effect: 'remembered' }])
     const kept = await turn(sql, a, [remember('luz', 'el 6')])
     const [row2] = await sql`SELECT calls FROM turn WHERE id = ${kept.turn}`
@@ -62,42 +57,24 @@ describe('commit', () => {
     ])
   })
 
-  it('has no record when nothing was changed, and a label for each shape of turn', async () => {
+  it('has no record when nothing was changed', async () => {
     const a = await newAccount(sql)
     const t = await turn(sql, a, [{ tool: 'list_facts', input: {} } as Call])
     expect(t.record).toBeNull()
-    const [row] = await sql`SELECT label, record FROM turn WHERE id = ${t.turn}`
-    expect(row).toEqual({ label: 'reply', record: null })
-    const m = await turn(sql, a, [log(cafe()), log(cafe())])
-    expect((await sql`SELECT label FROM turn WHERE id = ${m.turn}`)[0]?.label).toBe('multi')
   })
 
-  it('a line that changed nothing (gone, unchanged) is rendered but is not a record of a change', async () => {
+  it('a line that changed nothing (gone, unchanged) is not a record of a change', async () => {
     const a = await newAccount(sql)
     await turn(sql, a, [log(cafe())])
     const t = await turn(sql, a, [correct(99, { amount: '1' })])
-    expect(t.reply).toBe(
-      'Ese movimiento ya fue corregido o borrado. Fijate cómo quedó y mandame de nuevo qué querés cambiar.',
-    )
     expect(t.record).toBeNull()
+    expect(t.done[0]?.line).toMatch(/ya fue corregido o borrado/)
   })
 
-  it('the lines of the writes go to the composer, in order, and the question it asks is stored', async () => {
+  it('the lines of several writes make one record, in order', async () => {
     const a = await newAccount(sql)
-    const t = await commit(sql, {
-      accountId: a,
-      channel: 'whatsapp',
-      now: NOW,
-      calls: [log(cafe({ description: 'a' })), log(cafe({ description: 'b' }))],
-      compose: (_tx, done, record) => ({
-        reply: `${record}!`,
-        question: { options: [{ n: 1, id: 1 }], then: { do: 'delete' } },
-        ...(done.length === 2 ? {} : { reply: 'wrong' }),
-      }),
-    })
-    expect(t?.reply).toBe('✓ A $3.500\n✓ B $3.500!')
-    const [row] = await sql`SELECT question FROM turn WHERE id = ${t?.turn ?? 0}`
-    expect(row?.question).toEqual({ options: [{ n: 1, id: 1 }], then: { do: 'delete' } })
+    const t = await turn(sql, a, [log(cafe({ description: 'a' })), log(cafe({ description: 'b' }))])
+    expect(t.record).toBe('✓ A $3.500\n✓ B $3.500')
   })
 
   it('an undo marks the turn it reverted, and a second undo of the same turn is refused by the unique index', async () => {
@@ -107,22 +84,34 @@ describe('commit', () => {
     const [row] = await sql`SELECT undoes::int AS undoes FROM turn WHERE id = ${t2.turn}`
     expect(row?.undoes).toBe(t1.turn)
     await expect(
-      sql`INSERT INTO turn (account_id, channel, label, calls, reply, undoes) VALUES (${a}, 'cli', 'undo', '[]', 'x', ${t1.turn})`,
+      sql`INSERT INTO turn (account_id, client, calls, undoes) VALUES (${a}, 'cli', '[]', ${t1.turn})`,
     ).rejects.toThrow(/turn_undoes_once/)
   })
 
-  it('a turn whose guard says the claim was lost writes nothing', async () => {
+  it('a guard that stops the turn writes nothing and hands its answer back', async () => {
     const a = await newAccount(sql)
     const t = await commit(sql, {
       accountId: a,
-      channel: 'whatsapp',
+      client: 'test',
       now: NOW,
       calls: [log(cafe())],
-      claim: async () => false,
-      compose: () => ({ reply: 'x' }),
+      guard: async () => ({ stop: 'no' }),
     })
-    expect(t).toBeNull()
+    expect(t).toEqual({ stop: 'no' })
     expect(await allMovements(sql)).toEqual([])
+    expect(await sql`SELECT 1 FROM turn`).toHaveLength(0)
+  })
+
+  it('requireChange leaves no turn when no write changed anything', async () => {
+    const a = await newAccount(sql)
+    const t = await commit(sql, {
+      accountId: a,
+      client: 'test',
+      now: NOW,
+      calls: [correct(99, { amount: '1' })],
+      requireChange: true,
+    })
+    expect('unchanged' in t).toBe(true)
     expect(await sql`SELECT 1 FROM turn`).toHaveLength(0)
   })
 
@@ -131,10 +120,9 @@ describe('commit', () => {
     const seen: number[] = []
     await commit(sql, {
       accountId: a,
-      channel: 'whatsapp',
+      client: 'test',
       now: NOW,
       calls: [log(cafe())],
-      compose: () => ({ reply: 'x' }),
       after: async (tx, t) => {
         seen.push(t.id)
         await tx`SELECT 1 FROM turn WHERE id = ${t.id}`
@@ -144,15 +132,14 @@ describe('commit', () => {
     await expect(
       commit(sql, {
         accountId: a,
-        channel: 'whatsapp',
+        client: 'test',
         now: NOW,
         calls: [log(cafe())],
-        compose: () => ({ reply: 'x' }),
         after: async () => {
-          throw new Error('send marker failed')
+          throw new Error('request row failed')
         },
       }),
-    ).rejects.toThrow('send marker failed')
+    ).rejects.toThrow('request row failed')
     expect(await allMovements(sql)).toHaveLength(1)
     expect(await sql`SELECT 1 FROM turn`).toHaveLength(1)
   })
@@ -164,7 +151,7 @@ describe('commit', () => {
         await tx`INSERT INTO movement (account_id, made_in, direction, amount, currency, occurred_on, description, category, confidence)
           VALUES (${a}, 999, 'out', 1, 'ARS', '2026-11-20', 'x', 'otros', 'high')`
       }),
-    ).rejects.toThrow(/made_in_fkey|foreign key/)
+    ).rejects.toThrow(/made_in_fkey|foreign key|made_in_turn/)
     expect(await allMovements(sql)).toEqual([])
   })
 

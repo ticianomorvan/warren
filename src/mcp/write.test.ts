@@ -1,44 +1,45 @@
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { cafe, newAccount } from '../../test/core'
-import { type App, type Connected, mint, WA_A, WA_B, withClaude } from '../auth-test-kit'
+import { cafe } from '../../test/core'
+import {
+  type App,
+  CLIENT_ID,
+  type Connected,
+  EMAIL_A,
+  EMAIL_B,
+  mint,
+  withClaude,
+} from '../auth-test-kit'
 import { call, ok, refused, rpc } from '../mcp-test-kit'
 import { sql, TODAY, useDatabase } from '../test-harness'
 import { addDays } from '../time'
-import { runTool } from './tools'
 
-/**
- * The write tools of `/mcp`: the registry's nine writes minus forgetting everything, through `checkValues` and `core/turn.commit` on the
- * channel `mcp`. Ported from v1's `mcp-write.test.ts` (the undo that spans both channels is in `e2e.test.ts`, with WhatsApp).
- */
+/** The write tools of `/mcp`: the registry's writes through `checkValues` and `core/turn.commit` for the token's OAuth client. */
 useDatabase({ max: 12 })
 
 let app: App
 let a: Connected
-let accountA: number
+let _accountA: number
 
 const movement = (o: Record<string, unknown> = {}) => ({ ...cafe({ date: TODAY }), ...o })
 const write = (name: string, args: Record<string, unknown> = {}, who = a) =>
   call(app, who.access_token, `warren_${name}`, args)
 const turns = () =>
-  sql<
-    { id: number; channel: string; label: string }[]
-  >`SELECT id::int, channel, label FROM turn WHERE channel = 'mcp' ORDER BY id`
+  sql<{ id: number; client: string }[]>`SELECT id::int, client FROM turn ORDER BY id`
 const live = () => sql<{ id: number; description: string; amount: string }[]>`
   SELECT entity_id::int AS id, description, amount::text AS amount FROM movement WHERE ended_at IS NULL ORDER BY id`
 
 beforeEach(async () => {
-  ;({ app } = await withClaude({ allowed: [WA_A, WA_B] }))
-  a = await mint(app, WA_A)
-  accountA = Number(
-    (await sql`SELECT account_id FROM account_address WHERE address = ${WA_A}`)[0]?.account_id,
+  ;({ app } = await withClaude())
+  a = await mint(app, EMAIL_A)
+  _accountA = Number(
+    (await sql`SELECT warren_account_id AS id FROM auth_user WHERE email = ${EMAIL_A}`)[0]?.id,
   )
 })
 afterEach(() => app.close())
 
 describe('warren_log_movements', () => {
-  it('logs, renders the record, and leaves a turn on the channel mcp that carries it', async () => {
-    const waBefore = (await sql`SELECT 1 FROM wa_message`).length
+  it('logs, renders the record, and leaves a turn for the client of the token that carries it', async () => {
     const r = ok(
       await write('log_movements', {
         movements: [movement(), movement({ description: 'súper', amount: '12000' })],
@@ -49,13 +50,11 @@ describe('warren_log_movements', () => {
     expect(r.record).toContain('Anoté')
     expect(r.replayed).toBe(false)
     const [row] = await turns()
-    expect(row).toMatchObject({ id: r.turn, channel: 'mcp', label: 'log' })
+    expect(row).toMatchObject({ id: r.turn, client: CLIENT_ID })
     expect(await live()).toHaveLength(2)
-    // The MCP rows are not WhatsApp messages: nothing was queued, nothing is in the conversation's transport.
-    expect(await sql`SELECT 1 FROM wa_message`).toHaveLength(waBefore)
   })
 
-  it('takes a movement without `confidence` (v1 filled in high itself)', async () => {
+  it('takes a movement without `confidence` (`high` is filled in)', async () => {
     const { confidence: _, ...bare } = movement()
     const r = ok(await write('log_movements', { movements: [bare] }), 'log_movements')
     expect(r.movements).toHaveLength(1)
@@ -98,7 +97,7 @@ describe('warren_log_movements', () => {
     )
   })
 
-  it('keeps no input of a turn that held a secret (as a WhatsApp message with one would), and keeps it otherwise', async () => {
+  it('keeps no input of a turn that held a secret, and keeps it otherwise', async () => {
     ok(await write('log_movements', { movements: [movement()] }), 'log_movements')
     ok(
       await write('log_movements', {
@@ -106,9 +105,7 @@ describe('warren_log_movements', () => {
       }),
       'log_movements',
     )
-    const rows = await sql<
-      { calls: { input?: unknown }[] }[]
-    >`SELECT calls FROM turn WHERE channel = 'mcp' ORDER BY id`
+    const rows = await sql<{ calls: { input?: unknown }[] }[]>`SELECT calls FROM turn ORDER BY id`
     expect(rows).toHaveLength(2)
     expect(rows[0]?.calls[0]?.input).toBeDefined()
     expect(rows[1]?.calls[0]?.input).toBeUndefined()
@@ -169,10 +166,8 @@ describe('warren_correct_movement and warren_delete_movement', () => {
     refused(await write('correct_movement', { id: m, changes: { amount: '1' } }), 'gone')
     refused(await write('delete_movement', { id: m }), 'gone')
     refused(await write('delete_movement', { id: 999_999 }), 'gone')
-    const other = await newAccount(sql)
     const theirs = (await sql`SELECT entity_id::int AS id FROM movement LIMIT 1`)[0]?.id
-    await sql`INSERT INTO account_address (account_id, channel, address) VALUES (${other}, 'whatsapp', '5491100000099')`
-    const b = await mint(app, WA_B)
+    const b = await mint(app, EMAIL_B)
     refused(await write('delete_movement', { id: theirs }, b), 'gone')
     // A refusal wrote nothing: only the log and the delete are turns.
     expect(await turns()).toHaveLength(2)
@@ -256,50 +251,6 @@ describe('warren_remember_fact and warren_forget_fact', () => {
   })
 })
 
-describe('warren_set_reminder and warren_cancel_reminder', () => {
-  const inDays = (n: number) => ({
-    what: 'pagar la Visa',
-    first: { date: addDays(TODAY, n), time: '10:00' },
-  })
-
-  it('sets one the same way WhatsApp does, lists it, and cancels it', async () => {
-    const set = ok(await write('set_reminder', inDays(3)), 'set_reminder')
-    expect(set.reminder).toMatchObject({ what: 'pagar la Visa' })
-    expect(set.record).toContain('Te aviso')
-    expect(set.reminder.next_due_at).toBe(new Date(`${addDays(TODAY, 3)}T13:00:00Z`).toISOString())
-    expect(ok(await write('list_reminders'), 'list_reminders').reminders).toHaveLength(1)
-    const cancel = ok(await write('cancel_reminder', { id: set.reminder.id }), 'cancel_reminder')
-    expect(cancel.record).toContain('Cancelé')
-    expect(ok(await write('list_reminders'), 'list_reminders').reminders).toHaveLength(0)
-    refused(await write('cancel_reminder', { id: set.reminder.id }), 'gone')
-  })
-
-  it('declines a passed time and one over a year away with their typed codes, and writes nothing', async () => {
-    refused(
-      await write('set_reminder', { what: 'x', first: { date: addDays(TODAY, -1) } }),
-      'reminder_past',
-    )
-    refused(
-      await write('set_reminder', { what: 'x', first: { date: addDays(TODAY, 500) } }),
-      'reminder_far',
-    )
-    expect(await sql`SELECT 1 FROM reminder`).toHaveLength(0)
-  })
-
-  it('declines a reminder when the account has no WhatsApp address to send it to, with a typed code, and writes nothing', async () => {
-    // The door admits only an account with an address, so this is the second check: the tool, under the account lock.
-    const lonely = await newAccount(sql)
-    const run = (accountId: number) =>
-      runTool({ sql, accountId, now: () => new Date(1760000000 * 1000) }, 'set_reminder', inDays(3))
-    const r = await run(lonely)
-    expect(refused(r as never, 'no_whatsapp_address')).toContain('WhatsApp')
-    expect(await sql`SELECT 1 FROM reminder WHERE account_id = ${lonely}`).toHaveLength(0)
-    expect(await sql`SELECT 1 FROM turn WHERE account_id = ${lonely}`).toHaveLength(0)
-    // The same call for an account that has one is written.
-    expect((await run(accountA)).isError).toBeUndefined()
-  })
-})
-
 describe('warren_undo_last over every store', () => {
   it('takes back an MCP write, then the one before it, and says what came back', async () => {
     const one = ok(await write('log_movements', { movements: [movement()] }), 'log_movements')
@@ -322,32 +273,11 @@ describe('warren_undo_last over every store', () => {
     refused(await write('undo_last'), 'nothing')
   })
 
-  it('also takes back reminders: MCP may undo every store', async () => {
-    const set = ok(
-      await write('set_reminder', { what: 'llamar', first: { date: addDays(TODAY, 4) } }),
-      'set_reminder',
-    )
-    const u = ok(await write('undo_last'), 'undo_last')
-    expect(u.items[0]).toMatchObject({
-      kind: 'reminder_removed',
-      reminder: { id: set.reminder.id, what: 'llamar' },
-    })
-    expect(ok(await write('list_reminders'), 'list_reminders').reminders).toHaveLength(0)
-    // ...and brings a cancelled one back.
-    const again = ok(
-      await write('set_reminder', { what: 'llamar', first: { date: addDays(TODAY, 4) } }),
-      'set_reminder',
-    )
-    await write('cancel_reminder', { id: again.reminder.id })
-    const back = ok(await write('undo_last'), 'undo_last')
-    expect(back.items[0]).toMatchObject({ kind: 'reminder_restored' })
-  })
-
   it("never takes another person's turn, and refuses when what the turn touched changed since", async () => {
     const m = ok(await write('log_movements', { movements: [movement()] }), 'log_movements')
       .movements[0]?.id
     // Someone else's write is not this person's to undo.
-    const b = await mint(app, WA_B)
+    const b = await mint(app, EMAIL_B)
     refused(await write('undo_last', {}, b), 'nothing')
     // A turn made after the log, on the same movement, goes first (the strict stack): an undo takes it, not the log under it.
     await write('correct_movement', { id: m, changes: { amount: '9000' } })
@@ -406,7 +336,7 @@ describe('request_id', () => {
   it('an id belongs to its person: another account cannot replay it, and sees nothing of the first answer', async () => {
     const id = randomUUID()
     ok(await log(id), 'log_movements')
-    const b = await mint(app, WA_B)
+    const b = await mint(app, EMAIL_B)
     const theirs = ok(
       await write(
         'log_movements',

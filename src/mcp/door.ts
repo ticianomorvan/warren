@@ -2,7 +2,6 @@ import { requireMcpAuth } from '@better-auth/mcp'
 import { createResourceServerChallenge } from '@better-auth/oauth-provider'
 import type { AuthInfo } from '@modelcontextprotocol/server'
 import { APIError } from 'better-auth/api'
-import { isAllowed, whatsappAddress } from '../access'
 import { type Auth, mcpUrl, SCOPES } from '../auth/config'
 import type { Sql } from '../core/db'
 import { log } from '../log'
@@ -19,9 +18,28 @@ export interface DoorOptions {
   sql: Sql
   /** `https://heywarren.app`: the issuer; the audience of a token is `${publicUrl}/mcp`. */
   publicUrl: string
-  /** Normalized WhatsApp ids that may use Warren (`ALLOWED_WA_IDS`): the same list WhatsApp answers by. */
-  allowed: string[]
+  /** The most calls one account may make in a minute. Default `CALLS_PER_MINUTE`. */
+  callsPerMinute?: number
+  /** The clock of the rate limit; a test moves it. */
+  now?: () => number
 }
+
+/** What one account may do at the door in a minute: far more than a person and their agent need, far less than a loop gone wrong. */
+export const CALLS_PER_MINUTE = 120
+
+/** Too many calls from one account in a minute: a typed code the client's agent can read, and when to try again. */
+const rateLimited = (retryAfter: number): Admitted => ({
+  ok: false,
+  response: Response.json(
+    {
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'rate_limited' },
+      id: null,
+      code: 'rate_limited',
+    },
+    { status: 429, headers: { 'retry-after': String(retryAfter) } },
+  ),
+})
 
 /** The database cannot answer: try again, do not sign in again. */
 const unavailable = (): Admitted => ({
@@ -53,8 +71,9 @@ function tokenType(authorization: string | null): string {
  * signature, issuer, audience (`${publicUrl}/mcp`), expiry and `azp` in-process; its own DPoP handling stays on and refuses
  * what it cannot prove (this server issues bearer tokens only, so a client has none). Then ours: the token's type is `at+jwt`
  * (a session JWT or an ID token is not an access token; `requireMcpAuth` does not offer jose's `typ` option, so the header is read
- * here), and its `sub` is a user that stands for an account whose WhatsApp id is still allowed and that has not cut its
- * connections since the token was issued (`mcp_revoked_at`, set by "desconectar"). Our own refusals are one 401 with
+ * here), and its `sub` is a user that stands for an account that has not cut its connections since the token was issued
+ * (`mcp_revoked_at`, set by "disconnect all agents" on the account page). Then the account's calls this minute are counted: past
+ * the limit the answer is a 429 with the typed code `rate_limited`. Our own refusals are one 401 with
  * the `WWW-Authenticate` challenge whatever the reason, so a token teaches nothing; better-auth's carry their own error
  * description, which tells a client what it already knows. A database that cannot answer is a 503, not a reason to sign in again.
  * The account id leaves here, in `authInfo.extra`, and nowhere else: no tool takes it from its input. Tokens are never logged.
@@ -62,6 +81,24 @@ function tokenType(authorization: string | null): string {
 export function createDoor(o: DoorOptions): Door {
   const resource = mcpUrl(o.publicUrl)
   const challengeScopes = [...SCOPES]
+  const limit = o.callsPerMinute ?? CALLS_PER_MINUTE
+  const now = o.now ?? Date.now
+  // One process, one replica (AGENTS.md): a fixed one-minute window per account, in memory. A deploy resets it, which only gives a
+  // fresh minute.
+  const windows = new Map<number, { start: number; calls: number }>()
+  const count = (accountId: number): number | null => {
+    const t = now()
+    const w = windows.get(accountId)
+    if (!w || t - w.start >= 60_000) {
+      windows.set(accountId, { start: t, calls: 1 })
+      // Drop windows that ended: the map holds only accounts active this minute.
+      if (windows.size > 10_000)
+        for (const [id, x] of windows) if (t - x.start >= 60_000) windows.delete(id)
+      return null
+    }
+    w.calls += 1
+    return w.calls > limit ? Math.max(1, Math.ceil((60_000 - (t - w.start)) / 1000)) : null
+  }
 
   const refused = (request: Request, reason: string): Admitted => {
     log('mcp_refused', { reason })
@@ -94,15 +131,14 @@ export function createDoor(o: DoorOptions): Door {
     if (typ !== 'at+jwt' && typ !== 'application/at+jwt') return refused(request, 'token type')
     const sub = claims.sub
     if (typeof sub !== 'string' || !UUID.test(sub)) return refused(request, 'subject')
-    let person: { id: number; wa_id: string; revoked: number | null } | undefined
+    let person: { id: number; revoked: number | null } | undefined
     try {
       const [row] = await o.sql<{ id: number; revoked: number | null }[]>`
         SELECT a.id::int, extract(epoch FROM a.mcp_revoked_at)::float8 AS revoked
         FROM auth_user u
         JOIN account a ON a.id = u.warren_account_id
         WHERE u.id = ${sub}::uuid`
-      const address = row ? await whatsappAddress(o.sql, row.id) : null
-      if (row && address) person = { ...row, wa_id: address }
+      person = row
     } catch (error) {
       // The database is down, which is not the client's fault: it must not be sent to sign in.
       log(
@@ -113,13 +149,17 @@ export function createDoor(o: DoorOptions): Door {
       return unavailable()
     }
     if (!person) return refused(request, 'unknown user')
-    if (!isAllowed(o.allowed, person.wa_id)) return refused(request, 'not allowed')
-    // "desconectar": a token issued at or before the person cut their connections is dead, though its signature and expiry are good.
+    // "disconnect all agents": a token issued at or before the person cut their connections is dead, though its signature and expiry are good.
     if (
       person.revoked !== null &&
       !(typeof claims.iat === 'number' && claims.iat > Math.floor(person.revoked))
     ) {
       return refused(request, 'disconnected')
+    }
+    const wait = count(person.id)
+    if (wait !== null) {
+      log('mcp_rate_limited', {})
+      return rateLimited(wait)
     }
     const scopes = typeof claims.scope === 'string' ? claims.scope.split(' ') : []
     return {

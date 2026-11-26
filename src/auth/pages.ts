@@ -1,6 +1,6 @@
-// The two pages a person sees while connecting an agent: the sign-in (a code to send on WhatsApp) and the
-// consent. Server-rendered, no framework, no outside assets: one inline stylesheet and one small script, both
-// under a CSP nonce. Mostly opened on a phone, and the person comes back to it from WhatsApp.
+// The pages of the web (docs/design.md, "The web"): the sign-in ("Continuar con Google"), the consent, the account page and the
+// public documents (landing, privacy, terms). Server-rendered, no framework, no outside assets: one inline stylesheet and, where a
+// button needs it, one small script, both under a CSP nonce. Mostly opened on a phone.
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
@@ -25,19 +25,15 @@ body {
     max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
 main { width: 100%; max-width: 27rem; margin: 0 auto; }
+main.wide { max-width: 42rem; }
 .brand { font-weight: 700; letter-spacing: .01em; margin: 4px 0 20px; }
+.brand a { color: inherit; text-decoration: none; }
 .card {
   background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 22px 20px;
 }
 h1 { font-size: 1.5rem; line-height: 1.2; margin: 0 0 8px; text-wrap: balance; overflow-wrap: anywhere; }
 p { margin: 0 0 14px; text-wrap: pretty; }
 .muted { color: var(--muted); font-size: .9rem; }
-.code {
-  display: block; width: 100%; background: var(--code); border-radius: 12px; padding: 14px 12px;
-  font: 600 1.35rem/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .06em;
-  text-align: center; user-select: all; -webkit-user-select: all; overflow-wrap: anywhere; margin: 0 0 16px;
-}
-.code b { font-size: 1.9rem; letter-spacing: .14em; display: block; margin-top: 4px; }
 .btn {
   display: flex; align-items: center; justify-content: center; width: 100%; min-height: 48px; padding: 0 18px;
   border-radius: 12px; border: 1px solid transparent; font: inherit; font-weight: 600; text-decoration: none;
@@ -77,23 +73,40 @@ ul.scopes li::before { content: "✓"; color: var(--accent); font-weight: 700; f
 dl { margin: 0 0 16px; }
 dt { font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 dd { margin: 0 0 10px; font-weight: 600; overflow-wrap: anywhere; }
+.doc h1 { font-size: 1.75rem; }
+.doc h2 { font-size: 1.2rem; margin: 26px 0 8px; }
+.doc h3 { font-size: 1.02rem; margin: 20px 0 6px; }
+.doc ul, .doc ol { margin: 0 0 14px; padding-left: 1.3rem; }
+.doc li { margin: 0 0 6px; }
+.doc a { color: var(--accent); }
+.doc code { background: var(--code); border-radius: 6px; padding: 1px 5px; font: .9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.doc pre { background: var(--code); border-radius: 12px; padding: 12px 14px; overflow-x: auto; margin: 0 0 14px; }
+.doc pre code { background: none; padding: 0; overflow-wrap: normal; }
+.doc .foot a { color: var(--muted); }
+nav.links { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 26px; font-size: .9rem; }
+nav.links a { color: var(--muted); }
 .err { color: var(--warn); font-size: .92rem; margin: 12px 0 0; }
 `
 
-function shell(title: string, body: string, nonce: string, script = ''): string {
+export function shell(
+  title: string,
+  body: string,
+  nonce: string,
+  script = '',
+  o: { indexable?: boolean; wide?: boolean } = {},
+): string {
   return `<!doctype html>
 <html lang="es-AR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="robots" content="noindex">
-<title>${esc(title)}</title>
+${o.indexable ? '' : '<meta name="robots" content="noindex">\n'}<title>${esc(title)}</title>
 <style nonce="${nonce}">${STYLE}</style>
 </head>
 <body>
-<main>
-<div class="brand">Warren</div>
+<main${o.wide ? ' class="wide"' : ''}>
+<div class="brand"><a href="/">Warren</a></div>
 ${body}
 </main>
 ${script ? `<script nonce="${nonce}">${script}</script>` : ''}
@@ -101,101 +114,51 @@ ${script ? `<script nonce="${nonce}">${script}</script>` : ''}
 </html>`
 }
 
-export interface SignInView {
-  nonce: string
-  client: string
-  code: string
-  /** The WhatsApp number as the person reads it ("+54 9 11 …"). */
-  displayNumber: string
-  /** The `wa.me` link with the message already written. */
-  waLink: string
-  minutes: number
-}
-
 const SIGN_IN_SCRIPT = `
 (() => {
-  const status = document.getElementById('status');
-  const text = document.getElementById('status-text');
-  const query = location.search.slice(1);
-  const say = (t, kind) => { text.textContent = t; status.className = 'status ' + (kind || ''); };
-  const copy = document.getElementById('copy');
-  if (copy && navigator.clipboard) {
-    copy.hidden = false;
-    copy.addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(copy.dataset.text); copy.textContent = 'Copiado'; }
-      catch { copy.textContent = 'Copialo a mano'; }
-    });
-  }
-  let finished = false;
-  const ack = document.getElementById('ack');
-  const who = document.getElementById('who');
-  const yes = document.getElementById('yes');
-  const no = document.getElementById('no');
-  const closed = (t) => { finished = true; document.body.classList.remove('confirming'); document.body.classList.add('closed'); say(t, 'bad'); };
-  // The only call that finishes the sign-in, and only a click on "Sí, continuar" makes it.
-  async function complete() {
-    finished = true;
-    yes.disabled = no.disabled = true;
+  const button = document.getElementById('google');
+  const err = document.getElementById('err');
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    err.hidden = true;
+    // With the signed query of an agent's authorization, signing in goes on to consent; without it, to the page that asked.
+    const query = location.search.slice(1);
+    const body = { provider: 'google', callbackURL: button.dataset.next };
+    if (query) body.oauth_query = query;
     try {
-      const res = await fetch('/api/auth/warren/link/complete', {
+      const res = await fetch('/api/auth/sign-in/social', {
         method: 'POST', credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ oauth_query: query }),
+        body: JSON.stringify(body),
       });
       const next = res.ok ? await res.json() : null;
-      if (next && next.url) { location.replace(next.url); return; }
+      if (next && next.url) { location.assign(next.url); return; }
     } catch {}
-    closed('No pudimos terminar la conexión. Volvé a Claude y probá de nuevo.');
-  }
-  async function reject() {
-    finished = true;
-    yes.disabled = no.disabled = true;
-    try { await fetch('/sign-in/cancel', { method: 'POST', credentials: 'same-origin' }); } catch {}
-    closed('Cancelamos la conexión. Si no la pediste vos, no pasó nada.');
-  }
-  yes.addEventListener('click', complete);
-  no.addEventListener('click', reject);
-  async function poll() {
-    if (finished) return;
-    try {
-      const res = await fetch('/sign-in/status', { credentials: 'same-origin', cache: 'no-store' });
-      const { state, account } = await res.json();
-      if (state === 'closed') return closed('Este código venció. Volvé a Claude y tocá conectar de nuevo.');
-      if (state === 'confirmed' && account) {
-        // Whose account this is, before anything is finished: someone else may have sent this code.
-        who.textContent = account;
-        ack.hidden = false;
-        document.body.classList.add('confirming');
-      } else {
-        say(state === 'asked' ? 'Warren te preguntó por WhatsApp. Respondé “sí” para conectar.' : 'Esperando tu mensaje…');
-      }
-    } catch {}
-    setTimeout(poll, 2000);
-  }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && !finished) poll(); });
-  poll();
+    err.textContent = 'No pudimos abrir Google. Probá de nuevo en un momento.';
+    err.hidden = false;
+    button.disabled = false;
+  });
 })();
 `
 
-/** The sign-in page: the code to send, the WhatsApp link, and a line that follows the progress. */
+export interface SignInView {
+  nonce: string
+  /** Who asks to connect ("Claude (claude.ai)"); empty when the person came to the account page. */
+  client: string
+  /** Where the browser goes after Google when there is no agent's authorization to continue (a path of ours). */
+  next: string
+}
+
+/** The sign-in page: one button. Open to anyone with a Google account; no password, no email form. */
 export function signInPage(v: SignInView): string {
-  const message = `vincular ${v.code}`
   return shell(
-    'Conectar con Warren',
+    v.client ? 'Conectar con Warren' : 'Entrar a Warren',
     `<div class="card">
-<h1>Conectá ${esc(v.client)} con Warren</h1>
-<p class="live">Para confirmar que sos vos, mandale este mensaje a Warren por WhatsApp:</p>
-<span class="code live" aria-label="Mensaje: vincular ${esc(v.code.split('').join(' '))}">vincular<b>${esc(v.code)}</b></span>
-<a class="btn primary live" href="${esc(v.waLink)}" rel="noopener">Abrir WhatsApp</a>
-<button class="btn secondary live" id="copy" type="button" data-text="${esc(message)}" hidden>Copiar mensaje</button>
-<p class="muted tight live">¿Estás en la compu? Mandalo desde tu celular al <span class="number">${esc(v.displayNumber)}</span>.</p>
-<div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="status-text">Esperando tu mensaje…</span></div>
-<div class="ack" id="ack" hidden role="alert">
-<p>Vas a conectar la cuenta de <b id="who"></b>. ¿Es la tuya?</p>
-<button class="btn primary" id="yes" type="button">Sí, continuar</button>
-<button class="btn secondary" id="no" type="button">No es mía</button>
-</div>
-<p class="muted foot live">El código vence a los ${v.minutes} minutos. Si no fuiste vos quien pidió conectar, cerrá esta página.</p>
+<h1>${v.client ? `Conectá ${esc(v.client)} con Warren` : 'Entrá a tu cuenta de Warren'}</h1>
+<p>Entrás con tu cuenta de Google. Warren no lee tu mail ni tus archivos: solo usa Google para saber quién sos.</p>
+<button class="btn primary" id="google" type="button" data-next="${esc(v.next)}">Continuar con Google</button>
+<p class="err" id="err" role="alert" hidden></p>
+<p class="muted foot">Al continuar aceptás los <a href="/terms">términos</a> y la <a href="/privacy">política de privacidad</a>.</p>
 </div>`,
     v.nonce,
     SIGN_IN_SCRIPT,
@@ -212,7 +175,8 @@ const SCOPE_TEXT: Record<string, string> = {
   'ledger:read': 'Ver tus movimientos y pedir resúmenes de tus gastos.',
   'ledger:write':
     'Anotar, corregir y borrar movimientos, y guardar o borrar lo que Warren recuerda de vos.',
-  offline_access: 'Seguir conectado sin pedirte permiso de nuevo, hasta que lo desconectes.',
+  offline_access:
+    'Seguir conectado sin pedirte permiso de nuevo, hasta que desconectes tus agentes.',
 }
 
 export const scopeText = (scope: string) => SCOPE_TEXT[scope] ?? `Permiso “${scope}”.`
@@ -220,7 +184,7 @@ export const scopeText = (scope: string) => SCOPE_TEXT[scope] ?? `Permiso “${s
 export interface ConsentView {
   nonce: string
   client: string
-  /** The person's number, masked (`+54 9 ····5678`): whose account this connects. */
+  /** The Google email of the person signed in: whose account this connects. */
   account: string
   /** The host the client is sent back to with the code. */
   redirectHost: string
@@ -244,7 +208,7 @@ const CONSENT_SCRIPT = `
       const next = res.ok ? await res.json() : null;
       if (next && next.url) { location.replace(next.url); return; }
     } catch {}
-    err.textContent = 'No se pudo completar. Volvé a Claude y empezá de nuevo.';
+    err.textContent = 'No se pudo completar. Volvé a tu agente y empezá de nuevo.';
     err.hidden = false;
     buttons.forEach((b) => (b.disabled = false));
   }
@@ -267,9 +231,92 @@ ${v.account ? `<dt>Se conecta a la cuenta de</dt><dd>${esc(v.account)}</dd>` : '
 <button class="btn primary" type="button" data-accept="yes">Permitir</button>
 <button class="btn secondary" type="button" data-accept="no">Cancelar</button>
 <p class="err" id="err" role="alert" hidden></p>
-<p class="muted foot">Si ese número no es el tuyo, o no empezaste esta conexión vos, tocá Cancelar.</p>
+<p class="muted foot">Si esa cuenta no es la tuya, o no empezaste esta conexión vos, tocá Cancelar.</p>
 </div>`,
     v.nonce,
     CONSENT_SCRIPT,
+  )
+}
+
+export interface AccountView {
+  nonce: string
+  email: string
+  /** The session is younger than five minutes: deleting is allowed without signing in again. */
+  fresh: boolean
+}
+
+const ACCOUNT_SCRIPT = `
+(() => {
+  const err = document.getElementById('err');
+  const ok = document.getElementById('ok');
+  const buttons = document.querySelectorAll('button[data-do]');
+  const fail = (t) => { ok.hidden = true; err.textContent = t; err.hidden = false; buttons.forEach((b) => (b.disabled = false)); };
+  async function post(path) {
+    return fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' });
+  }
+  async function reauth() {
+    const res = await fetch('/api/auth/sign-in/social', {
+      method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'google', callbackURL: '/account' }),
+    });
+    const next = res.ok ? await res.json() : null;
+    if (next && next.url) location.assign(next.url); else fail('No pudimos abrir Google. Probá de nuevo.');
+  }
+  buttons.forEach((b) => b.addEventListener('click', async () => {
+    err.hidden = true; ok.hidden = true;
+    const action = b.dataset.do;
+    if (action === 'reauth') { b.disabled = true; return reauth(); }
+    if (action === 'delete' && !confirm('Se borra tu cuenta y todos tus movimientos, para siempre. ¿Seguro?')) return;
+    buttons.forEach((x) => (x.disabled = true));
+    try {
+      const res = await post(action === 'delete' ? '/account/delete' : '/account/disconnect');
+      if (res.ok && action === 'delete') { location.replace('/?cuenta=eliminada'); return; }
+      if (res.ok) { ok.textContent = 'Listo: los agentes conectados tienen que pedir permiso de nuevo.'; ok.hidden = false; buttons.forEach((x) => (x.disabled = false)); return; }
+      if (res.status === 403) return fail('Para borrar la cuenta tenés que volver a entrar con Google.');
+    } catch {}
+    fail('No se pudo completar. Probá de nuevo.');
+  }));
+  const out = document.getElementById('signout');
+  if (out) out.addEventListener('click', async () => { await post('/api/auth/sign-out'); location.replace('/'); });
+})();
+`
+
+/** The account page: who is signed in, and the three things that cannot wait for an agent: disconnect, download, delete. */
+export function accountPage(v: AccountView): string {
+  return shell(
+    'Tu cuenta',
+    `<div class="card">
+<h1>Tu cuenta</h1>
+<dl><dt>Entraste con</dt><dd>${esc(v.email)}</dd></dl>
+<h2>Agentes conectados</h2>
+<p class="muted">Corta el acceso de todos los agentes que conectaste (Claude, ChatGPT, Cursor…). Después tienen que pedirte permiso de nuevo.</p>
+<button class="btn secondary" type="button" data-do="disconnect">Desconectar todos los agentes</button>
+<h2>Tus datos</h2>
+<p class="muted">Todo lo que Warren guarda de vos, en un archivo JSON.</p>
+<a class="btn secondary" href="/account/export" download="warren.json">Descargar mis datos</a>
+<h2>Borrar la cuenta</h2>
+<p class="muted">Borra tu cuenta y todos tus movimientos, sin vuelta atrás. ${v.fresh ? '' : 'Antes tenés que volver a entrar con Google.'}</p>
+${
+  v.fresh
+    ? '<button class="btn secondary" type="button" data-do="delete">Borrar mi cuenta</button>'
+    : '<button class="btn secondary" type="button" data-do="reauth">Volver a entrar con Google</button>'
+}
+<p class="err" id="err" role="alert" hidden></p>
+<p class="status" id="ok" role="status" hidden></p>
+<p class="muted foot"><button class="btn secondary" id="signout" type="button">Salir</button></p>
+</div>`,
+    v.nonce,
+    ACCOUNT_SCRIPT,
+  )
+}
+
+/** A public document (landing, privacy, terms) from its Markdown, with links to the others. Indexable. */
+export function documentPage(title: string, html: string, nonce: string): string {
+  return shell(
+    title,
+    `<div class="card doc">${html}<nav class="links"><a href="/">Inicio</a><a href="/privacy">Privacidad</a><a href="/terms">Términos</a><a href="/setup.md">Setup (para agentes)</a><a href="/account">Mi cuenta</a></nav></div>`,
+    nonce,
+    '',
+    { indexable: true, wide: true },
   )
 }

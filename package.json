@@ -12,17 +12,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
-    "eval:scenarios": "tsx evals/scenarios/run.ts",
-    "eval:report": "tsx evals/scenarios/report-cli.ts",
     "start": "tsx src/server.ts",
-    "latency": "tsx src/latency.ts",
-    "template:status": "tsx src/domain/reminders/cli.ts template-status",
-    "reminder:try-template": "tsx src/domain/reminders/cli.ts try-template",
-    "probe": "tsx scripts/probe.ts",
     "import:movements": "tsx src/import.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.10.0",
     "@better-auth/cimd": "1.7.27",
     "@better-auth/mcp": "1.7.27",
     "@better-auth/oauth-provider": "1.7.27",
@@ -32,7 +25,6 @@
     "kysely-postgres-js": "5.1.0",
     "postgres": "^4.1.1",
     "tsx": "^4.23.15",
-    "undici": "^8.12.4",
     "zod": "^4.6.7"
   },
   "devDependencies": {

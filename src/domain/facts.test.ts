@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { unwritten } from '../core/numbers'
-import { holdsSecretValue, looksContact, looksSecret, sensitive } from '../core/secrets'
-import { checkFact, normalizeKey, sameValue, tidy } from './facts'
+import { looksContact, looksSecret, sensitive } from '../core/secrets'
+import { checkFactValues, normalizeKey, sameValue, tidy } from './facts'
 
-const check = (kind: 'alias' | 'category' | 'note', key: string, value: string, message: string) =>
-  checkFact({ kind, key, value }, message)
+const check = (kind: 'alias' | 'category' | 'note', key: string, value: string) =>
+  checkFactValues({ kind, key, value })
 const ok = (...args: Parameters<typeof check>) => {
   const r = check(...args)
   if (!r.ok) throw new Error(JSON.stringify(r))
@@ -58,72 +57,38 @@ describe('looksSecret', () => {
   })
 })
 
-describe('unwritten', () => {
-  it('is every number the person did not write, compared by what it means', () => {
-    expect(unwritten('el 5', 'cobro el 5')).toEqual([])
-    expect(unwritten('12000', 'pagué 12.000')).toEqual([])
-    expect(unwritten('el 10', 'cobro el 5')).toEqual(['10'])
-    expect(unwritten('cinco lucas', 'cobro 5 lucas')).toEqual(['cinco'])
-    expect(unwritten('veinte lucas', 'son veinte lucas')).toEqual([])
-  })
-})
-
-describe('checkFact', () => {
-  it('accepts what the person said, with the key normalized', () => {
-    expect(ok('alias', 'La del Galicia', 'la visa', 'la visa es la del galicia')).toEqual({
+describe('checkFactValues', () => {
+  it('accepts a fact with the key normalized', () => {
+    expect(ok('alias', 'La del Galicia', 'la visa')).toEqual({
       kind: 'alias',
       key: 'la del galicia',
       value: 'la visa',
     })
-    expect(
-      ok('category', 'café', 'entretenimiento', 'los cafés ponelos en entretenimiento'),
-    ).toEqual({
+    expect(ok('category', 'café', 'entretenimiento')).toEqual({
       kind: 'category',
       key: 'cafe',
       value: 'entretenimiento',
     })
-    expect(ok('note', 'cobro', 'el 5', 'cobro el 5').value).toBe('el 5')
+    expect(ok('note', 'cobro', 'el 5').value).toBe('el 5')
   })
 
-  it('an alias may be the person’s words on either side; a category or a note only by its key', () => {
-    expect(why('alias', 'la visa gold', 'galicia', 'la visa es la del galicia')).toBeNull()
-    expect(why('note', 'sueldo', 'el 5', 'cobro el 5')).toMatch(
-      /key must be words the person wrote/,
-    )
-    expect(why('category', 'comida', 'supermercado', 'cobro el 5')).toMatch(/key must be words/)
+  it('never keeps what looks like a secret, whichever field holds it', () => {
+    expect(why('note', 'tarjeta', '4509 9535 6623 3704')).toBe('secret')
+    expect(why('note', 'mi clave del banco', 'azul')).toBe('secret')
+    expect(why('alias', 'dni', '12345678')).toBe('secret')
   })
 
-  it('the key is whole words of the message, not a piece of a longer word', () => {
-    expect(why('note', 'ana', 'mi hermana', 'compré una banana')).toMatch(/key must be words/)
-    expect(why('note', 'ana', 'mi hermana', 'mi hermana se llama ana')).toBeNull()
-    expect(why('alias', 'visa', 'crédito visa', 'pagué con la visa')).toBeNull()
-  })
-
-  it('never keeps what looks like a secret, whichever field or message holds it', () => {
-    expect(why('note', 'tarjeta', '4509 9535 6623 3704', 'mi tarjeta es 4509 9535 6623 3704')).toBe(
-      'secret',
-    )
-    expect(why('note', 'banco', 'ver mensaje', 'mi clave del banco es azul')).toBe('secret')
-    expect(why('alias', 'dni', '12345678', 'mi dni es 12345678')).toBe('secret')
-  })
-
-  it('refuses a number the person did not write, in digits or words', () => {
-    expect(why('note', 'cobro', 'el 10', 'cobro el 5')).toMatch(
-      /numbers the person did not write: 10/,
-    )
-    expect(why('note', 'alquiler', 'veinte lucas', 'pago el alquiler a principio de mes')).toMatch(
-      /veinte/,
-    )
-    expect(why('note', 'cobro', 'el ٥', 'cobro el 5')).toMatch(/digits that are not 0-9/)
+  it('refuses digits that are not 0-9', () => {
+    expect(why('note', 'cobro', 'el ٥')).toMatch(/digits that are not 0-9/)
   })
 
   it('caps the key and the value, and wants a category from the list', () => {
-    expect(why('note', 'a b c d e', 'x', 'a b c d e')).toMatch(/at most 4 words/)
-    expect(why('note', 'x'.repeat(41), 'x', 'x'.repeat(41))).toMatch(/too long/)
-    expect(why('note', 'cobro', 'x'.repeat(101), 'cobro')).toMatch(/value is too long/)
-    expect(why('note', 'cobro', ' ', 'cobro')).toMatch(/value is empty/)
-    expect(why('note', '¿?', 'x', 'x')).toMatch(/key is empty/)
-    expect(why('category', 'cafe', 'salidas', 'cafe va en salidas')).toMatch(/one of: supermercado/)
+    expect(why('note', 'a b c d e', 'x')).toMatch(/at most 4 words/)
+    expect(why('note', 'x'.repeat(41), 'x')).toMatch(/too long/)
+    expect(why('note', 'cobro', 'x'.repeat(101))).toMatch(/value is too long/)
+    expect(why('note', 'cobro', ' ')).toMatch(/value is empty/)
+    expect(why('note', '¿?', 'x')).toMatch(/key is empty/)
+    expect(why('category', 'cafe', 'salidas')).toMatch(/one of: supermercado/)
   })
 })
 
@@ -242,49 +207,14 @@ describe('contact data', () => {
   ])('%s is not', (text) => expect(looksContact(text)).toBe(false))
 
   it('a fact with a phone or an email is refused as contact data, and a card as a secret, in either field', () => {
-    const refused = (key: string, value: string, message: string) => {
-      const r = checkFact({ kind: 'note', key, value }, message)
+    const refused = (key: string, value: string) => {
+      const r = checkFactValues({ kind: 'note', key, value })
       return !r.ok && 'refused' in r ? r.refused : null
     }
-    expect(refused('mama', '11 2345-6789', 'el cel de mama es 11 2345-6789')).toBe('contact')
-    expect(refused('mail@x.com', 'mi mail', 'mi mail es mail@x.com')).toBe('contact')
-    expect(refused('mama', '+54 9 11 2345 6789', 'el cel de mama es +54 9 11 2345 6789')).toBe(
-      'contact',
-    )
-    expect(refused('tarjeta', '4509 9535 6623 3704', 'mi tarjeta es 4509 9535 6623 3704')).toBe(
-      'secret',
-    )
-    expect(refused('tarjeta', '4509_9535_6623_3704', 'la tarjeta 4509_9535_6623_3704')).toBe(
-      'secret',
-    )
-  })
-})
-
-describe("holdsSecretValue: a secret's value, not its words", () => {
-  it('is true for a card, a CBU, a DNI, a password with a cue, and a credential word beside a number', () => {
-    for (const text of [
-      'la tarjeta 4509 9535 6623 3704',
-      'cbu 0170099220000012345678',
-      'mi dni 12345678',
-      'entro con Perro123',
-      'pagar con la clave 7788',
-      'el pin es 4455',
-      'el código del cajero es 1234',
-    ]) {
-      expect(holdsSecretValue(text), text).toBe(true)
-    }
-  })
-
-  it('is false for the plain words: a password, a pin or a postal code to change, a 4-digit year or amount alone', () => {
-    for (const text of [
-      'cambiar la contraseña del wifi',
-      'renovar el pin de la tarjeta',
-      'pasar el código postal',
-      'cambiar la clave del banco',
-      'pagar la visa el 10',
-      'pagar 3500 de la luz',
-    ]) {
-      expect(holdsSecretValue(text), text).toBe(false)
-    }
+    expect(refused('mama', '11 2345-6789')).toBe('contact')
+    expect(refused('mail@x.com', 'mi mail')).toBe('contact')
+    expect(refused('mama', '+54 9 11 2345 6789')).toBe('contact')
+    expect(refused('tarjeta', '4509 9535 6623 3704')).toBe('secret')
+    expect(refused('tarjeta', '4509_9535_6623_3704')).toBe('secret')
   })
 })

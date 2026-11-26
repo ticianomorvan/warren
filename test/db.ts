@@ -81,10 +81,10 @@ export function useDatabase(o: { max?: number; migrations?: URL } = {}): void {
   beforeEach(async () => {
     // Only a database with the schema has tables to empty; `useDatabase({ migrations })` of another folder empties nothing.
     if (o.migrations !== undefined && o.migrations !== schemaDir) return
-    await sql`TRUNCATE link_request, auth_oauth_access_token, auth_oauth_refresh_token, auth_oauth_consent,
+    await sql`TRUNCATE auth_oauth_access_token, auth_oauth_refresh_token, auth_oauth_consent,
       auth_oauth_client_resource, auth_oauth_client_assertion, auth_oauth_resource, auth_oauth_client, auth_session,
       auth_account, auth_verification, auth_jwks, auth_user,
-      mcp_request, reminder_send, reminder, fact, movement, reply, wa_message, turn, account_address, account
+      mcp_request, fact, movement, turn, account
       RESTART IDENTITY CASCADE`
   })
 }

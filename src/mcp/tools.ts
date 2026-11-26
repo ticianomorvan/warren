@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 import { type McpServer, requireScopes } from '@modelcontextprotocol/server'
 import type { z } from 'zod'
-import { whatsappAddress } from '../access'
 import type { Outcome } from '../core/apply'
 import {
   type Call,
@@ -14,16 +13,14 @@ import {
   writes,
 } from '../core/commands'
 import type { Sql } from '../core/db'
-import { declineLine, REPLY } from '../core/describe'
+import { declineLine } from '../core/describe'
 import { money } from '../core/es'
 import { checkValues } from '../core/guards'
 import type { Undone } from '../core/history'
 import { sensitive } from '../core/secrets'
 import { commit } from '../core/turn'
 import { allLiveFacts, type FactRow } from '../domain/facts'
-import { findMovements, type MovementRow } from '../domain/movements'
-import { liveReminders, type ReminderRow } from '../domain/reminders/db'
-import { describeReminder } from '../domain/reminders/describe'
+import { countLive, findMovements, MAX_LIVE_MOVEMENTS, type MovementRow } from '../domain/movements'
 import { groupLabel, MAX_BUCKETS, rangeLabel, type Side } from '../domain/render-summary'
 import { runSummary } from '../domain/run-summary'
 import { change, formatPercent } from '../domain/summary'
@@ -32,16 +29,18 @@ import { log } from '../log'
 import { argentinaToday } from '../time'
 
 /**
- * Warren's MCP tools, all of them built from the registry: every entry that has an `mcp` block is a tool, with the entry's own input
- * (plus the fields only a client sends: `request_id`, a page) and a real output schema. A read runs its query; a write goes through the
- * same `checkValues` and `commit` as WhatsApp's, on the channel `mcp`, so there is one write path and one undo. `accountId` is the door's:
- * no tool takes it from its input, and every query takes it.
+ * Warren's MCP tools, all of them built from the registry: every entry is a tool, with the entry's own input (plus the fields only a
+ * client sends: `request_id`, a page) and a real output schema. A read runs its query; a write goes through `checkValues` and `commit`,
+ * so there is one write path and one undo. `accountId` and `client` are the door's: no tool takes them from its input, and every query
+ * takes the account.
  */
 
 export interface ToolContext {
   sql: Sql
   /** The person: from the verified token, never from an argument. */
   accountId: number
+  /** The OAuth client the token was issued to (its `azp`): recorded on every turn. */
+  client: string
   now: () => Date
 }
 
@@ -53,7 +52,7 @@ export const MAX_GROUPS_LISTED = 100
 const QUOTE =
   'Every amount is computed by Warren: quote the amounts and totals as given (use `display` when showing money) and never add, subtract, convert or round them yourself.'
 const WRITES =
-  'Writes the same ledger and memory as WhatsApp, through the same checks; the person can undo it from WhatsApp ("deshacer") and `warren_undo_last` takes back the newest change of either channel. Nothing is overwritten: a correction adds a version and a delete only marks the movement. The result carries `record`, what changed as Warren writes it (Spanish).'
+  "Writes the ledger through Warren's checks; `warren_undo_last` takes back the newest change, whichever client made it. Nothing is overwritten: a correction adds a version and a delete only marks the movement. The result carries `record`, what changed as Warren writes it (Spanish)."
 
 type Result = {
   isError?: true
@@ -82,7 +81,7 @@ const unavailable = (tool: string, error: unknown) => {
 
 const MAX_TEXT = 200
 const MAX_SHORT = 20
-/** The fields that are a day or an amount; every other text is a description, a payment, words to find, a fact or a reminder. */
+/** The fields that are a day or an amount; every other text is a description, a payment, words to find, or a fact. */
 const SHORT = new Set(['amount', 'date', 'from', 'to'])
 const MAX_TERMS = 10
 
@@ -135,12 +134,6 @@ const movementView = (m: MovementRow) => ({
   payment: m.payment,
 })
 const factView = (f: FactRow) => ({ id: f.id, kind: f.kind, key: f.key, value: f.value })
-const reminderView = (r: ReminderRow, today: string) => ({
-  id: r.id,
-  what: r.what,
-  next_due_at: r.nextDueAt ? r.nextDueAt.toISOString() : null,
-  when: describeReminder(r, today),
-})
 
 const totalView = (t: QueryTotal) => ({
   direction: t.direction,
@@ -200,7 +193,7 @@ function changesView(now: Side, before: Side) {
   })
 }
 
-function undoneItem(u: Undone, today: string): Out<'undo_last'>['items'][number] {
+function undoneItem(u: Undone): Out<'undo_last'>['items'][number] {
   switch (u.kind) {
     case 'logged':
     case 'deleted':
@@ -212,9 +205,6 @@ function undoneItem(u: Undone, today: string): Out<'undo_last'>['items'][number]
       return { kind: u.kind, fact: factView(u.fact) }
     case 'fact_reverted':
       return { kind: u.kind, fact: factView(u.fact), was: u.was }
-    case 'reminder_removed':
-    case 'reminder_restored':
-      return { kind: u.kind, reminder: reminderView(u.reminder, today) }
   }
 }
 
@@ -232,7 +222,7 @@ async function find(c: ToolContext, input: Record<string, unknown>) {
   const long = oversize('find_movements', filter)
   if (long) return fail('invalid', long)
   const now = c.now()
-  const checked = checkValues('find_movements', filter, { today: argentinaToday(now), now })
+  const checked = checkValues('find_movements', filter, { today: argentinaToday(now) })
   if (checked.kind !== 'read') {
     return fail('invalid', checked.kind === 'rejected' ? checked.message : 'invalid input')
   }
@@ -264,7 +254,7 @@ async function summarizeTool(c: ToolContext, input: Record<string, unknown>) {
   if (long) return fail('invalid', long)
   const now = c.now()
   const today = argentinaToday(now)
-  const checked = checkValues('summarize', input, { today, now })
+  const checked = checkValues('summarize', input, { today })
   if (checked.kind !== 'ok' || checked.call.tool !== 'summarize') {
     return fail('invalid', checked.kind === 'rejected' ? checked.message : 'invalid input')
   }
@@ -293,12 +283,6 @@ const READS: Partial<
     const output: Out<'list_facts'> = { facts: facts.map(factView), total: facts.length }
     return done(output)
   },
-  list_reminders: async (c) => {
-    const today = argentinaToday(c.now())
-    const rows = await liveReminders(c.sql, c.accountId)
-    const output: Out<'list_reminders'> = { reminders: rows.map((r) => reminderView(r, today)) }
-    return done(output)
-  },
 }
 
 // ---- Writes
@@ -323,7 +307,7 @@ const callHash = (call: Call) =>
  * The client's view of what a write did: the turn and the line when it changed something, and what it came to when it did not (`turn`
  * null for a no-op, a typed refusal for the rest). Built once, from the outcome.
  */
-function presentWrite(o: Outcome, line: string, turn: number | null, today: string): Result {
+function presentWrite(o: Outcome, line: string, turn: number | null): Result {
   const base = { record: line, turn, replayed: false }
   switch (o.tool) {
     case 'log_movements':
@@ -355,7 +339,7 @@ function presentWrite(o: Outcome, line: string, turn: number | null, today: stri
       return done({
         ...base,
         undone_turn: o.turn,
-        items: o.items.map((u) => undoneItem(u, today)),
+        items: o.items.map(undoneItem),
       } satisfies Out<'undo_last'>)
     case 'remember_fact':
       if (o.status === 'full') return fail('full', line)
@@ -376,26 +360,11 @@ function presentWrite(o: Outcome, line: string, turn: number | null, today: stri
     case 'forget_fact':
       if (o.status === 'gone') return fail('gone', line)
       return done({ ...base, forgotten: o.facts.map(factView) } satisfies Out<'forget_fact'>)
-    case 'set_reminder':
-      if (o.status !== 'applied') return fail(o.status, line)
-      return done({
-        ...base,
-        reminder: reminderView(o.reminder, today),
-      } satisfies Out<'set_reminder'>)
-    case 'cancel_reminder':
-      if (o.status === 'gone') return fail('gone', line)
-      return done({
-        ...base,
-        reminder: reminderView(o.reminder, today),
-      } satisfies Out<'cancel_reminder'>)
-    case 'forget_all_confirmed':
-      // Not offered over MCP (it needs the person's own "sí" on WhatsApp): the registry has no `mcp` block for it.
-      throw new Error('forget_all_confirmed is not an MCP tool')
   }
 }
 
 /**
- * One MCP write: the same value guards as WhatsApp (`checkValues`), then `commit` on the channel `mcp`, with the same undo (every store).
+ * One MCP write: the value guards (`checkValues`), then `commit` for the token's client, with the undo of every store.
  * `request_id` makes a retry safe: under the account lock, a request seen before returns its first answer when the call is the same one
  * (tool and checked input) and a typed refusal when it is another; the request's row is stored in the turn's own transaction. A call that
  * changes nothing (a refusal, a no-op) leaves no turn and no row (`requireChange`), so the same id can be sent again.
@@ -410,7 +379,7 @@ async function write(
   if (long) return fail('invalid', long)
   const now = c.now()
   const today = argentinaToday(now)
-  const checked = checkValues(tool, input, { today, now })
+  const checked = checkValues(tool, input, { today })
   if (checked.kind === 'declined') return fail(checked.declined, declineLine(checked.declined))
   if (checked.kind !== 'ok' || !writes(checked.call)) {
     return fail('invalid', checked.kind === 'rejected' ? checked.message : 'invalid input')
@@ -420,16 +389,24 @@ async function write(
   let presented: Result | undefined
   const committed = await commit(c.sql, {
     accountId: c.accountId,
-    channel: 'mcp',
+    client: c.client,
     now,
     calls: [call],
     requireChange: true,
-    // A secret in what the client sent is stored nowhere: the turn keeps no input, as with a WhatsApp message (`redact.ts`).
+    // A secret in what the client sent is stored nowhere: the turn keeps no input.
     scrub: sensitive([...strings(input)].map(([, v]) => v).join(' ')),
     guard: async (tx: Sql): Promise<{ stop: Result } | undefined> => {
-      // A reminder is sent to WhatsApp: an account with no address there would hold one that is never sent.
-      if (call.tool === 'set_reminder' && !(await whatsappAddress(tx, c.accountId))) {
-        return { stop: fail('no_whatsapp_address', REPLY.noWhatsappAddress) }
+      // The cap on what one account keeps, counted under the lock so two calls cannot both squeeze under it.
+      if (call.tool === 'log_movements') {
+        const live = await countLive(tx, c.accountId)
+        if (live + call.input.movements.length > MAX_LIVE_MOVEMENTS) {
+          return {
+            stop: fail(
+              'movement_limit',
+              `This account holds ${live} movements and the limit is ${MAX_LIVE_MOVEMENTS}. Delete some before logging more.`,
+            ),
+          }
+        }
       }
       if (requestId === undefined) return undefined
       const [prior] = await tx<{ input_hash: string; result: Record<string, unknown> }[]>`
@@ -446,15 +423,10 @@ async function write(
               ),
       }
     },
-    compose: (_tx, results, record) => {
-      const only = results[0]
-      if (!only?.line) throw new Error('an MCP write has one outcome')
-      return { reply: record ?? only.line }
-    },
     after: async (tx, turn) => {
       const [only] = turn.done
       if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
-      presented = presentWrite(only.outcome, only.line, turn.id, today)
+      presented = presentWrite(only.outcome, only.line, turn.id)
       if (requestId !== undefined) {
         await tx`
             INSERT INTO mcp_request (account_id, request_id, input_hash, turn_id, result)
@@ -462,12 +434,11 @@ async function write(
       }
     },
   })
-  if (committed === null) return fail('unavailable', 'nothing was written')
   if ('stop' in committed) return committed.stop
   if ('unchanged' in committed) {
     const [only] = committed.unchanged
     if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
-    return presentWrite(only.outcome, only.line, null, today)
+    return presentWrite(only.outcome, only.line, null)
   }
   return presented ?? fail('unavailable', 'nothing was written')
 }
@@ -488,11 +459,10 @@ export async function runTool(
 
 // ---- Registration
 
-/** Every registry entry with an `mcp` block, as a tool named `warren_<tool>`. */
+/** Every registry entry as a tool named `warren_<tool>`. */
 export function registerTools(server: McpServer, c: ToolContext) {
   for (const [name, entry] of Object.entries(COMMANDS) as [Tool, (typeof COMMANDS)[Tool]][]) {
-    const block = 'mcp' in entry ? (entry.mcp as McpBlock | undefined) : undefined
-    if (!block) continue
+    const block: McpBlock = entry.mcp
     const isWrite = entry.kind === 'write'
     const inputSchema = (block.input ?? (entry.input as z.ZodObject)).extend(block.extra ?? {})
     server.registerTool(

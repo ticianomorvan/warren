@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { realPostgres, sql, useDatabase } from './db'
-import { message, toolUse } from './fakes'
 import { until } from './until'
 
 useDatabase()
@@ -29,11 +28,5 @@ describe('the test kit', () => {
     await expect(until(() => false, { timeout: 50, what: 'nothing' })).rejects.toThrow(
       /timed out after 50 ms waiting for nothing/,
     )
-  })
-
-  it('builds Anthropic messages typed to the SDK', () => {
-    const m = message([toolUse('toolu_1', 'reply', { text: 'hola' })])
-    expect(m.content[0]).toMatchObject({ type: 'tool_use', name: 'reply' })
-    expect(m.stop_reason).toBe('tool_use')
   })
 })

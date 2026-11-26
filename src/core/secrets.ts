@@ -1,6 +1,6 @@
 /**
  * What Warren must never keep, pure: a card or CBU number, a password or PIN, a DNI, contact data (an email, a phone). The same
- * rules decide what a fact, a reminder's text and a log may hold, and what is wiped from the record of a message (`sensitive`).
+ * rules decide what a fact and a log may hold, and what is wiped from the record of a call (`sensitive`).
  */
 import { fold as foldAccents } from './numbers'
 
@@ -78,23 +78,7 @@ export function looksSecret(text: string, stored = true): boolean {
   )
 }
 
-/**
- * Whether a text holds a secret's VALUE: a card or CBU number, a DNI, a password said with a cue, or a credential word beside a number
- * ("la clave 7788", "el pin es 4455"). The word alone is not: "cambiar la contraseña del wifi", "renovar el pin de la tarjeta" and
- * "el código postal" are plain words a reminder may carry. A reminder leaves through Meta as written, so this is what it must not hold.
- */
-export function holdsSecretValue(text: string): boolean {
-  const folded = fold(text)
-  return (
-    hasLongDigits(folded) ||
-    looksPassword(text, folded) ||
-    dniShaped(folded) ||
-    ((CREDENTIAL_WORDS.test(folded) || STORED_WORDS.test(folded) || ID_WORDS.test(folded)) &&
-      /\d{4}/.test(folded))
-  )
-}
-
-/** Whether a person's message holds something Warren must not keep, in the database or in the model's window. */
+/** Whether what a client sent holds something Warren must not keep: the turn then stores none of its input. */
 export const sensitive = (message: string) => looksSecret(message, false)
 
 /** An email address or a phone number: contact data, which Warren does not keep either. */

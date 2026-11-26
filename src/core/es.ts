@@ -2,7 +2,7 @@ import type { Category } from './commands'
 
 /**
  * Argentine Spanish vocabulary and formats, pure: the one home of month and weekday names, lists, money, the clock, the one short
- * date and the category labels. Every line Warren renders (a record, a reminder, a list) takes them from here.
+ * date and the category labels. Every line Warren renders (a record, a list) takes them from here.
  */
 
 export const MONTHS = [

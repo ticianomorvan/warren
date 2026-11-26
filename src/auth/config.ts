@@ -7,7 +7,6 @@ import { jwt } from 'better-auth/plugins'
 import { PostgresJSDialect } from 'kysely-postgres-js'
 import type { Sql } from '../core/db'
 import { clientIdAllowed } from '../mcp/clients'
-import { linkSession, type SessionLinks } from './plugin'
 
 /** What a token may be used for. `offline_access` is the refresh token. */
 export const SCOPES = ['ledger:read', 'ledger:write', 'offline_access'] as const
@@ -17,6 +16,9 @@ export const ACCESS_TOKEN_SECONDS = 15 * 60
 
 /** The sign-in session only exists to finish consent. */
 export const SESSION_SECONDS = 60 * 60
+
+/** The path better-auth runs Google's callback under: the only one that may make a user. */
+const GOOGLE_CALLBACK = '/callback/:id'
 
 /** The MCP endpoint, which is also the audience of every access token (RFC 8707). */
 export const mcpUrl = (publicUrl: string) => new URL('/mcp', publicUrl).href
@@ -43,17 +45,18 @@ export interface AuthSettings {
   /** `https://heywarren.app`: the issuer, and the host the OAuth routes answer on. */
   publicUrl: string
   secret: string
-  /** The sign-in's side of the database. */
-  links: SessionLinks
+  /** The OAuth client of "Continuar con Google". */
+  google: { clientId: string; clientSecret: string }
   /** How a client's metadata document is fetched. A test passes a fake; the default pins the DNS answer. */
   fetchClientMetadataResource?: ClientMetadataResourceFetch
   log?: (level: 'debug' | 'info' | 'warn' | 'error', message: string, ...args: unknown[]) => void
 }
 
 /**
- * The OAuth 2.1 authorization server for Warren's MCP endpoint (slice 5): better-auth on our own database,
- * public clients only, each one a metadata document (CIMD) from an allowed host. Nobody signs in with a
- * password or an email: the `warren-link` plugin makes a session for a person who confirmed on WhatsApp.
+ * The OAuth 2.1 authorization server for Warren's MCP endpoint: better-auth on our own database, public clients only, each one a
+ * metadata document (CIMD) from an allowed host. "Continuar con Google" is the only way in, open to anyone with a Google account:
+ * no password, no email sign-up. The first Google sign-in of a person makes their `auth_user` and, in the `after` hook, their
+ * `account` row; any other way a user could be created is refused in the `before` hook.
  */
 export function createAuth(s: AuthSettings) {
   const instance = betterAuth({
@@ -61,7 +64,7 @@ export function createAuth(s: AuthSettings) {
     baseURL: s.publicUrl,
     secret: s.secret,
     database: { dialect: new PostgresJSDialect({ postgres: s.sql as never }), type: 'postgres' },
-    // The migrations are ours (`012_auth.sql`); better-auth never alters the schema.
+    // The migrations are ours (`002_auth.sql`); better-auth never alters the schema.
     user: {
       modelName: AUTH_TABLES.user,
       additionalFields: {
@@ -81,7 +84,35 @@ export function createAuth(s: AuthSettings) {
       expiresIn: SESSION_SECONDS,
       disableSessionRefresh: true,
     },
-    account: { modelName: AUTH_TABLES.account },
+    // Google's tokens are never kept (below), so a later sign-in has nothing to refresh.
+    account: { modelName: AUTH_TABLES.account, updateAccountOnSignIn: false },
+    socialProviders: {
+      google: { clientId: s.google.clientId, clientSecret: s.google.clientSecret },
+    },
+    databaseHooks: {
+      user: {
+        create: {
+          // A user exists only when Google's callback made it: not by email, not by any other route a plugin may add.
+          before: async (_user, ctx) => (ctx?.path === GOOGLE_CALLBACK ? undefined : false),
+          // The person: one `account` row, linked to the user. Runs once, when the user is first made.
+          after: async (user) => {
+            await s.sql.begin(async (tx) => {
+              const [row] = await tx<{ id: number }[]>`
+                INSERT INTO account DEFAULT VALUES RETURNING id::int AS id`
+              await tx`UPDATE auth_user SET warren_account_id = ${(row as { id: number }).id} WHERE id = ${user.id}::uuid`
+            })
+          },
+        },
+      },
+      account: {
+        create: {
+          // Warren never holds access to anything of Google's: only that this user signed in with this Google account.
+          before: async (account) => ({
+            data: { ...account, accessToken: null, refreshToken: null, idToken: null, scope: null },
+          }),
+        },
+      },
+    },
     verification: { modelName: AUTH_TABLES.verification },
     advanced: {
       database: { generateId: 'uuid' },
@@ -104,8 +135,9 @@ export function createAuth(s: AuthSettings) {
       window: 10,
       max: 100,
       customRules: {
-        // Finishing a sign-in needs a confirmed WhatsApp answer: nobody needs more than a few tries.
-        '/warren/link/complete': { window: 60, max: 10 },
+        // Starting a Google sign-in, the one route that costs us a call to Google: a person needs a few tries at most.
+        '/sign-in/social': { window: 60, max: 10 },
+        '/callback/:id': { window: 60, max: 20 },
       },
     },
     // Warn and above only: nothing about a person goes to the log.
@@ -113,6 +145,8 @@ export function createAuth(s: AuthSettings) {
     // Closed over HTTP outright, so each holds even if a plugin's own check changes: the session JWT
     // endpoint, and every route that makes, changes, lists or deletes an OAuth client or a consent.
     disabledPaths: [
+      '/sign-up/email',
+      '/sign-in/email',
       '/token',
       '/oauth2/register',
       '/oauth2/create-client',
@@ -142,6 +176,9 @@ export function createAuth(s: AuthSettings) {
         // Nobody registers, edits, lists or deletes a client over HTTP: a client exists only as a
         // metadata document from an allowed host.
         clientPrivileges: () => false,
+        // Claude needs two flags to register by its metadata document, and falls back to Dynamic Client Registration (off here)
+        // when either is missing: public clients are accepted ("none", said here) and CIMD is supported (`cimd()` says so).
+        advertisedMetadata: { token_endpoint_auth_methods_supported: ['none'] },
         accessTokenExpiresIn: ACCESS_TOKEN_SECONDS,
         // Strict rotation: a refresh token works once, with no replay window.
         refreshTokenReuseInterval: 0,
@@ -161,7 +198,6 @@ export function createAuth(s: AuthSettings) {
         metadataProfile: 'mcp-2026-07-28',
         isMetadataDocumentUrlAllowed: clientIdAllowed,
       }),
-      linkSession(s.links),
     ],
   })
   return instance

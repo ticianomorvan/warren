@@ -1,13 +1,10 @@
 import { z } from 'zod'
-import { FirstSchema, RepeatSchema, type Schedule } from '../domain/reminders/schedule'
-import type { ReplyCheck } from './reply-check'
 
 /**
  * The tool registry: data only. One entry per tool holds everything the tool is: its input (zod, with real optionals and unions,
- * no sentinels, `.describe()` on the fields), what the model is told, what kind of tool it is, what it changes, the word the turn
- * is labelled with, typed examples and what an MCP client is shown. Everything else derives from it (`TOOLS`, `LABELS`, the MCP
- * tools, the prompt's tool list). Guards, apply and describe are exhaustive switches over the tools, each checked against
- * `Tool`; none of them lives on an entry, so this module imports only zod and the pure schedule schema.
+ * no sentinels, `.describe()` on the fields), whether it reads or writes, and what an MCP client is shown (title, description,
+ * scope, output). The MCP tools derive from it. Guards, apply and describe are exhaustive switches over the tools, each checked
+ * against `Tool`; none of them lives on an entry, so this module imports only zod.
  */
 
 export const CATEGORIES = [
@@ -53,27 +50,6 @@ export const GROUPS = ['none', 'category', 'payment', 'day', 'week', 'month'] as
 export const FACT_KINDS = ['alias', 'category', 'note'] as const
 export type FactKind = (typeof FACT_KINDS)[number]
 
-/** The most rows `find_movements` returns. */
-export const MAX_FOUND = 20
-/** How many of the newest live movements the model is shown in its context. 10 is the most one message can log, so a whole message can always be addressed. */
-export const RECENT_LIMIT = 10
-/** The most movements a message may name in `ask_user`. */
-export const MAX_ASKED = 10
-
-/** One word for a unit of work: the `turn.label` and the latency report's key. */
-export type Label =
-  | 'log'
-  | 'correct'
-  | 'delete'
-  | 'undo'
-  | 'remember'
-  | 'forget'
-  | 'remind'
-  | 'summarize'
-  | 'ask'
-  | 'find'
-  | 'reply'
-
 // ---- Shared shapes
 
 const Direction = z.enum(['in', 'out']).describe('"out" for spending, "in" for income.')
@@ -95,7 +71,7 @@ const Id = z
     'The id of a live movement, from the list, a find_movements result or an earlier result.',
   )
 
-/** Amounts and dates are plain strings here; code validates them after the model (`core/values.ts`). */
+/** Amounts and dates are plain strings here; code validates them (`core/values.ts`). */
 export const MovementSchema = z.object({
   direction: Direction,
   amount: Amount,
@@ -130,7 +106,7 @@ export const ChangesSchema = z
 export type Changes = z.infer<typeof ChangesSchema>
 
 /**
- * The days a summary covers. Code resolves it to Argentine days, so the model never works out where a week or a month starts.
+ * The days a summary covers. Code resolves it to Argentine days, so the agent never works out where a week or a month starts.
  * `dates` takes yyyy-mm-dd, mm-dd or dd as the person said it (code picks the latest such day that is not in the future).
  */
 export const RangeSchema = z.discriminatedUnion('period', [
@@ -152,55 +128,29 @@ export const RangeSchema = z.discriminatedUnion('period', [
 ])
 export type Range = z.infer<typeof RangeSchema>
 
-/** What an `ask_user` question does once the person picks an option. Code writes the question from it. */
-export const ThenSchema = z.discriminatedUnion('do', [
-  z.object({ do: z.literal('delete') }).describe('The person asked to delete one of them.'),
-  z
-    .object({ do: z.literal('correct'), changes: ChangesSchema })
-    .describe('The person asked to change one of them and already gave the new value.'),
-  z
-    .object({ do: z.literal('ask_change') })
-    .describe('The person asked to change one of them and gave no value: ask what to change.'),
-])
-export type Then = z.infer<typeof ThenSchema>
-
-/** Why a part of the message was not done: code writes the line. */
-export const SKIP_REASONS = ['not_found', 'what_to_change', 'cannot', 'separately'] as const
-export type SkipReason = (typeof SKIP_REASONS)[number]
-
 // ---- The entries
 
-/** What an MCP client is shown of a tool (`mcp/tools.ts` builds the server from it; the client's agent has no prompt). */
+/** What an MCP client is shown of a tool (`mcp/tools.ts` builds the server from it). */
 export interface McpBlock {
   title: string
   description: string
   scope: 'ledger:read' | 'ledger:write'
   /** The tool removes or ends something (an MCP annotation). */
   destructive?: true
-  /** The input as an MCP client sends it, where it differs from the model's (v1: `confidence` is optional, `high` by default). */
+  /** The input as a client sends it, where it differs from the canonical one (`confidence` is optional, `high` by default). */
   input?: z.ZodObject
   /** What the tool returns, beside the text. */
   output: z.ZodType
-  /** Fields only an MCP client sends (a page, a request id), added to the input. */
+  /** Fields only a client sends (a page, a request id), added to the input. */
   extra?: z.ZodRawShape
 }
 
 export interface Entry<S extends z.ZodType = z.ZodType> {
-  /** The tool's input: the one canonical shape both channels use. */
+  /** The tool's input: the one canonical shape. */
   input: S
-  /** What the model is told. */
-  description: string
-  /**
-   * `read`: a lookup the loop runs and answers, then goes on (the only non-terminal tool). `write`: changes what Warren keeps, at the
-   * commit point. `answer`: ends the turn with something code renders or the model says. `ask`: ends the turn with a question.
-   */
-  kind: 'read' | 'write' | 'answer' | 'ask'
-  label: Label
-  /** Sent alone: with another action in the same turn it is refused. */
-  alone?: true
-  /** Only code sends it, after the person's own answer; the model is never offered it. */
-  by?: 'code'
-  mcp?: McpBlock
+  /** `read`: a lookup that changes nothing. `write`: changes what Warren keeps, at the commit point. */
+  kind: 'read' | 'write'
+  mcp: McpBlock
 }
 
 const define = <S extends z.ZodType, K extends Entry['kind']>(entry: Entry<S> & { kind: K }) =>
@@ -208,7 +158,7 @@ const define = <S extends z.ZodType, K extends Entry['kind']>(entry: Entry<S> & 
 
 const Nothing = z.object({})
 
-// ---- What an MCP client gets back: structured output, with real shapes. Money is exact (a decimal string) beside how Warren shows it.
+// ---- What a client gets back: structured output, with real shapes. Money is exact (a decimal string) beside how Warren shows it.
 
 const Money = {
   amount: z.string().describe('Decimal string, exact. Quote it as given.'),
@@ -231,15 +181,6 @@ const FactView = z.object({
   key: z.string(),
   value: z.string(),
 })
-const ReminderView = z.object({
-  id: z.int().describe('Warren id of the reminder.'),
-  what: z.string(),
-  next_due_at: z
-    .string()
-    .nullable()
-    .describe('When it fires next, an ISO instant; null once a one-off has been sent.'),
-  when: z.string().describe('The reminder in words, as Warren says it (Spanish).'),
-})
 const Total = z.object({
   direction: z.enum(['in', 'out']),
   currency: Currency,
@@ -261,7 +202,7 @@ const Side = z.object({
 
 /** What every change returns: the line Warren writes, the unit of work it belongs to and whether this is an answer replayed. */
 const Written = {
-  record: z.string().describe('What changed, as Warren writes it on WhatsApp (Spanish).'),
+  record: z.string().describe('What changed, as Warren writes it (Spanish).'),
   turn: z
     .int()
     .nullable()
@@ -282,14 +223,11 @@ const UndoneItem = z.object({
     'fact_removed',
     'fact_restored',
     'fact_reverted',
-    'reminder_removed',
-    'reminder_restored',
   ]),
   movement: MovementView.optional().describe('The movement as it stands now.'),
   from: MovementView.optional().describe('A corrected movement as the correction left it.'),
   fact: FactView.optional(),
   was: z.string().optional().describe("A fact's value before it was taken back."),
-  reminder: ReminderView.optional(),
 })
 
 /** The output of each MCP tool. `mcp/tools.ts` builds its results from these types. */
@@ -319,10 +257,9 @@ export const OUTPUTS = {
         }),
       )
       .describe('Empty unless the summary was compared.'),
-    summary: z.string().describe('The same summary as Warren writes it on WhatsApp, in Spanish.'),
+    summary: z.string().describe('The same summary as Warren writes it, in Spanish.'),
   }),
   list_facts: z.object({ facts: z.array(FactView), total: z.int() }),
-  list_reminders: z.object({ reminders: z.array(ReminderView) }),
   log_movements: z.object({ ...Written, movements: z.array(MovementView) }),
   correct_movement: z.object({
     ...Written,
@@ -336,9 +273,7 @@ export const OUTPUTS = {
   undo_last: z.object({
     ...Written,
     undone_turn: z.int().describe('The unit of work that was taken back.'),
-    items: z
-      .array(UndoneItem)
-      .describe('What came back or went away, one per movement, fact or reminder.'),
+    items: z.array(UndoneItem).describe('What came back or went away, one per movement or fact.'),
   }),
   remember_fact: z.object({
     ...Written,
@@ -347,8 +282,6 @@ export const OUTPUTS = {
     previous_value: z.string().nullable(),
   }),
   forget_fact: z.object({ ...Written, forgotten: z.array(FactView) }),
-  set_reminder: z.object({ ...Written, reminder: ReminderView }),
-  cancel_reminder: z.object({ ...Written, reminder: ReminderView }),
 } as const
 
 const RequestId = z
@@ -377,9 +310,7 @@ export const COMMANDS = {
       amount: Amount.optional(),
       limit: z.int().optional(),
     }),
-    description: `Search the person's whole history for a movement that is not in the list of the ${RECENT_LIMIT} newest: an older item ("el alquiler", "lo del veterinario", "la nafta del 4/11"). Returns up to ${MAX_FOUND} live movements with their ids, newest first. Never call it when the movement is already in the list. Leave out the filters you do not need. Act on one of the results in your next turn.`,
     kind: 'read',
-    label: 'find',
     mcp: {
       title: 'Find movements',
       description:
@@ -395,13 +326,11 @@ export const COMMANDS = {
 
   log_movements: define({
     input: z.object({ movements: z.array(MovementSchema).min(1).max(10) }),
-    description: 'Record 1 to 10 new movements (expenses or income) the person tells you about.',
     kind: 'write',
-    label: 'log',
     mcp: {
       title: 'Log movements',
       description:
-        'Logs up to 10 movements (spending or income) for the person. The person can undo it from WhatsApp ("deshacer").',
+        'Logs up to 10 movements (spending or income) for the person. `warren_undo_last` takes the whole call back.',
       scope: LEDGER_WRITE,
       input: z.object({
         movements: z
@@ -418,10 +347,7 @@ export const COMMANDS = {
 
   correct_movement: define({
     input: z.object({ id: Id, changes: ChangesSchema }),
-    description:
-      'Change fields of one existing movement, by id. Only the fields that change are sent.',
     kind: 'write',
-    label: 'correct',
     mcp: {
       title: 'Correct a movement',
       description:
@@ -434,13 +360,11 @@ export const COMMANDS = {
 
   delete_movement: define({
     input: z.object({ id: Id }),
-    description: 'Delete one existing movement, by id.',
     kind: 'write',
-    label: 'delete',
     mcp: {
       title: 'Delete a movement',
       description:
-        'Deletes one live movement. Nothing is erased: the movement is marked deleted and "deshacer" brings it back.',
+        'Deletes one live movement. Nothing is erased: the movement is marked deleted and `warren_undo_last` brings it back.',
       scope: LEDGER_WRITE,
       destructive: true,
       output: OUTPUTS.delete_movement,
@@ -456,7 +380,7 @@ export const COMMANDS = {
         .union([z.literal('previous'), RangeSchema])
         .optional()
         .describe(
-          '"previous" for "¿gasté más que el mes pasado?" or "comparado con antes": code takes the stretch right before (while the period is still running, the same days of the one before). Send a second range only when the person names a different one ("este mes vs septiembre"); never the whole period before as a range, that is "previous".',
+          '"previous" to compare with the stretch right before (while the period is still running, the same days of the one before). Send a second range only to compare with a different one (this month vs September); never the whole period before as a range, that is "previous".',
         ),
       direction: Direction.optional(),
       category: Category.optional(),
@@ -466,78 +390,23 @@ export const COMMANDS = {
         .optional()
         .describe('Words of the description to count or total: "cuántos cafés" is café.'),
     }),
-    description:
-      'Answer how much the person spent or received over any days (a named period, a month, a year or explicit days), optionally split by category, payment, day, week or month, or compared with the period before or a second range. Code resolves the days and computes every total, count, difference and percentage; you only choose the range, the split, the comparison and the filters (including the words of a description, for "cuántos cafés").',
-    kind: 'answer',
-    label: 'summarize',
+    kind: 'read',
     mcp: {
       title: 'Summarize spending and income',
       description:
-        'Totals of spending and income over a range, optionally split or compared. Every figure is computed by Warren; quote them, never recompute.',
+        'Totals of spending and income over a range (a named period, a month, a year or explicit days), optionally split by category, payment, day, week or month, or compared with the period before or a second range. Every figure is computed by Warren; quote them, never recompute.',
       scope: LEDGER_READ,
       output: OUTPUTS.summarize,
     },
   }),
 
-  ask_user: define({
-    input: z.object({
-      movement_ids: z.array(Id).min(1).max(MAX_ASKED),
-      then: ThenSchema,
-    }),
-    description:
-      'Ask which movement the person means, or what to change in it, when you cannot act. Code writes the question and lists the movements you give; you write no question. `then` says what the answer will do: delete it, correct it (with the new value the person already gave), or ask what to change.',
-    kind: 'ask',
-    label: 'ask',
-  }),
-
-  reply: define({
-    input: z.object({ text: z.string().max(280) }),
-    description:
-      'Your own words, for a message that changes nothing: a question about what you did or what is stored, thanks, chit-chat that asks nothing about what Warren does, something outside their money movements (exchange rates, advice, news, jokes), a request you cannot do, a request to cut Claude\'s or another agent\'s access ("desconectá a Claude": you have no tool for it, so reply that to disconnect they send exactly "desconectar"), or a change or delete when the list says (ninguno) because they have no movements. When they have movements and none fits, that is ask_user: never a reply that says "No encontré". Short, in Argentine Spanish; see "Your words" for what the text may hold.',
-    kind: 'answer',
-    label: 'reply',
-    alone: true,
-  }),
-
-  skip: define({
-    input: z.object({
-      part: z
-        .string()
-        .max(80)
-        .describe(
-          'The thing you did not find or do, as a noun phrase in the person\'s words, without the verb: "el súper", "el primero" (not "borrá el súper"). At most 8 words, no numbers.',
-        ),
-      reason: z
-        .enum(SKIP_REASONS)
-        .describe(
-          'not_found: no such movement. what_to_change: the person did not say what to change. cannot: Warren does not do that. separately: it needs its own message.',
-        ),
-    }),
-    description:
-      'Say that you did not do one part of a message while you did the others. Code writes the line. Never for the whole message.',
-    kind: 'answer',
-    label: 'reply',
-  }),
-
-  help: define({
-    input: Nothing,
-    description:
-      'Code sends the canned help text; you write nothing. For a message that asks what Warren is or does, however it is worded ("ayuda", "qué podés hacer", "en qué me ayudás", "para qué sirve esto", "qué es esto", "cómo funciona"), with or without a greeting before it; for a bare greeting ("hola"); for ANY question addressed to Warren itself after a greeting, even a social one ("hola, ¿todo bien por ahí?", "buenas, ¿qué andás haciendo?", "¿cómo va tu día?"): a greeting does not make it chit-chat; and for a message you cannot make any sense of. Not for a bare thanks, nor for a request outside expenses (an exchange rate): those are reply.',
-    kind: 'answer',
-    label: 'reply',
-  }),
-
   undo_last: define({
     input: Nothing,
-    description:
-      'Undo the person\'s LAST batch of changes as a whole (everything one earlier message logged, corrected or deleted): "deshacer", "volvé atrás", "anulá lo que hiciste". Code finds the batch and writes what it undid; you send no id. Never for one named movement (that is delete_movement or correct_movement).',
     kind: 'write',
-    label: 'undo',
-    alone: true,
     mcp: {
       title: 'Undo the last change',
       description:
-        'Undoes the last unit of work of this person, whichever channel made it, as a whole. The result says what came back, or why nothing did.',
+        'Undoes the last unit of work of this person (one write call, or one import) as a whole, whichever client made it, within 24 hours. The result says what came back, or why nothing did.',
       scope: LEDGER_WRITE,
       destructive: true,
       output: OUTPUTS.undo_last,
@@ -551,14 +420,11 @@ export const COMMANDS = {
       key: z.string().describe("The person's own words for it."),
       value: z.string(),
     }),
-    description:
-      'Remember ONE fact the person states about their own money or habits, so you understand later messages: an alias (a name they use for a payment, a place or a thing: "la del galicia" is "la visa"), a category (where a kind of expense goes: "café" is entretenimiento) or a note (anything else: "cobro" is "el 5"). Only what they say, explicitly ("acordate que...") or as a clear statement; never a guess, never something you inferred. It logs, corrects and deletes nothing. A new value for the same key replaces the old one. Code checks it and writes the record.',
     kind: 'write',
-    label: 'remember',
     mcp: {
       title: 'Remember a fact',
       description:
-        'Stores one fact the person told you (an alias, a category rule or a note), in their words. Never a secret or contact data.',
+        'Stores one fact the person told you (an alias, a category rule or a note), in their words: an alias is a name they use for a payment, a place or a thing ("la del galicia" is "la visa"), a category says where a kind of expense goes ("café" is entretenimiento), a note is anything else. Only what they said, never a guess, never a secret or contact data. A new value for the same key replaces the old one.',
       scope: LEDGER_WRITE,
       output: OUTPUTS.remember_fact,
       extra: { request_id: RequestId },
@@ -568,19 +434,15 @@ export const COMMANDS = {
   forget_fact: define({
     input: z.object({
       target: z.union([
-        z.object({ id: z.int().describe('The id from "Hechos".') }),
-        z.object({
-          key: z.string().describe('The words of the key, for a fact that is not shown.'),
-        }),
+        z.object({ id: z.int().describe('The id from `warren_list_facts`.') }),
+        z.object({ key: z.string().describe('The words of the key.') }),
       ]),
     }),
-    description:
-      'Forget one remembered fact: its id from "Hechos" (only an id you were shown), or its key (the words) when it is not shown. For "olvidate de lo de la visa". Never for a movement of the ledger.',
     kind: 'write',
-    label: 'forget',
     mcp: {
       title: 'Forget a fact',
-      description: 'Forgets one remembered fact, by id or by key. "deshacer" brings it back.',
+      description:
+        'Forgets one remembered fact, by id or by key. `warren_undo_last` brings it back. Never for a movement of the ledger.',
       scope: LEDGER_WRITE,
       destructive: true,
       output: OUTPUTS.forget_fact,
@@ -588,29 +450,9 @@ export const COMMANDS = {
     },
   }),
 
-  forget_all_facts: define({
-    input: Nothing,
-    description:
-      'The person asks you to forget everything you know about them ("olvidate de todo lo que sabés de mí"). Code asks "¿Seguro?" and only their "sí" confirms; you never do.',
-    kind: 'ask',
-    label: 'forget',
-    alone: true,
-  }),
-
-  forget_all_confirmed: define({
-    input: Nothing,
-    description: "The person's own 'sí' to '¿Seguro?'. Code sends it; the model never does.",
-    kind: 'write',
-    label: 'forget',
-    by: 'code',
-  }),
-
   list_facts: define({
     input: Nothing,
-    description:
-      'The person asks what you know or have noted about them ("¿qué sabés de mí?", "¿qué tenés anotado?"). Code lists every fact.',
-    kind: 'answer',
-    label: 'reply',
+    kind: 'read',
     mcp: {
       title: 'List what Warren remembers',
       description: 'Lists every live fact (alias, category rule or note) the person told Warren.',
@@ -618,81 +460,12 @@ export const COMMANDS = {
       output: OUTPUTS.list_facts,
     },
   }),
-
-  set_reminder: define({
-    input: z.object({
-      what: z
-        .string()
-        .describe(
-          'What to remind them of, in their words, one line, no numbers they did not write.',
-        ),
-      first: FirstSchema.describe(
-        'When it first fires, as the person said it: {in:{n,unit}} for "en 20 minutos"; {day:"today"|"tomorrow"|"day_after", time?}; {weekday:"mon".."sun", time?}; {month_day:1..31, month?, time?}; {date:"yyyy-mm-dd", time?}. Leave time out when they gave none (09:00). Code works out the day.',
-      ),
-      ...RepeatSchema.shape,
-    }),
-    description:
-      'Set a reminder: Warren sends the person a WhatsApp message with `what` at the time `first` says. For a repeating one add `every` (day, week, month, year) with `interval` (1 unless "cada 2…"); weekdays for week (mon..sun); month_days for month or year (1 to 31, -1 is the last day); nth ({n: 1..4 or -1, weekday}) for "el primer lunes"; month (1..12) for year; until or count to end it. Leave out every field that does not apply. Code works out the first date, checks it is ahead and writes the confirmation.',
-    kind: 'write',
-    label: 'remind',
-    mcp: {
-      title: 'Set a reminder',
-      description:
-        'Sets a reminder: Warren sends the person a WhatsApp message at the time it says.',
-      scope: LEDGER_WRITE,
-      output: OUTPUTS.set_reminder,
-      extra: { request_id: RequestId },
-    },
-  }),
-
-  cancel_reminder: define({
-    input: z.object({ id: z.int().describe('The id from "Recordatorios".') }),
-    description:
-      'Cancel one live reminder, by an id from "Recordatorios" (only an id you were shown). For "cancelá el del alquiler", "ya no me recuerdes la pastilla". Never for a movement of the ledger.',
-    kind: 'write',
-    label: 'remind',
-    mcp: {
-      title: 'Cancel a reminder',
-      description: 'Cancels one live reminder, by id. "deshacer" brings it back.',
-      scope: LEDGER_WRITE,
-      destructive: true,
-      output: OUTPUTS.cancel_reminder,
-      extra: { request_id: RequestId },
-    },
-  }),
-
-  list_reminders: define({
-    input: Nothing,
-    description:
-      'The person asks which reminders they have ("¿qué recordatorios tengo?", "¿qué me ibas a recordar?"). Code lists every live reminder.',
-    kind: 'answer',
-    label: 'reply',
-    mcp: {
-      title: 'List reminders',
-      description: 'Lists every live reminder, the next to come first.',
-      scope: LEDGER_READ,
-      output: OUTPUTS.list_reminders,
-    },
-  }),
 } satisfies Record<string, Entry>
 
 export type Tool = keyof typeof COMMANDS
 export type Input<T extends Tool> = z.infer<(typeof COMMANDS)[T]['input']>
-/**
- * A call: one tool and its input. Code adds what the model never sends, beside the input: a `set_reminder` that `checkValues` passed
- * carries the schedule it resolved (from the instant it checked at), so the commit point stores the schedule the guard approved; a
- * `correct_movement` or `delete_movement` the conversation checked carries the version of the movement the person was shown, so it
- * applies to that version or to nothing; a `reply` carries the verdict of the numbers-and-claims check its words got. Without them (an MCP client, who always sees the live state) a call is entity-only.
- */
-export type Call = {
-  [T in Tool]: { tool: T; input: Input<T> } & (T extends 'set_reminder'
-    ? { schedule?: Schedule }
-    : T extends 'correct_movement' | 'delete_movement'
-      ? { version?: number }
-      : T extends 'reply'
-        ? { verdict?: ReplyCheck }
-        : unknown)
-}[Tool]
+/** A call: one tool and its input. */
+export type Call = { [T in Tool]: { tool: T; input: Input<T> } }[Tool]
 export type CallOf<T extends Tool> = Extract<Call, { tool: T }>
 
 /** The tools that change what Warren keeps. */
@@ -705,9 +478,3 @@ export const isTool = (name: string): name is Tool => name in COMMANDS
 
 /** Where `kind` says a call writes. */
 export const writes = (call: Call): call is WriteCall => COMMANDS[call.tool].kind === 'write'
-
-/** The turn's label for a list of calls: the one tool's, or `multi`. */
-export function labelOf(calls: readonly { tool: Tool }[]): Label | 'multi' {
-  const [only] = calls
-  return !only || calls.length > 1 ? 'multi' : COMMANDS[only.tool].label
-}
