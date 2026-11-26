@@ -13,5 +13,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "evals", "test", "scripts", ".railway"]
+  "include": ["src", "test", ".railway"]
 }

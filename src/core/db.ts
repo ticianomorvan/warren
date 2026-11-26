@@ -32,8 +32,8 @@ export const schemaDir = new URL('./schema/', import.meta.url)
 /**
  * Applies each `NNN_name.sql` once, in order, under an advisory lock. Safe to run on every start.
  *
- * The advisory locks in use (the first key; the second, where there is one, says whose): 7203001 the migrations, 7203004 the sign-in
- * pages one address opens. A person's data has no advisory lock: every write transaction takes the account row's lock first.
+ * The one advisory lock in use is 7203001, the migrations. A person's data has no advisory lock: every write transaction takes the
+ * account row's lock first.
  */
 export async function migrate(sql: Sql, dir: URL = schemaDir): Promise<void> {
   const files = (await readdir(dir)).filter((f) => f.endsWith('.sql')).sort()

@@ -20,8 +20,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # lint, typecheck and the test suite on PGlite. No network and no Anthropic key: the scenario
-      # eval (`pnpm eval:scenarios`) is run by hand.
+      # lint, typecheck and the test suite on PGlite. No network and no keys: Google and claude.ai are faked.
       - run: pnpm check
 
   # The whole suite again on a real Postgres: pools and races that PGlite's single session cannot show.

@@ -31,3 +31,32 @@ describe('createWarren', () => {
     }
   })
 })
+
+describe('createWarren with PUBLIC_URL, as the server wires it', () => {
+  it('serves the web, the OAuth discovery and a /mcp that asks for a token', async () => {
+    let base = ''
+    const warren = createWarren({
+      sql,
+      config: {
+        auth: {
+          publicUrl: 'http://127.0.0.1:3999',
+          secret: 'x'.repeat(32),
+          google: { clientId: 'id', clientSecret: 'secret' },
+        },
+      },
+      publicHost: () => new URL(base).host,
+    })
+    await new Promise<void>((r) => warren.server.listen(0, '127.0.0.1', r))
+    base = `http://127.0.0.1:${(warren.server.address() as AddressInfo).port}`
+    try {
+      expect((await fetch(`${base}/setup.md`)).status).toBe(200)
+      expect((await fetch(`${base}/llms.txt`)).status).toBe(200)
+      expect((await fetch(`${base}/.well-known/oauth-authorization-server`)).status).toBe(200)
+      const mcp = await fetch(`${base}/mcp`, { method: 'POST' })
+      expect(mcp.status).toBe(401)
+      expect(mcp.headers.get('www-authenticate')).toContain('resource_metadata=')
+    } finally {
+      await new Promise((r) => warren.server.close(r))
+    }
+  })
+})

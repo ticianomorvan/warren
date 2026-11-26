@@ -9,17 +9,15 @@ Thank you for helping. Warren is maintained by one person, so please read this f
 
 ## The rules
 
-A change must keep the six rules in [`AGENTS.md`](AGENTS.md): code does all arithmetic, the
-model acts only through guarded tools, nothing is overwritten or deleted, a turn is the one unit
+A change must keep the six rules in [`AGENTS.md`](AGENTS.md): code does all arithmetic, every
+write goes through the guarded tools, nothing is overwritten or deleted, a turn is the one unit
 of work, secrets are never kept, and what Warren remembers about a person is theirs alone.
 
-## Eval
+## Tests
 
-`pnpm eval:scenarios` calls the Anthropic API and costs money (about US$0.17 for a whole run),
-so CI does not run it. If you change the agent (prompt, tools, context), run
-`pnpm eval:scenarios --split dev` while you work and paste the numbers in the pull request. The
-bar for merging is in [`docs/design.md`](docs/design.md) ("Tests and evals"). The `test` split
-is held out: do not tune against its failures.
+`pnpm check` runs lint, typecheck and the whole suite on in-process PGlite, with Google and
+claude.ai faked: no network and no keys. A change to anything that races (the account lock, the
+undo stack) also needs the suite on a real Postgres; the command is in `AGENTS.md`.
 
 ## Sign-off (DCO)
 

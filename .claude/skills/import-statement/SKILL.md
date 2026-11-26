@@ -1,11 +1,12 @@
 ---
 name: import-statement
-description: Seed a person's Warren ledger from a file they give you (a bank or card statement, an export, a spreadsheet, a list). Converts it to movements, checks it against what the ledger already has, shows the person before writing, and writes it with `pnpm import:movements`. Use when asked to import, load or seed past expenses or income.
+description: Seed a person's Warren ledger from a file they give you (a bank or card statement, an export, a spreadsheet, a list). Converts it to movements, checks it against what the ledger already has, shows the person before writing, and writes it with `pnpm import:movements`. Use when asked to import, load or seed past expenses or income. The person is found by their account id or the Google email they signed in with.
 ---
 
 # Import a statement into Warren
 
-`pnpm import:movements` is the last, safe step: it runs the guards, writes one turn, and refuses the exact same file twice. It does not
+`pnpm import:movements` is the last, safe step: it runs the guards, writes one turn, refuses the exact same file twice and stops at the
+account's cap of 100,000 live movements. It does not
 know what a statement means, whether an amount is the real one, or what the ledger already has. Those are your job, and they are where
 an import goes wrong. Never write before the person has seen the rows.
 
@@ -51,7 +52,7 @@ The importer does not see overlap between different files. Before writing, look 
 (`warren_find_movements` with `from`/`to`, or `warren_summarize` grouped by day) and:
 
 - drop rows already there (same day and amount from the same account), and say how many;
-- for a card statement after mail notices or WhatsApp messages: match each purchase, correct a hold to its real charge
+- for a card statement after movements already logged from mail notices or chats: match each purchase, correct a hold to its real charge
   (`warren_correct_movement`) rather than adding a second row, and list what you could not match.
 
 ## 5. Show, then write
@@ -60,9 +61,11 @@ The importer does not see overlap between different files. Before writing, look 
 2. Show the person the row count, the totals by month and currency (computed by a script from the file), what you left out and why,
    and every row you were unsure of. Give them the file's path. Wait for their OK.
 3. Write to production. Build `DATABASE_URL` from the Railway CLI without printing it (the `Postgres` service's `DATABASE_URL` with
-   its host and port replaced by `RAILWAY_TCP_PROXY_DOMAIN` and `RAILWAY_TCP_PROXY_PORT`), and pass the person's WhatsApp number:
-   `pnpm import:movements <file.jsonl> --wa <wa_id>`. It prints the turn.
+   its host and port replaced by `RAILWAY_TCP_PROXY_DOMAIN` and `RAILWAY_TCP_PROXY_PORT`), and name the person by the Google email
+   they signed in with, or by their account id (`SELECT warren_account_id FROM auth_user WHERE email = '...'`):
+   `pnpm import:movements <file.jsonl> --email <google email>` or `--account <id>`. It prints the turn. The person must have signed
+   in with Google at least once: that is what makes their account.
 4. Prove it: `warren_summarize` for two months must match the totals you showed, and its counts must add up to the rows written.
 
-Tell the person that one "deshacer" on WhatsApp takes the whole import back, within 24 hours of the import, and that the import is now
-their newest change, so their next "deshacer" undoes it, not what they did before.
+Tell the person that one `warren_undo_last` (from any agent) takes the whole import back, within 24 hours of the import, and that the
+import is now their newest change, so the next undo takes it back, not what they did before.
