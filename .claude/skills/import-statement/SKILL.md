@@ -32,7 +32,7 @@ Ask the person when a choice changes their totals; do not decide alone. The usua
 
 One JSON object per line (JSON Lines), the `log_movements` movement of `src/core/commands.ts`:
 
-```json
+```text
 {"direction":"out","amount":"12345.67","currency":"ARS","date":"2026-11-03","description":"Punto Guemes","category":"otros","payment":"BBVA Visa crédito","confidence":"high"}
 ```
 
