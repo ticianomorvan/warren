@@ -2,13 +2,13 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
-import { CATEGORIES, FACT_KINDS } from '../../src/agent/schema'
-import { ScheduleSchema } from '../../src/reminders/schedule'
+import { CATEGORIES, FACT_KINDS } from '../../src/core/commands'
+import { ScheduleSchema } from '../../src/domain/reminders/schedule'
 
 /**
  * A scenario is a conversation: a seeded ledger, then user turns, each with the Argentine "now" it
  * is sent at and what must be true afterwards. Expectations describe the INTENDED behaviour
- * (docs/agent-spec.md, Goal), not what the current pipeline does.
+ * (docs/design.md, "Tests and evals"), not what the current pipeline does.
  *
  * Ledger expectations are a delta over a closed world: a turn lists the changes it must make
  * (`ops`), and every other live movement must be untouched. No `ops` means "no change at all".
@@ -99,8 +99,8 @@ const NewMovement = z.strictObject({
   /** Names the movement for later turns. */
   ref: z.string().optional(),
   amount: Amount,
-  /** Loose match: either text contains the other, accents and case ignored. */
-  description: z.string().min(1),
+  /** Loose match: either text contains the other, accents and case ignored. A list accepts any of its words (a genuinely open choice). */
+  description: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
   date: Day.optional(),
   direction: Direction.default('out'),
   currency: Currency.default('ARS'),

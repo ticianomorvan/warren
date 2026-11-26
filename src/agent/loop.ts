@@ -1,33 +1,24 @@
 import type Anthropic from '@anthropic-ai/sdk'
-import type { FindFilter, MovementRow } from '../ledger'
+import { type Call, COMMANDS } from '../core/commands'
+import { capFind, checkTurn, checkValues, type Declined, type Shown } from '../core/guards'
+import type { MovementRow } from '../domain/movements'
 import type { TurnTiming } from '../timings'
-import { type Checked, checkCall, type Guard } from './calls'
+import { movementLine, withFound } from './context'
 import { MODELS, type ModelKey, type Usage } from './models'
-import { movementFact, movementLine, SYSTEM_PROMPT } from './prompt'
-import { type Applied, checkSay } from './say'
-import type { ModelAction, Notice } from './schema'
+import { SYSTEM_PROMPT } from './prompt'
 import { TOOLS } from './tools'
-
-/** The amounts and dates an action carries: code renders them, so the model's text may repeat them. */
-const amountsOf = (action: Run): string[] => {
-  const of = (m: { amount?: string; date?: string }) => `${m.amount ?? ''} ${m.date ?? ''}`
-  switch (action.tool) {
-    case 'log_movements':
-      return action.input.movements.map(of)
-    case 'correct_movement':
-      return [of(action.input.changes)]
-    case 'ask_user':
-      return action.input.changes ? [of(action.input.changes)] : []
-    default:
-      return []
-  }
-}
 
 /** The most model calls one message may use: a read, then the action, with one to spare for a refusal. */
 export const MAX_TURNS = 3
 
-/** The loop could not end in valid actions: the message fails with the failure notice and writes nothing. */
-/** The loop ended with no valid action. Carries what it tried, so a failed message keeps its audit. */
+/** The longest one model call may take. A stalled call is cut and tried once more, inside the message's own deadline. */
+export const CALL_TIMEOUT_MS = 8_000
+
+/**
+ * The loop could not end in valid calls: the message fails with the failure notice and writes nothing. Carries what it tried, so a
+ * failed message keeps its audit. `refusal` is the category of a safety refusal: the person gets the failure notice and the model is
+ * not asked again.
+ */
 export class AgentError extends Error {
   constructor(
     message: string,
@@ -35,6 +26,7 @@ export class AgentError extends Error {
     readonly turns = 0,
     /** The model calls it made, for the failed message's stored timings. */
     readonly turnLog: TurnTiming[] = [],
+    readonly refusal?: string,
   ) {
     super(message)
   }
@@ -46,24 +38,20 @@ export interface AuditEntry {
   tool: string
   input: unknown
   /**
-   * `ok` a read that ran; `rejected` refused by a guard (the model was told); `skipped` valid but not
-   * run because another call of its turn was refused; `held` valid but not run because the same turn
-   * also searched (the model sends it again with the results); `repair` valid but not run because a text
-   * of the turn failed the numbers check (the model sends it again with the reason); `applied`, `gone`, `unchanged`,
-   * `answered` what the commit point did with an action (an undo that did nothing: `nothing`, `expired`, `stale`).
+   * `ok` a read that ran; `rejected` refused by a guard (the model was told); `skipped` valid but not run because another call of
+   * its turn was refused; `held` valid but not run because the same turn also searched (the model sends it again with the results);
+   * `accepted` valid, run at the commit point; `declined` answered by code for the person (a secret, a reminder in the past...);
+   * `refusal` the model's safety refusal, with its category in `detail`. The commit point then adds `applied`, `gone`, `unchanged`...
    */
   status: string
   detail?: string
   ms: number
-  /** Index into the message's actions, for the ones that run at the commit point. */
+  /** Index into the message's calls, for the ones that run at the commit point. */
   action?: number
-  /** What became of the action's `text`: sent after the lines, or dropped for `textReason`. */
-  text?: 'sent' | 'dropped'
-  textReason?: string
 }
 
 export interface AgentEnv {
-  find(filter: FindFilter): Promise<MovementRow[]>
+  find(filter: ReturnType<typeof capFind>): Promise<MovementRow[]>
 }
 
 /** A photo the person sent: what the model is shown beside the context. Never stored. */
@@ -75,40 +63,29 @@ export interface Photo {
 
 export interface AgentInput {
   client: Anthropic
-  model: ModelKey
-  /** The volatile first user message (`renderContext`). */
+  model?: ModelKey
+  /** The volatile first user message (`renderContext(...).text`). */
   context: string
-  /** The photo of this message, if there is one: shown to the model before the context. */
   photo?: Photo
-  /**
-   * What the model's own words may take numbers from (`contextFacts`, without this message's searches),
-   * what Warren answered earlier (`windowReplies`) and the person's message: a text that fails the numbers
-   * check is sent back to the model for another try, inside the cap, instead of being dropped at the end.
-   */
-  facts: string[]
-  window: string[]
+  /** The ids the model may act on. The loop adds what `find_movements` returns, on its own copy. */
+  shown: Shown
+  /** The person's message (or what was heard), for the conversation rules. */
   message: string
   today: string
-  env: AgentEnv
-  /** Ids the model may act on. The loop adds what `find_movements` returns. */
-  seen: Set<number>
-  /** Ids of the facts the model is shown (`ContextInput.memory`): the only ones `forget_fact` may name by id. */
-  seenFacts?: ReadonlySet<number>
-  /** Ids of the reminders the model is shown ("Recordatorios"): the only ones `cancel_reminder` may name. */
-  seenReminders?: ReadonlySet<number>
   /** The instant of the message: a reminder's first occurrence must be after it. */
   now: Date
-  /** The only option of the pending question, when it has exactly one (see `Guard.sole`). */
-  sole?: number
+  env: AgentEnv
   /** Aborts the call and the SDK's retries: the message deadline and the shutdown. */
   signal?: AbortSignal
+  /** When the message's own deadline passes: each call's timeout is cut to fit before it. */
+  deadlineAt?: number
 }
 
-/** What a turn ends in: the model's terminal calls, and a notice code put in place of a refused secret. */
-type Run = ModelAction | Notice
-
 export interface AgentResult {
-  actions: Run[]
+  /** What the turn ends in, as the commit point takes it: the model's valid calls, in order. */
+  calls: Call[]
+  /** What code answers for the person instead of a call (a secret, a reminder in the past...). */
+  declined: Declined[]
   /** Every movement this message's `find_movements` calls returned: what the model may quote. */
   found: MovementRow[]
   audit: AuditEntry[]
@@ -120,23 +97,41 @@ export interface AgentResult {
   ms: number
 }
 
+/** The usage of a message, summed from its turn log: the one place tokens are kept. */
+export function sumUsage(turnLog: readonly TurnTiming[]): Usage {
+  const usage: Usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+  }
+  for (const t of turnLog) {
+    usage.inputTokens += t.input
+    usage.outputTokens += t.output
+    usage.cacheReadTokens += t.cache_read
+    usage.cacheWriteTokens += t.cache_write
+    usage.cacheWrite1hTokens += t.cache_write_1h ?? 0
+  }
+  return usage
+}
+
 /**
- * How long the frozen prefix stays cached. One hour, not the default five minutes: a person writes every 10 to
- * 30 minutes, so with 5 minutes nearly every message is a miss that writes the whole prefix again (12.5 times the
- * price of reading it), and with one hour nearly every message is a read. The write costs 2x the input price
- * instead of 1.25x (agent-spec, speed pass notes). The startup warm-up goes through `requestBase`, so it writes
- * the same TTL.
+ * How long the frozen prefix stays cached. One hour, not the default five minutes: a person writes every 10 to 30 minutes, so with
+ * 5 minutes nearly every message is a miss that writes the whole prefix again, and with one hour nearly every message is a read.
+ * The start-up warm-up goes through `requestBase`, so it writes the same TTL.
  */
 export const CACHE_TTL = '1h' as const
 
 /**
- * Everything of a request that does not change between messages: the model, the tools and the system
- * prompt. The tools and the system prompt are the frozen prefix, under one cache breakpoint.
+ * Everything of a request that does not change between messages: the model, the tools and the system prompt. The tools and the
+ * system prompt are the frozen prefix, under one cache breakpoint. Thinking is disabled at effort low (measured); the tools are not
+ * `strict` (strict decoding made every call about 0.35 s slower).
  */
-export const requestBase = (model: ModelKey) => ({
+export const requestBase = (model: ModelKey = 'haiku') => ({
   model: MODELS[model].id,
   thinking: MODELS[model].thinking,
-  output_config: { effort: 'low' as const },
+  output_config: { effort: MODELS[model].effort },
   tools: TOOLS,
   system: [
     {
@@ -148,33 +143,27 @@ export const requestBase = (model: ModelKey) => ({
 })
 
 /**
- * One tiny request at startup: it writes the prompt cache (with the TTL of every request) and opens the
- * connection, so the first person's message pays for neither.
+ * One request at startup that writes the prompt cache (with the TTL of every request) and opens the connection, so the first
+ * person's message pays for neither. `max_tokens: 0` is the API's documented pre-warm: it returns at once and bills no output.
  */
-export async function warmUp(client: Anthropic, model: ModelKey): Promise<void> {
+export async function warmUp(client: Anthropic, model: ModelKey = 'haiku'): Promise<void> {
   await client.messages.create({
     ...requestBase(model),
-    max_tokens: 16,
+    max_tokens: 0,
     messages: [{ role: 'user', content: 'ping' }],
   })
 }
 
-const NO_TOOL =
-  'You did not call a tool. Answer only by calling one: reply (your words), help, ask_user, log_movements, correct_movement, delete_movement, undo_last or summarize.'
+const NO_TOOL = `You did not call a tool. Answer only by calling one: ${Object.entries(COMMANDS)
+  .filter(([, entry]) => entry.by !== 'code')
+  .map(([name]) => name)
+  .join(', ')}.`
 
 /** The answer to a change that came in the same turn as a search: it was not run, and why. */
 const HELD =
-  'Not run: this turn also searched, and you could not have seen the results when you wrote this. Your changes were not run; send every change again (new movements, corrections, deletions, and your text for the parts you did not do), now that you have the results.'
+  'Not run: this turn also searched, and you could not have seen the results when you wrote this. Your changes were not run; send every change again (new movements, corrections, deletions, and skip for the parts you did not do), now that you have the results.'
 const LAST_TURN =
-  'Your next turn is the last one: do not search again; send every action, and your text for any part you could not do.'
-const repairText = (tool: string, reason: string) =>
-  `Not run: your text for ${tool} would not be sent (${reason}). A text may use only numbers the person wrote, numbers in the lists or search results you were shown, or the amounts and dates you send in these actions. Counts, totals and numbers in words ("cuatro", "dos veces") are code's: for a count or a total call summarize (it can filter by description) and let its line answer; or word the text without the number. Send every action again, with the text fixed or null.`
-const REPAIR_OTHER =
-  'Not run: a text of another call of this turn would not be sent. Send every action again, with that text fixed or null.'
-const ALONE =
-  'undo_last undoes the previous batch of changes and cannot be sent with other actions. Send it alone, with a text for any other part of the message ("Mandame lo otro aparte."); or, if the person named one movement ("deshacé el café"), it is delete_movement or correct_movement instead.'
-const ALONE_FORGET =
-  'forget_all_facts asks "¿Seguro?" and waits for the person\'s answer, so it cannot be sent with other actions. Send it alone, with a text for any other part of the message ("Mandame lo otro aparte.").'
+  'Your next turn is the last one: do not search again; send every action, and a skip for any part you could not do.'
 const REFUSED =
   'Not run: another call of this turn was refused. Send all the actions again, corrected.'
 
@@ -183,11 +172,18 @@ const FOUND = (rows: MovementRow[]) =>
     ? 'No matches.'
     : `${rows.length} found, newest first:\n${rows.map(movementLine).join('\n')}`
 
+/** One call after the guards: what it comes to and the audit entry that will say so. */
+type Verdict =
+  | { kind: 'ok'; call: Call }
+  | { kind: 'read'; rows: MovementRow[] }
+  | { kind: 'rejected'; message: string }
+  | { kind: 'declined'; declined: Declined }
+
 /**
- * The agent loop, by hand. Each turn is one `messages.create`; reads (`find_movements`) run and their
- * results go back in a single user message; the first turn with valid action calls ends the loop, and
- * code runs those actions at the commit point. A refused call is answered with its reason (as an
- * error result) and the model gets another turn, up to the cap. Nothing is written here.
+ * The agent loop, by hand. Each turn is one `messages.create`; reads (`find_movements`) run and their results go back in a single
+ * user message; the first turn with valid calls ends the loop, and code runs those calls at the commit point. A refused call is
+ * answered with its reason (as an error result) and the model gets another turn, up to the cap. Nothing is written here, and a
+ * turn runs whole or not at all: if one call is refused the others are `skipped`.
  */
 export async function runAgent(i: AgentInput): Promise<AgentResult> {
   const first: Anthropic.MessageParam['content'] = i.photo
@@ -201,51 +197,25 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
     : i.context
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: first }]
   const found = new Map<number, MovementRow>()
-
-  /** The texts among `acts` that fail the numbers check (an echo of the person is not a flaw: it is just dropped). */
-  const textFlaws = (acts: Run[]) => {
-    const rows = [...found.values()].map(movementFact)
-    const given = acts.flatMap(amountsOf)
-    const applied: Applied = {
-      deleted: acts.some((a) => a.tool === 'delete_movement'),
-      corrected: acts.some((a) => a.tool === 'correct_movement'),
-      logged: acts.some((a) => a.tool === 'log_movements'),
-      undone: acts.some((a) => a.tool === 'undo_last'),
-      remembered: acts.some((a) => a.tool === 'remember_fact'),
-      forgotten: acts.some((a) => a.tool === 'forget_fact'),
-      reminded: acts.some((a) => a.tool === 'set_reminder'),
-      unreminded: acts.some((a) => a.tool === 'cancel_reminder'),
-    }
-    return acts.flatMap((action) => {
-      if (!('text' in action.input) || action.tool === 'set_reminder') return []
-      const text = action.input.text ?? ''
-      if (text.trim() === '' && action.tool !== 'reply') return []
-      const check = checkSay(text, {
-        numbers: [...i.facts, ...rows, ...given],
-        words: [...i.facts, ...rows],
-        message: i.message,
-        applied,
-        ...(action.tool === 'reply' ? { window: i.window } : {}),
-      })
-      return check.ok || check.echo ? [] : [{ action, tool: action.tool, reason: check.reason }]
-    })
-  }
+  // The caller's value stays untouched: this loop adds what a search finds to its own copy.
+  let shown: Shown = { ...i.shown, movements: new Map(i.shown.movements) }
   const audit: AuditEntry[] = []
-  const usage: Usage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    cacheWrite1hTokens: 0,
-  }
   const turnLog: TurnTiming[] = []
   const started = performance.now()
+  const env = { today: i.today, now: i.now }
 
   for (let turn = 1; turn <= MAX_TURNS; turn++) {
+    // Each call's time is cut to what is left of the message's deadline.
+    const left = i.deadlineAt === undefined ? CALL_TIMEOUT_MS : i.deadlineAt - Date.now()
+    if (left <= 0) throw new AgentError(`turn ${turn}: out of time`, audit, turn - 1, turnLog)
     const calledAt = performance.now()
     const response = await i.client.messages.create(
       { ...requestBase(i.model), max_tokens: 2048, messages },
-      i.signal ? { signal: i.signal } : undefined,
+      {
+        timeout: Math.min(CALL_TIMEOUT_MS, left),
+        maxRetries: 1,
+        ...(i.signal ? { signal: i.signal } : {}),
+      },
     )
     const timing: TurnTiming = {
       model_ms: Math.round(performance.now() - calledAt),
@@ -254,21 +224,23 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       output: response.usage.output_tokens,
       cache_read: response.usage.cache_read_input_tokens ?? 0,
       cache_write: response.usage.cache_creation_input_tokens ?? 0,
+      cache_write_1h: response.usage.cache_creation?.ephemeral_1h_input_tokens ?? 0,
       text_chars: response.content.reduce((n, b) => n + (b.type === 'text' ? b.text.length : 0), 0),
     }
     turnLog.push(timing)
-    usage.inputTokens += response.usage.input_tokens
-    usage.outputTokens += response.usage.output_tokens
-    usage.cacheReadTokens += response.usage.cache_read_input_tokens ?? 0
-    usage.cacheWriteTokens += response.usage.cache_creation_input_tokens ?? 0
-    usage.cacheWrite1hTokens += response.usage.cache_creation?.ephemeral_1h_input_tokens ?? 0
 
-    if (response.stop_reason === 'max_tokens')
+    // A refusal can cut a tool_use off mid-input: nothing of this response is read, and the model is not asked again.
+    if (response.stop_reason === 'refusal') {
+      const category = response.stop_details?.category ?? 'unknown'
+      audit.push({ turn, tool: 'refusal', input: null, status: 'refusal', detail: category, ms: 0 })
+      throw new AgentError(`turn ${turn}: refusal ${category}`, audit, turn, turnLog, category)
+    }
+    if (response.stop_reason === 'max_tokens') {
       throw new AgentError(`turn ${turn}: cut off`, audit, turn, turnLog)
-    const calls = response.content.filter((b) => b.type === 'tool_use')
-    if (calls.length === 0) {
-      // The model wrote text instead of acting (tool use cannot be forced on every model). Say so once
-      // and let it try again; its text is never sent to the person.
+    }
+    const uses = response.content.filter((b) => b.type === 'tool_use')
+    if (uses.length === 0) {
+      // The model wrote text instead of acting. Say so once and let it try again; its text is never sent to the person.
       audit.push({
         turn,
         tool: 'text',
@@ -285,124 +257,108 @@ export async function runAgent(i: AgentInput): Promise<AgentResult> {
       continue
     }
 
-    // Ids found in this turn are added to `i.seen` only after every call is checked, so an id that
-    // appears in a search of this very turn was guessed, not chosen (and a turn that searched runs no
-    // write anyway: it is held).
-    const guard: Guard = {
-      today: i.today,
-      seen: i.seen,
-      logged: 0,
-      sole: i.sole,
-      message: i.message,
-      seenFacts: i.seenFacts,
-      seenReminders: i.seenReminders,
-      now: i.now,
-      remembered: new Set(),
-    }
-    const foundThisTurn: number[] = []
-    const actions: Run[] = []
+    // Layer 1, per call: the shape and the values. Reads run now.
     const checked: {
-      call: (typeof calls)[number]
-      result: Checked
+      use: (typeof uses)[number]
+      verdict: Verdict
       entry: AuditEntry
       text: string
     }[] = []
-    for (const call of calls) {
+    for (const use of uses) {
       const t0 = performance.now()
-      const result = checkCall(call.name, call.input, guard)
+      const result = checkValues(use.name, use.input, env)
+      let verdict: Verdict
       let text = ''
-      let status = 'ok'
       if (result.kind === 'read') {
-        const rows = await i.env.find(result.filter)
+        const rows = await i.env.find(capFind(result.filter))
         timing.find_ms += Math.round(performance.now() - t0)
-        for (const row of rows) {
-          foundThisTurn.push(row.id)
-          found.set(row.id, row)
-        }
+        for (const row of rows) found.set(row.id, row)
+        verdict = { kind: 'read', rows }
         text = FOUND(rows)
-      } else if (result.kind === 'action') {
-        status = 'accepted'
-        if (result.action.tool === 'log_movements')
-          guard.logged += result.action.input.movements.length
-      } else {
-        status = 'rejected'
+      } else if (result.kind === 'rejected') {
+        verdict = result
         text = result.message
-      }
+      } else verdict = result
       const entry: AuditEntry = {
         turn,
-        tool: call.name,
-        input: call.input,
-        status,
+        tool: use.name,
+        input: use.input,
+        status: verdict.kind === 'read' ? 'ok' : verdict.kind === 'ok' ? 'accepted' : verdict.kind,
         ms: Math.round(performance.now() - t0),
       }
-      if (result.kind === 'rejected') entry.detail = result.message
-      checked.push({ call, result, entry, text })
+      if (verdict.kind === 'rejected') entry.detail = verdict.message
+      if (verdict.kind === 'declined') entry.detail = verdict.declined
+      checked.push({ use, verdict, entry, text })
     }
 
-    // Undoing the last batch stands alone: it is about earlier messages, and a change beside it would be
-    // part of "the last thing", whichever order code ran them in. Asking to forget everything stands alone too: the
-    // question it leaves open is what the person's next "sí" answers, and only one question can be open.
-    for (const tool of ['undo_last', 'forget_all_facts']) {
-      const alone = checked.find((c) => c.result.kind === 'action' && c.result.action.tool === tool)
-      if (alone && checked.some((c) => c !== alone && c.result.kind === 'action')) {
-        const message = tool === 'undo_last' ? ALONE : ALONE_FORGET
-        alone.result = { kind: 'rejected', message }
-        alone.text = message
-        alone.entry.status = 'rejected'
-        alone.entry.detail = message
-      }
+    // Layer 2, over the whole turn: ids shown, facts in the person's words, the tools that go alone.
+    const pending = checked.flatMap((c) =>
+      c.verdict.kind === 'ok' ? [{ c, call: c.verdict.call }] : [],
+    )
+    // What this turn's searches found is evidence now (a reply may quote it) but its ids are acted on only from the next turn.
+    const second = checkTurn(
+      pending.map((p) => p.call),
+      { ...shown, evidence: withFound(shown, [...found.values()]).evidence },
+      i.message,
+      { last: turn === MAX_TURNS },
+    )
+    for (const [n, { c }] of pending.entries()) {
+      const after = second[n]
+      if (!after || after.kind === 'read') continue
+      if (after.kind === 'rejected') {
+        c.verdict = after
+        c.text = after.message
+        c.entry.status = 'rejected'
+        c.entry.detail = after.message
+      } else if (after.kind === 'declined') {
+        c.verdict = after
+        c.entry.status = 'declined'
+        c.entry.detail = after.declined
+      } else c.verdict = after
     }
 
-    for (const id of foundThisTurn) i.seen.add(id)
+    // Ids found in this turn may be acted on only from the next one: one that appears in a search of this very turn was guessed.
+    shown = withFound(shown, [...found.values()])
 
-    // A turn that searches and also changes something is not run: the changes were written without the
-    // results, so the model sends them again (a part it wrote blind may be wrong, or missing).
-    const refused = checked.some((c) => c.result.kind === 'rejected')
-    const searched = checked.some((c) => c.result.kind === 'read')
-    const candidates = checked.flatMap((c) => (c.result.kind === 'action' ? [c.result.action] : []))
-    // A text that would be dropped at the end is sent back instead, while there is a turn left to fix it.
-    // (On the last turn it goes on and the commit point drops it.)
-    const flaws = refused || searched || turn === MAX_TURNS ? [] : textFlaws(candidates)
+    const refused = checked.some((c) => c.verdict.kind === 'rejected')
+    const searched = checked.some((c) => c.verdict.kind === 'read')
+    const calls: Call[] = []
+    const declined: Declined[] = []
     for (const c of checked) {
-      if (c.result.kind === 'action') {
-        const { action } = c.result
-        const flaw = flaws.find((f) => f.action === action)
-        if (refused) c.entry.status = 'skipped'
-        else if (searched) c.entry.status = 'held'
-        else if (flaws.length > 0) {
-          c.entry.status = 'repair'
-          if (flaw) c.entry.detail = flaw.reason
-        } else {
-          c.entry.action = actions.length
-          actions.push(action)
-        }
+      const { verdict } = c
+      if (verdict.kind !== 'ok' && verdict.kind !== 'declined') {
+        audit.push(c.entry)
+        continue
       }
+      // A turn that searches and also changes something is not run: the changes were written without the results.
+      if (refused) c.entry.status = 'skipped'
+      else if (searched) c.entry.status = 'held'
+      else if (verdict.kind === 'ok') {
+        c.entry.action = calls.length
+        calls.push(verdict.call)
+      } else declined.push(verdict.declined)
       audit.push(c.entry)
     }
-    if (actions.length > 0) {
+    if (calls.length > 0 || declined.length > 0) {
       return {
-        actions,
+        calls,
+        declined,
         found: [...found.values()],
         audit,
         turns: turn,
-        usage,
+        usage: sumUsage(turnLog),
         turnLog,
         ms: performance.now() - started,
       }
     }
 
     messages.push({ role: 'assistant', content: response.content })
-    const answerFor = (action: Run) => {
-      if (refused) return REFUSED
-      if (searched) return HELD
-      const flaw = flaws.find((f) => f.action === action)
-      return flaw ? repairText(flaw.tool, flaw.reason) : REPAIR_OTHER
-    }
-    const results: Anthropic.ContentBlockParam[] = checked.map(({ call, result, text }) => ({
+    const results: Anthropic.ContentBlockParam[] = checked.map(({ use, verdict, text }) => ({
       type: 'tool_result' as const,
-      tool_use_id: call.id,
-      content: result.kind === 'action' ? answerFor(result.action) : text,
-      is_error: result.kind !== 'read',
+      tool_use_id: use.id,
+      content:
+        verdict.kind === 'read' || verdict.kind === 'rejected' ? text : refused ? REFUSED : HELD,
+      is_error: verdict.kind !== 'read',
     }))
     // Nothing is held on a last turn that cannot be repeated, so say that it is the last.
     if (turn === MAX_TURNS - 1) results.push({ type: 'text', text: LAST_TURN })

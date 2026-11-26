@@ -1,7 +1,7 @@
-import type { Sql } from './db'
+import type { Sql } from './core/db'
 import type { Timings } from './timings'
 
-/** One inbound text message with the times `pnpm latency` reads. Numbers come back from Postgres as strings or numbers. */
+/** One WhatsApp message with the times `pnpm latency` reads. Numbers come back from Postgres as strings or numbers. */
 export interface LatencyRow {
   /** `text`, `image` or `audio`: the headline numbers are the text messages'; the stages cover all three. */
   kind: string
@@ -15,19 +15,20 @@ export interface LatencyRow {
   timings: Timings | null
 }
 
-/** The last `last` inbound text messages, newest first, with the stamps and stages the report reads. */
+/** The last `last` WhatsApp messages, newest first, with the stamps and stages the report reads. */
 export function fetchLatencyRows(sql: Sql, last: number): Promise<LatencyRow[]> {
   return sql<LatencyRow[]>`
     SELECT
       extract(epoch FROM m.typing_sent_at - m.received_at) * 1000 AS typing,
       extract(epoch FROM m.reply_sent_at - m.received_at) * 1000 AS reply,
       extract(epoch FROM r.delivered_at - m.meta_ts) * 1000 AS delivered,
-      m.model_ms AS model,
-      COALESCE(m.action, m.command->>'type') AS type,
-      m.model_turns AS turns,
+      (m.timings->>'model_ms')::float8 AS model,
+      t.label AS type,
+      jsonb_array_length(COALESCE(m.timings->'turns', '[]'::jsonb)) AS turns,
       m.timings, m.kind
-    FROM (SELECT * FROM inbound_message WHERE channel = 'whatsapp' AND kind IN ('text', 'image', 'audio') ORDER BY id DESC LIMIT ${last}) m
-    LEFT JOIN reply r ON r.inbound_id = m.id`
+    FROM (SELECT * FROM wa_message WHERE kind IN ('text', 'image', 'audio') ORDER BY id DESC LIMIT ${last}) m
+    LEFT JOIN turn t ON t.id = m.turn_id
+    LEFT JOIN reply r ON r.wa_message_id = m.id`
 }
 
 const num = (v: number | string | null | undefined): number | null =>

@@ -2,12 +2,13 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type Anthropic from '@anthropic-ai/sdk'
-import { estimateCostUsd, type ModelKey, type Usage } from '../../src/agent'
-import type { Sql } from '../../src/db'
-import { nextOccurrence } from '../../src/reminders/schedule'
+import { estimateCostUsd, type ModelKey, type Usage } from '../../src/agent/models'
+import type { Sql } from '../../src/core/db'
+import { nextOccurrence } from '../../src/domain/reminders/schedule'
 import { fakeGraph, messageBody, photoBody, post, setup, voiceBody } from '../../src/test-harness'
 import type { Timings } from '../../src/timings'
 import type { Transcriber } from '../../src/transcribe'
+import { accountFor } from '../../src/whatsapp/ingest'
 import { gradeTurn, type LiveReminder, type Row, type TurnGrade, withoutHeard } from './grade'
 import type { Scenario } from './schema'
 
@@ -144,8 +145,8 @@ export const waIdOf = (id: string) => `54911${id.slice(1).padStart(8, '0')}`
 /** How many live facts the sender has: a fact is live until it is replaced or forgotten. */
 async function liveFactsOf(sql: Sql, waId: string): Promise<number> {
   const [row] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM fact f JOIN account a ON a.id = f.account_id
-    WHERE a.wa_id = ${waId} AND f.superseded_by IS NULL AND f.forgotten_at IS NULL`
+    SELECT count(*)::int AS n FROM fact f JOIN account_address a ON a.account_id = f.account_id AND a.channel = 'whatsapp'
+    WHERE a.address = ${waId} AND f.ended_at IS NULL`
   return row?.n ?? 0
 }
 
@@ -154,55 +155,66 @@ async function liveRemindersOf(sql: Sql, waId: string): Promise<LiveReminder[]> 
   return sql<LiveReminder[]>`
     SELECT r.what, r.schedule,
       to_char(r.next_due_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'YYYY-MM-DD"T"HH24:MI') AS first
-    FROM reminder r JOIN account a ON a.id = r.account_id
-    WHERE a.wa_id = ${waId} AND r.cancelled_at IS NULL AND r.next_due_at IS NOT NULL
+    FROM reminder r JOIN account_address a ON a.account_id = r.account_id AND a.channel = 'whatsapp'
+    WHERE a.address = ${waId} AND r.ended_at IS NULL AND r.next_due_at IS NOT NULL
     ORDER BY r.id`
 }
 
+/**
+ * Every version of the sender's movements, as the grader's rows: a version that ended and has a newer version of the same entity is
+ * `supersededBy` it (a correction, or an undo that brings an old value back), one that ended with no newer version is deleted.
+ */
 async function rowsOf(sql: Sql, waId: string): Promise<Row[]> {
   return sql<Row[]>`
-    SELECT m.id::int AS id, m.amount::text AS amount, to_char(m.occurred_on, 'YYYY-MM-DD') AS date,
+    SELECT m.id AS id, m.amount::text AS amount, to_char(m.occurred_on, 'YYYY-MM-DD') AS date,
       m.description, m.category, m.payment, m.direction, m.currency,
-      m.superseded_by::int AS "supersededBy", m.deleted_at IS NOT NULL AS deleted
-    FROM movement m JOIN account a ON a.id = m.account_id
-    WHERE a.wa_id = ${waId} ORDER BY m.id`
+      (SELECT n.id FROM movement n WHERE n.entity_id = m.entity_id AND n.id > m.id ORDER BY n.id LIMIT 1) AS "supersededBy",
+      (m.ended_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM movement n WHERE n.entity_id = m.entity_id AND n.id > m.id)) AS deleted
+    FROM movement m JOIN account_address a ON a.account_id = m.account_id AND a.channel = 'whatsapp'
+    WHERE a.address = ${waId} ORDER BY m.id`
 }
 
-/** Puts the starting ledger in as if earlier messages had logged it, at the times the scenario gives. */
+/** Puts the starting ledger in as if earlier messages had logged it, at the times the scenario gives (one seed turn a day before the first message). */
 async function seedLedger(sql: Sql, s: Scenario, waId: string): Promise<Map<string, number>> {
   const refs = new Map<string, number>()
   if (s.seed.length === 0 && s.facts.length === 0 && s.reminders.length === 0) return refs
-  const [account] = await sql<{ id: number }[]>`
-    INSERT INTO account (wa_id) VALUES (${waId})
-    ON CONFLICT (wa_id) DO UPDATE SET wa_id = EXCLUDED.wa_id RETURNING id::int AS id`
-  const [inbound] = await sql<{ id: number }[]>`
-    INSERT INTO inbound_message (wamid, wa_id, kind, body, payload, status)
-    VALUES (${`seed.${waId}`}, ${waId}, 'text', 'seed', '{}'::jsonb, 'done') RETURNING id::int AS id`
-  for (const f of s.facts) {
-    await sql`INSERT INTO fact (account_id, kind, key, value, inbound_message_id)
-      VALUES (${account?.id ?? 0}, ${f.kind}, ${f.key}, ${f.value}, ${inbound?.id ?? 0})`
-  }
-  for (const r of s.reminders) {
-    // Its next date is the first occurrence after the scenario's first turn, as if it had been set a day before.
-    const due = nextOccurrence(r.schedule, new Date(epoch(s.turns[0]?.now ?? '')))
-    // A seed that is not live at the first turn would silently test nothing.
-    if (!due)
-      throw new Error(
-        `${s.id}: the seeded reminder "${r.what}" has no occurrence after the first turn`,
-      )
-    await sql`INSERT INTO reminder (account_id, what, schedule, next_due_at, inbound_message_id)
-      VALUES (${account?.id ?? 0}, ${r.what}, ${sql.json(r.schedule)}, ${due}, ${inbound?.id ?? 0})`
-  }
-  for (const [position, m] of s.seed.entries()) {
-    const loggedAt = new Date(epoch(`${m.loggedOn ?? m.on}T${m.at}`)).toISOString()
-    const [row] = await sql<{ id: number }[]>`
-      INSERT INTO movement (account_id, inbound_message_id, position, direction, amount, currency,
-        occurred_on, description, category, payment, confidence, created_at)
-      VALUES (${account?.id ?? 0}, ${inbound?.id ?? 0}, ${position}, ${m.direction}, ${m.amount},
-        ${m.currency}, ${m.on}, ${m.description}, ${m.category}, ${m.payment}, 'high', ${loggedAt})
-      RETURNING id::int AS id`
-    refs.set(m.ref, row?.id ?? 0)
-  }
+  const accountId = await accountFor(sql, waId)
+  const first = epoch(s.turns[0]?.now ?? '')
+  await sql.begin(async (raw) => {
+    const tx = raw as unknown as Sql
+    const [turn] = await tx<{ id: number }[]>`
+      INSERT INTO turn (account_id, channel, created_at, label, reply)
+      VALUES (${accountId}, 'whatsapp', ${new Date(first - 86_400_000).toISOString()}, 'seed', 'seed') RETURNING id AS id`
+    const madeIn = turn?.id ?? 0
+    // The seeded ledger is not something the person did in this conversation: an undo has nothing of theirs to take back (as in v1,
+    // where the seed was no batch). The seed turn is marked as already undone, without ending anything.
+    await tx`INSERT INTO turn (account_id, channel, created_at, label, reply, undoes)
+      VALUES (${accountId}, 'whatsapp', ${new Date(first - 86_400_000).toISOString()}, 'undo', 'seed', ${madeIn})`
+    for (const f of s.facts) {
+      await tx`INSERT INTO fact (account_id, made_in, kind, key, value, logged_at)
+        VALUES (${accountId}, ${madeIn}, ${f.kind}, ${f.key}, ${f.value}, ${new Date(first - 86_400_000).toISOString()})`
+    }
+    for (const r of s.reminders) {
+      // Its next date is the first occurrence after the scenario's first turn, as if it had been set a day before.
+      const due = nextOccurrence(r.schedule, new Date(first))
+      // A seed that is not live at the first turn would silently test nothing.
+      if (!due)
+        throw new Error(
+          `${s.id}: the seeded reminder "${r.what}" has no occurrence after the first turn`,
+        )
+      await tx`INSERT INTO reminder (account_id, made_in, what, schedule, next_due_at, logged_at)
+        VALUES (${accountId}, ${madeIn}, ${r.what}, ${tx.json(r.schedule)}, ${due}, ${new Date(first - 86_400_000).toISOString()})`
+    }
+    for (const m of s.seed) {
+      const loggedAt = new Date(epoch(`${m.loggedOn ?? m.on}T${m.at}`)).toISOString()
+      const [row] = await tx<{ id: number }[]>`
+        INSERT INTO movement (account_id, made_in, direction, amount, currency, occurred_on, description, category, payment, confidence, logged_at)
+        VALUES (${accountId}, ${madeIn}, ${m.direction}, ${m.amount}, ${m.currency}, ${m.on}, ${m.description}, ${m.category},
+          ${m.payment}, 'high', ${loggedAt})
+        RETURNING id AS id`
+      refs.set(m.ref, row?.id ?? 0)
+    }
+  })
   return refs
 }
 
@@ -223,7 +235,7 @@ const actionOf = (action: string | null, reply: string): Action => {
 }
 
 /**
- * Plays one scenario through the real pipeline: webhook payload in, `createApp` and `createProcessor`
+ * Plays one scenario through the real pipeline: webhook payload in, `createWarren`
  * on a migrated database, the real model client behind `parseMessage`, a fake Graph. Turns run in
  * order, each one only after the previous reply is stored, as one sender's messages do in production.
  * It stops at the first turn that is not right: later turns would be graded on a ledger that already
@@ -257,15 +269,7 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
   })
   try {
     const refs = await seedLedger(env.sql, s, waId)
-    let previous: { id: number; at: number } | null = null
     for (const [k, turn] of s.turns.entries()) {
-      // The exchange window counts from `received_at`, which is the real clock: age the previous
-      // message by the gap the scenario says passed between the two turns.
-      if (previous) {
-        const gap = Math.max(0, (epoch(turn.now) - previous.at) / 1000)
-        await env.sql`UPDATE inbound_message SET received_at = now() - make_interval(secs => ${gap})
-          WHERE id = ${previous.id}`
-      }
       const before = await rowsOf(env.sql, waId)
       const wamid = `wamid.${s.id}.${k}`
       const callsBefore = calls.length
@@ -284,15 +288,8 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
       if (env.meter.exhausted)
         return { ...base, status: 'budget', turns, failedTurn: null, error: null }
 
-      if (stored.action === 'log' || stored.action === 'multi') {
-        // New movements are stamped with the clock of the turn, not the real one. A corrected row
-        // keeps the time of the one it replaced, so only rows that replace nothing are restamped.
-        await env.sql`UPDATE movement SET created_at = ${new Date(epoch(turn.now)).toISOString()}
-          WHERE inbound_message_id = ${stored.id}
-            AND NOT EXISTS (SELECT 1 FROM movement o WHERE o.superseded_by = movement.id)`
-      }
-      const failed = stored.status !== 'done' || stored.reply_text === null
-      const reply = stored.reply_text ?? app.calls.sent.at(-1)?.body ?? ''
+      const failed = stored.status !== 'done' || stored.reply === null
+      const reply = stored.reply ?? app.calls.sent.at(-1)?.body ?? ''
       const after = await rowsOf(env.sql, waId)
       const grade = gradeTurn({
         turn,
@@ -302,7 +299,7 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         refs,
         reply,
         failed,
-        commandType: stored.command?.some((c) => c.tool === 'summarize') ? 'query' : stored.action,
+        commandType: stored.calls?.some((c) => c.tool === 'summarize') ? 'query' : stored.action,
         liveFacts: await liveFactsOf(env.sql, waId),
         liveReminders: await liveRemindersOf(env.sql, waId),
       })
@@ -314,17 +311,18 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         reply,
         grade,
         wallMs,
-        modelMs: stored.model_ms,
-        modelTurns: stored.model_turns,
+        modelMs: stored.timings?.model_ms ?? null,
+        modelTurns: stored.timings?.turns?.length ?? null,
         action: actionOf(stored.action, reply),
-        parsed: stored.parsed,
+        parsed: stored.calls,
         capped: turn.maxModelTurns !== undefined,
         overTurnCap:
-          turn.maxModelTurns !== undefined && (stored.model_turns ?? 0) > turn.maxModelTurns,
+          turn.maxModelTurns !== undefined &&
+          (stored.timings?.turns?.length ?? 0) > turn.maxModelTurns,
         outputTokens: stored.timings?.turns?.length
           ? stored.timings.turns.reduce((n, t) => n + t.output, 0)
           : null,
-        audit: (stored.tool_calls ?? []).map(({ turn, tool, status, detail }) => ({
+        audit: (stored.audit ?? []).map(({ turn, tool, status, detail }) => ({
           turn,
           tool,
           status,
@@ -333,7 +331,6 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
         error: stored.error,
         costUsd: calls.slice(callsBefore).reduce((sum, c) => sum + c.costUsd, 0),
       })
-      previous = { id: stored.id, at: epoch(turn.now) }
       if (!grade.ok) return { ...base, status: 'fail', turns, failedTurn: k, error: null }
     }
     return { ...base, status: 'pass', turns, failedTurn: null, error: null }
@@ -350,25 +347,24 @@ export async function runScenario(s: Scenario, env: Env): Promise<ScenarioResult
 interface Stored {
   id: number
   status: string
-  reply_text: string | null
+  /** What the person got: the turn's reply (a message that failed has none). */
+  reply: string | null
+  /** The turn's label (log, correct, delete, summarize, ...). */
   action: string | null
-  command: { tool: string }[] | null
-  parsed: unknown
+  /** The tool calls the turn ran. */
+  calls: { tool: string }[] | null
   error: string | null
-  model_ms: number | null
-  model_turns: number | null
   timings: Timings | null
-  tool_calls: { turn: number; tool: string; status: string; detail?: string }[] | null
+  audit: { turn: number; tool: string; status: string; detail?: string }[] | null
 }
 
-/** Waits until the message has left the processor: replied, failed or given up. */
+/** Waits until the message has left the worker: replied, failed or given up. */
 async function waitFor(sql: Sql, wamid: string, timeoutMs = 60_000): Promise<Stored> {
   const end = Date.now() + timeoutMs
   for (;;) {
     const [row] = await sql<Stored[]>`
-      SELECT id::int AS id, status, reply_text, action, command, parsed, error, model_ms, model_turns,
-        timings, tool_calls
-      FROM inbound_message WHERE wamid = ${wamid}`
+      SELECT m.id AS id, m.status, t.reply, t.label AS action, t.calls, m.error, m.timings, m.audit
+      FROM wa_message m LEFT JOIN turn t ON t.id = m.turn_id WHERE m.wamid = ${wamid}`
     if (row && ['done', 'failed', 'unknown', 'ignored'].includes(row.status)) return row
     if (Date.now() > end) throw new Error(`timed out waiting for ${wamid}`)
     await new Promise((r) => setTimeout(r, 10))

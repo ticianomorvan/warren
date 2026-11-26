@@ -1,260 +1,156 @@
+import { createHash } from 'node:crypto'
 import { type McpServer, requireScopes } from '@modelcontextprotocol/server'
-import { z } from 'zod'
-import { checkInput } from '../agent/calls'
+import type { z } from 'zod'
+import { whatsappAddress } from '../access'
+import type { Outcome } from '../core/apply'
 import {
-  CATEGORIES,
-  FACT_KINDS,
+  type Call,
+  COMMANDS,
   type GROUPS,
-  isTimeGroup,
-  PERIODS,
-  RangeSchema,
-  TOOL_INPUTS,
-} from '../agent/schema'
-import type { Sql } from '../db'
-import { allLiveFacts } from '../facts'
-import { findMovements, type GroupTotal, type MovementRow, type QueryTotal } from '../ledger'
+  type McpBlock,
+  type OUTPUTS,
+  type Tool,
+  type WriteTool,
+  writes,
+} from '../core/commands'
+import type { Sql } from '../core/db'
+import { declineLine, REPLY } from '../core/describe'
+import { money } from '../core/es'
+import { checkValues } from '../core/guards'
+import type { Undone } from '../core/history'
+import { sensitive } from '../core/secrets'
+import { commit } from '../core/turn'
+import { allLiveFacts, type FactRow } from '../domain/facts'
+import { findMovements, type MovementRow } from '../domain/movements'
+import { liveReminders, type ReminderRow } from '../domain/reminders/db'
+import { describeReminder } from '../domain/reminders/describe'
+import { groupLabel, MAX_BUCKETS, rangeLabel, type Side } from '../domain/render-summary'
+import { runSummary } from '../domain/run-summary'
+import { change, formatPercent } from '../domain/summary'
+import { type GroupTotal, isTimeGroup, type QueryTotal } from '../domain/totals'
 import { log } from '../log'
-import { formatMoney } from '../render'
-import { groupLabel, MAX_BUCKETS, rangeLabel, type Side } from '../render-summary'
-import { runSummary } from '../run-summary'
-import { change, formatPercent } from '../summary'
 import { argentinaToday } from '../time'
 
-/** The scope each kind of tool needs (`src/auth/config.ts` has the full list). */
-export const READ_SCOPE = 'ledger:read'
+/**
+ * Warren's MCP tools, all of them built from the registry: every entry that has an `mcp` block is a tool, with the entry's own input
+ * (plus the fields only a client sends: `request_id`, a page) and a real output schema. A read runs its query; a write goes through the
+ * same `checkValues` and `commit` as WhatsApp's, on the channel `mcp`, so there is one write path and one undo. `accountId` is the door's:
+ * no tool takes it from its input, and every query takes it.
+ */
 
-/** The longest a free-text input may be (a word or two is what they hold), a day, an amount: a client cannot send a book. */
-export const MAX_TEXT = 200
-export const MAX_DAY = 20
-export const MAX_AMOUNT = 20
+export interface ToolContext {
+  sql: Sql
+  /** The person: from the verified token, never from an argument. */
+  accountId: number
+  now: () => Date
+}
 
 /** A page of `warren_find_movements`: 25 rows are about 3k tokens, far under what a client takes in one result. */
 export const DEFAULT_PAGE = 25
-export const MAX_PAGE = 50
-/**
- * Groups listed per direction and currency in `warren_summarize`'s structured result, for a grouping that is not by time (the
- * biggest first, as the database orders them); a grouping by day, week or month keeps the latest `MAX_BUCKETS`, as the text does.
- */
+/** Groups listed per direction and currency in a summary that is not by time (the biggest first); a grouping by time keeps the latest `MAX_BUCKETS`. */
 export const MAX_GROUPS_LISTED = 100
 
-/** Closed (`strict`) for the test that holds the real output to it; open in production, so a field added later breaks no client. */
-export function outputSchemas(strict: boolean) {
-  const obj = strict ? z.strictObject : z.looseObject
-  const money = {
-    amount: z.string().describe('Decimal string, exact. Quote it as given.'),
-    display: z.string().describe('The amount as Warren shows it, e.g. "$3.500" or "US$ 20".'),
-  }
-  const movement = obj({
-    id: z.number().int().describe('Warren id of the movement.'),
-    date: z.string().describe('yyyy-mm-dd, Argentine day.'),
-    time: z.string().describe('hh:mm Argentine time when it was logged.'),
-    direction: z.enum(['in', 'out']).describe('"out" is money spent, "in" money received.'),
-    ...money,
-    currency: z.enum(['ARS', 'USD']),
-    description: z.string(),
-    category: z.enum(CATEGORIES),
-    payment: z.string().nullable(),
-  })
-  const total = obj({
-    direction: z.enum(['in', 'out']),
-    currency: z.enum(['ARS', 'USD']),
-    count: z.number().int(),
-    ...money,
-  })
-  const group = obj({
-    key: z.string(),
-    label: z.string().describe('The group in words, as Warren says it.'),
-    direction: z.enum(['in', 'out']),
-    currency: z.enum(['ARS', 'USD']),
-    count: z.number().int(),
-    ...money,
-  })
-  const side = obj({
-    from: z.string(),
-    to: z.string(),
-    label: z.string().describe('The range in words, e.g. "Octubre (1–31)".'),
-    totals: z.array(total).describe('One per direction and currency; never added together.'),
-    groups: z.array(group),
-    groups_omitted: z
-      .number()
-      .int()
-      .describe('Groups left out of `groups` (the text lists the rest).'),
-  })
-  return {
-    find: obj({
-      movements: z.array(movement),
-      next_cursor: z
-        .string()
-        .nullable()
-        .describe('Pass as `cursor` for the next page; null at the end.'),
-    }),
-    summarize: obj({
-      ...side.shape,
-      compared_with: side.nullable(),
-      changes: z
-        .array(
-          obj({
-            direction: z.enum(['in', 'out']),
-            currency: z.enum(['ARS', 'USD']),
-            way: z
-              .enum(['more', 'less', 'same'])
-              .describe('How the asked range went from the compared one.'),
-            ...money,
-            percent: z
-              .string()
-              .nullable()
-              .describe('"+20,5%", or null when there was nothing before.'),
-          }),
-        )
-        .describe('Empty unless the summary was compared.'),
-      summary: z.string().describe('The same summary as Warren writes it on WhatsApp, in Spanish.'),
-    }),
-    ...writeOutputs(obj, movement),
-    facts: obj({
-      facts: z.array(
-        obj({
-          id: z.number().int(),
-          kind: z.enum(FACT_KINDS),
-          key: z.string(),
-          value: z.string(),
-        }),
-      ),
-      total: z.number().int(),
-    }),
-  }
+const QUOTE =
+  'Every amount is computed by Warren: quote the amounts and totals as given (use `display` when showing money) and never add, subtract, convert or round them yourself.'
+const WRITES =
+  'Writes the same ledger and memory as WhatsApp, through the same checks; the person can undo it from WhatsApp ("deshacer") and `warren_undo_last` takes back the newest change of either channel. Nothing is overwritten: a correction adds a version and a delete only marks the movement. The result carries `record`, what changed as Warren writes it (Spanish).'
+
+type Result = {
+  isError?: true
+  structuredContent: Record<string, unknown>
+  content: { type: 'text'; text: string }[]
 }
 
-/** What every change returns: its batch (null when nothing was written), the record Warren renders and how to take it back. */
-const writeBase = {
-  batch: z
-    .number()
-    .int()
-    .nullable()
-    .describe('The batch this change belongs to; null when nothing was written.'),
-  record: z.string().describe('What changed, as Warren writes it on WhatsApp (Spanish).'),
-  undo: z
-    .string()
-    .nullable()
-    .describe('How to take the change back; null when nothing was written.'),
-  replayed: z
-    .boolean()
-    .describe(
-      'True when this is the answer to an earlier call with the same request_id: nothing was written now.',
-    ),
-}
-
-function writeOutputs(obj: typeof z.looseObject, movement: ReturnType<typeof z.looseObject>) {
-  const base = writeBase
-  const factView = obj({
-    id: z.number().int(),
-    kind: z.enum(FACT_KINDS),
-    key: z.string(),
-    value: z.string(),
-  })
-  return {
-    log: obj({ ...base, movements: z.array(movement) }),
-    correct: obj({
-      ...base,
-      changed: z
-        .array(z.string())
-        .describe('The fields the correction changed; empty when it was already so.'),
-      before: movement,
-      after: movement,
-    }),
-    deleted: obj({ ...base, deleted: movement }),
-    undone: obj({
-      ...base,
-      undone_batch: z.number().int(),
-      items: z.array(
-        obj({
-          kind: z.enum([
-            'logged',
-            'corrected',
-            'deleted',
-            'fact_removed',
-            'fact_restored',
-            'fact_reverted',
-          ]),
-          movement: movement.optional(),
-          from: movement.optional(),
-          fact: factView.optional(),
-          was: z.string().optional(),
-        }),
-      ),
-    }),
-    remembered: obj({
-      ...base,
-      status: z.enum(['new', 'updated', 'unchanged']),
-      fact: factView,
-      previous_value: z.string().nullable(),
-    }),
-    forgotten: obj({ ...base, forgotten: z.array(factView) }),
-  }
-}
-
-const OUTPUTS = outputSchemas(false)
-
-export const fail = (text: string) => ({
-  isError: true as const,
-  content: [{ type: 'text' as const, text }],
-})
-
-export const done = <T extends Record<string, unknown>>(output: T) => ({
+const done = (output: Record<string, unknown>): Result => ({
   structuredContent: output,
-  content: [{ type: 'text' as const, text: JSON.stringify(output) }],
+  content: [{ type: 'text', text: JSON.stringify(output) }],
 })
 
-const READ_ONLY = {
-  readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: false,
-} as const
+/** A call that was refused or changed nothing: a typed `code` for the client's agent, and the line Warren says. */
+export const fail = (code: string, message: string): Result => ({
+  isError: true,
+  structuredContent: { code, message },
+  content: [{ type: 'text', text: message }],
+})
 
-export const QUOTE =
-  'Every amount is computed by Warren from the ledger: quote the amounts and totals as given (use `display` ' +
-  'when showing money) and never add, subtract, convert or round them yourself.'
+const unavailable = (tool: string, error: unknown) => {
+  log('mcp_tool_failed', { tool, error: error instanceof Error ? error.name : 'unknown' }, 'error')
+  return fail('unavailable', 'Warren could not read your data right now. Try again in a moment.')
+}
 
-// ---- The cursor of a page: the id the next page starts below, opaque to the client.
+// ---- What a client may send: v1's bounds (a text, a day, an amount), so a request body that fits `MAX_BODY` cannot fill a row.
 
-export const encodeCursor = (beforeId: number): string =>
-  Buffer.from(`m${beforeId}`).toString('base64url')
+const MAX_TEXT = 200
+const MAX_SHORT = 20
+/** The fields that are a day or an amount; every other text is a description, a payment, words to find, a fact or a reminder. */
+const SHORT = new Set(['amount', 'date', 'from', 'to'])
+const MAX_TERMS = 10
 
-/** The id inside a cursor we made, or null for anything else. */
+/** Every string an input holds, with the name of the field it is in. */
+function* strings(value: unknown, key = ''): Generator<[string, string]> {
+  if (typeof value === 'string') yield [key, value]
+  else if (Array.isArray(value)) for (const v of value) yield* strings(v, key)
+  else if (value && typeof value === 'object')
+    for (const [k, v] of Object.entries(value)) yield* strings(v, k)
+}
+
+/** Why an input is too long for what it is, or null. */
+function oversize(tool: Tool, input: unknown): string | null {
+  for (const [key, text] of strings(input)) {
+    const max = SHORT.has(key) ? MAX_SHORT : MAX_TEXT
+    if (text.length > max) return `${key} is too long: at most ${max} characters`
+    if (tool === 'find_movements' && key === 'text' && text.trim().split(/\s+/).length > MAX_TERMS)
+      return `text has too many words: at most ${MAX_TERMS}`
+  }
+  return null
+}
+
+// ---- The cursor of a page: the movement (entity id) the next page starts below, opaque to the client.
+
+export const encodeCursor = (beforeEntity: number): string =>
+  Buffer.from(`m${beforeEntity}`).toString('base64url')
+
+/** The entity id inside a cursor we made, or null for anything else. */
 export function decodeCursor(cursor: string): number | null {
   if (cursor.length > 32 || !/^[A-Za-z0-9_-]+$/.test(cursor)) return null
   const text = Buffer.from(cursor, 'base64url').toString('utf8')
-  const id = /^m([1-9]\d{0,14})$/.exec(text)?.[1]
-  return id !== undefined && encodeCursor(Number(id)) === cursor ? Number(id) : null
+  const n = /^m([1-9]\d{0,14})$/.exec(text)?.[1]
+  return n !== undefined && encodeCursor(Number(n)) === cursor ? Number(n) : null
 }
 
-// ---- What each tool shows.
+// ---- What each tool shows
 
-export const presentMovement = (m: MovementRow) => ({
+type Out<T extends Tool> = T extends keyof typeof OUTPUTS ? z.infer<(typeof OUTPUTS)[T]> : never
+
+const movementView = (m: MovementRow) => ({
   id: m.id,
   date: m.date,
-  time: m.time ?? '',
+  time: m.time,
   direction: m.direction,
   amount: m.amount,
-  display: formatMoney(m.amount, m.currency),
+  display: money(m.amount, m.currency),
   currency: m.currency,
   description: m.description,
   category: m.category,
   payment: m.payment,
 })
+const factView = (f: FactRow) => ({ id: f.id, kind: f.kind, key: f.key, value: f.value })
+const reminderView = (r: ReminderRow, today: string) => ({
+  id: r.id,
+  what: r.what,
+  next_due_at: r.nextDueAt ? r.nextDueAt.toISOString() : null,
+  when: describeReminder(r, today),
+})
 
-const presentTotal = (t: QueryTotal) => ({
+const totalView = (t: QueryTotal) => ({
   direction: t.direction,
   currency: t.currency,
   count: t.count,
   amount: t.total,
-  display: formatMoney(t.total, t.currency),
+  display: money(t.total, t.currency),
 })
 
-/**
- * The groups of a range that are listed, and how many are left out. Each direction and currency has its own: one with many
- * groups never crowds another out. By time the latest buckets are kept (what `renderSummary` shows); otherwise the biggest.
- */
+/** The groups of a range that are listed, and how many are left out: each direction and currency has its own, so one never crowds another out. */
 export function listGroups(groups: GroupTotal[], by: (typeof GROUPS)[number]) {
   const perPair = new Map<string, GroupTotal[]>()
   for (const g of groups) {
@@ -272,24 +168,20 @@ export function listGroups(groups: GroupTotal[], by: (typeof GROUPS)[number]) {
   return { listed, omitted: groups.length - listed.length }
 }
 
-const presentSide = (s: Side, by: (typeof GROUPS)[number], today: string) => {
+const sideView = (s: Side, by: (typeof GROUPS)[number], today: string) => {
   const { listed, omitted } = listGroups(s.groups, by)
   return {
     from: s.range.from,
     to: s.range.to,
     label: rangeLabel(s.range, today),
-    totals: s.totals.map(presentTotal),
-    groups: listed.map((g: GroupTotal) => ({
-      key: g.key,
-      label: groupLabel(by, g, today),
-      ...presentTotal(g),
-    })),
+    totals: s.totals.map(totalView),
+    groups: listed.map((g) => ({ key: g.key, label: groupLabel(by, g, today), ...totalView(g) })),
     groups_omitted: omitted,
   }
 }
 
 /** How the asked range went from the compared one, per direction and currency, from `summary.ts` (exact, in cents). */
-function changes(now: Side, before: Side) {
+function changesView(now: Side, before: Side) {
   const pairs = new Map<string, { direction: 'in' | 'out'; currency: 'ARS' | 'USD' }>()
   for (const t of [...now.totals, ...before.totals]) {
     pairs.set(`${t.direction}:${t.currency}`, { direction: t.direction, currency: t.currency })
@@ -302,237 +194,330 @@ function changes(now: Side, before: Side) {
       ...p,
       way: c.way,
       amount: c.amount,
-      display: formatMoney(c.amount, p.currency),
+      display: money(c.amount, p.currency),
       percent: c.tenths === null ? null : formatPercent(c.tenths),
     }
   })
 }
 
-// ---- The tools' inputs: the agent's own schemas (`TOOL_INPUTS`), without what is WhatsApp's (`text`), with words a client reads.
-
-const findBase = TOOL_INPUTS.find_movements()
-const findInput = findBase.omit({ limit: true }).extend({
-  text: z
-    .string()
-    .max(MAX_TEXT)
-    .optional()
-    .describe(
-      'Words of the description or the category, all of them must match (accents and case ignored), e.g. "café" or "nafta ypf".',
-    ),
-  from: z.string().max(MAX_DAY).optional().describe('First day, yyyy-mm-dd (inclusive).'),
-  to: z.string().max(MAX_DAY).optional().describe('Last day, yyyy-mm-dd (inclusive).'),
-  category: findBase.shape.category.describe('Only this category.'),
-  payment: z
-    .string()
-    .max(MAX_TEXT)
-    .optional()
-    .describe('Part of how it was paid, e.g. "visa" or "efectivo" (accents and case ignored).'),
-  amount: z
-    .string()
-    .max(MAX_AMOUNT)
-    .optional()
-    .describe('Exactly this amount, a decimal string such as "3500" or "1500.50".'),
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(MAX_PAGE)
-    .default(DEFAULT_PAGE)
-    .describe(`Page size, 1 to ${MAX_PAGE}.`),
-  cursor: z.string().max(32).optional().describe('The `next_cursor` of the previous page.'),
-})
-
-const rangeBase = RangeSchema()
-const summarizeBase = TOOL_INPUTS.summarize()
-const summarizeInput = summarizeBase.omit({ text: true }).extend({
-  range: rangeBase
-    .extend({
-      period: rangeBase.shape.period.describe(
-        `${PERIODS.join(', ')}. Use month, year or dates with the fields below; a field a period does not use stays 0 or "". Weeks run Monday to Sunday; a period that is not over ends today.`,
-      ),
-      month: rangeBase.shape.month.describe('period "month": the month number, 1 to 12.'),
-      year: rangeBase.shape.year.describe(
-        'period "month" (0 = the latest such month not in the future) or "year": the year.',
-      ),
-      from: z
-        .string()
-        .max(MAX_DAY)
-        .default('')
-        .describe('period "dates": yyyy-mm-dd, mm-dd or dd.'),
-      to: z
-        .string()
-        .max(MAX_DAY)
-        .default('')
-        .describe('period "dates": same forms; "" is the same day as `from`.'),
-    })
-    .describe('The days to total, in Argentine days.'),
-  group_by: summarizeBase.shape.group_by.describe(
-    'Split the totals by category, payment (how it was paid), day, week or month; "none" for the totals only. A comparison cannot be grouped by day, week or month.',
-  ),
-  compare_to: summarizeBase.shape.compare_to.describe(
-    '"previous" compares with the range just before (cut to the same stretch while the period is running), "range" with the range in `other`, "none" does not compare.',
-  ),
-  other: z
-    .string()
-    .max(MAX_TEXT)
-    .default('')
-    .describe(
-      'Only with compare_to "range": the second range as text, e.g. "last_month", "month:10", "month:10:2025", "year:2025" or "dates:11-01..11-15".',
-    ),
-  direction: summarizeBase.shape.direction.describe(
-    '"out" for spending, "in" for income, null for both.',
-  ),
-  category: summarizeBase.shape.category.describe('Only this category, or null.'),
-  payment: z
-    .string()
-    .max(MAX_TEXT)
-    .nullable()
-    .default(null)
-    .describe('Part of how it was paid (e.g. "visa"), or null.'),
-  description: z
-    .string()
-    .max(MAX_TEXT)
-    .nullable()
-    .default(null)
-    .describe(
-      'Words of the description to total or count, e.g. "café" for "how many coffees"; no digits. Null for all.',
-    ),
-})
-
-export interface ToolContext {
-  sql: Sql
-  /** The person: from the verified token, never from an argument. */
-  accountId: number
-  /** Their WhatsApp id: a write's batch carries it, so an undo from WhatsApp finds it. */
-  waId: string
-  now: () => Date
+function undoneItem(u: Undone, today: string): Out<'undo_last'>['items'][number] {
+  switch (u.kind) {
+    case 'logged':
+    case 'deleted':
+      return { kind: u.kind, movement: movementView(u.movement) }
+    case 'corrected':
+      return { kind: u.kind, movement: movementView(u.to), from: movementView(u.from) }
+    case 'fact_removed':
+    case 'fact_restored':
+      return { kind: u.kind, fact: factView(u.fact) }
+    case 'fact_reverted':
+      return { kind: u.kind, fact: factView(u.fact), was: u.was }
+    case 'reminder_removed':
+    case 'reminder_restored':
+      return { kind: u.kind, reminder: reminderView(u.reminder, today) }
+  }
 }
 
-/** One failed read, told to the client without detail and to the log without data. */
-export function unavailable(tool: string, error: unknown) {
-  log('mcp_tool_failed', { tool, error: error instanceof Error ? error.name : 'unknown' }, 'error')
-  return fail('Warren could not read your data right now. Try again in a moment.')
+// ---- Reads
+
+const readOnly = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const
+
+async function find(c: ToolContext, input: Record<string, unknown>) {
+  const { limit = DEFAULT_PAGE, cursor, ...filter } = input as { limit?: number; cursor?: string }
+  const long = oversize('find_movements', filter)
+  if (long) return fail('invalid', long)
+  const now = c.now()
+  const checked = checkValues('find_movements', filter, { today: argentinaToday(now), now })
+  if (checked.kind !== 'read') {
+    return fail('invalid', checked.kind === 'rejected' ? checked.message : 'invalid input')
+  }
+  let beforeEntity: number | undefined
+  if (cursor !== undefined) {
+    const decoded = decodeCursor(cursor)
+    if (decoded === null)
+      return fail('invalid', 'Invalid cursor. Use the `next_cursor` of a previous result.')
+    beforeEntity = decoded
+  }
+  // One more than a page, to know whether there is a next one.
+  const rows = await findMovements(
+    c.sql,
+    c.accountId,
+    { ...checked.filter, limit: limit + 1 },
+    beforeEntity ? { beforeEntity } : {},
+  )
+  const page = rows.slice(0, limit)
+  const last = page.at(-1)
+  const output: Out<'find_movements'> = {
+    movements: page.map(movementView),
+    next_cursor: rows.length > limit && last ? encodeCursor(last.id) : null,
+  }
+  return done(output)
+}
+
+async function summarizeTool(c: ToolContext, input: Record<string, unknown>) {
+  const long = oversize('summarize', input)
+  if (long) return fail('invalid', long)
+  const now = c.now()
+  const today = argentinaToday(now)
+  const checked = checkValues('summarize', input, { today, now })
+  if (checked.kind !== 'ok' || checked.call.tool !== 'summarize') {
+    return fail('invalid', checked.kind === 'rejected' ? checked.message : 'invalid input')
+  }
+  const q = checked.call.input
+  // One snapshot for the asked range and the compared one.
+  const ran = await c.sql.begin('isolation level repeatable read read only', (tx) =>
+    runSummary(tx as unknown as Sql, c.accountId, q, today),
+  )
+  const by = q.group_by ?? 'none'
+  const output: Out<'summarize'> = {
+    ...sideView(ran.current, by, today),
+    compared_with: ran.previous ? sideView(ran.previous, by, today) : null,
+    changes: ran.previous ? changesView(ran.current, ran.previous) : [],
+    summary: ran.lines.join('\n'),
+  }
+  return done(output)
+}
+
+const READS: Partial<
+  Record<Tool, (c: ToolContext, input: Record<string, unknown>) => Promise<Result>>
+> = {
+  find_movements: find,
+  summarize: summarizeTool,
+  list_facts: async (c) => {
+    const facts = await allLiveFacts(c.sql, c.accountId)
+    const output: Out<'list_facts'> = { facts: facts.map(factView), total: facts.length }
+    return done(output)
+  },
+  list_reminders: async (c) => {
+    const today = argentinaToday(c.now())
+    const rows = await liveReminders(c.sql, c.accountId)
+    const output: Out<'list_reminders'> = { reminders: rows.map((r) => reminderView(r, today)) }
+    return done(output)
+  },
+}
+
+// ---- Writes
+
+/** JSON with the keys of every object in order: the same call always hashes the same. */
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+/** What identifies a call: its tool and its checked input. A request id may only ever stand for one of these. */
+const callHash = (call: Call) =>
+  createHash('sha256')
+    .update(stable({ tool: call.tool, input: call.input }))
+    .digest('hex')
+
+/**
+ * The client's view of what a write did: the turn and the line when it changed something, and what it came to when it did not (`turn`
+ * null for a no-op, a typed refusal for the rest). Built once, from the outcome.
+ */
+function presentWrite(o: Outcome, line: string, turn: number | null, today: string): Result {
+  const base = { record: line, turn, replayed: false }
+  switch (o.tool) {
+    case 'log_movements':
+      return done({
+        ...base,
+        movements: o.movements.map(movementView),
+      } satisfies Out<'log_movements'>)
+    case 'correct_movement':
+      if (o.status === 'gone') return fail('gone', line)
+      if (o.status === 'unchanged') {
+        return done({
+          ...base,
+          changed: [],
+          before: movementView(o.old),
+          after: movementView(o.old),
+        } satisfies Out<'correct_movement'>)
+      }
+      return done({
+        ...base,
+        changed: o.changed,
+        before: movementView(o.old),
+        after: movementView(o.next),
+      } satisfies Out<'correct_movement'>)
+    case 'delete_movement':
+      if (o.status === 'gone') return fail('gone', line)
+      return done({ ...base, deleted: movementView(o.old) } satisfies Out<'delete_movement'>)
+    case 'undo_last':
+      if (o.status !== 'applied') return fail(o.status, line)
+      return done({
+        ...base,
+        undone_turn: o.turn,
+        items: o.items.map((u) => undoneItem(u, today)),
+      } satisfies Out<'undo_last'>)
+    case 'remember_fact':
+      if (o.status === 'full') return fail('full', line)
+      if (o.status === 'unchanged') {
+        return done({
+          ...base,
+          status: 'unchanged',
+          fact: factView(o.fact),
+          previous_value: null,
+        } satisfies Out<'remember_fact'>)
+      }
+      return done({
+        ...base,
+        status: o.before === undefined ? 'new' : 'updated',
+        fact: factView(o.fact),
+        previous_value: o.before ?? null,
+      } satisfies Out<'remember_fact'>)
+    case 'forget_fact':
+      if (o.status === 'gone') return fail('gone', line)
+      return done({ ...base, forgotten: o.facts.map(factView) } satisfies Out<'forget_fact'>)
+    case 'set_reminder':
+      if (o.status !== 'applied') return fail(o.status, line)
+      return done({
+        ...base,
+        reminder: reminderView(o.reminder, today),
+      } satisfies Out<'set_reminder'>)
+    case 'cancel_reminder':
+      if (o.status === 'gone') return fail('gone', line)
+      return done({
+        ...base,
+        reminder: reminderView(o.reminder, today),
+      } satisfies Out<'cancel_reminder'>)
+    case 'forget_all_confirmed':
+      // Not offered over MCP (it needs the person's own "sí" on WhatsApp): the registry has no `mcp` block for it.
+      throw new Error('forget_all_confirmed is not an MCP tool')
+  }
 }
 
 /**
- * The three read tools of slice 5.2. `accountId` is the door's, so a tool can only ever read the caller's own rows; every
- * query takes it. Nothing returned is logged.
+ * One MCP write: the same value guards as WhatsApp (`checkValues`), then `commit` on the channel `mcp`, with the same undo (every store).
+ * `request_id` makes a retry safe: under the account lock, a request seen before returns its first answer when the call is the same one
+ * (tool and checked input) and a typed refusal when it is another; the request's row is stored in the turn's own transaction. A call that
+ * changes nothing (a refusal, a no-op) leaves no turn and no row (`requireChange`), so the same id can be sent again.
  */
-export function registerReadTools(server: McpServer, c: ToolContext) {
-  server.registerTool(
-    'warren_find_movements',
-    {
-      title: 'Find movements',
-      description:
-        "Lists the person's movements (spending and income logged in Warren), newest first, optionally filtered by words, " +
-        'dates, category, payment or exact amount. Each has an id, date, time, direction ("out" spent, "in" received), ' +
-        'amount, currency, description, category and payment. Returns one page (`limit`, default ' +
-        `${DEFAULT_PAGE}, at most ${MAX_PAGE}); when \`next_cursor\` is not null, call again with it as \`cursor\` for older ones. ` +
-        'Use warren_summarize for totals instead of adding movements up. Corrected or deleted movements are not listed. ' +
-        QUOTE,
-      inputSchema: findInput,
-      outputSchema: OUTPUTS.find,
-      scopeChallenge: requireScopes(READ_SCOPE),
-      annotations: { title: 'Find movements', ...READ_ONLY },
-    },
-    async (input) => {
-      // The agent's own value guards, on the filter alone: a page's size and cursor are this tool's, not the agent's.
-      const { limit, cursor, ...filter } = input
-      const checked = checkInput('find_movements', filter, argentinaToday(c.now()))
-      if (checked.kind !== 'read') {
-        return fail(checked.kind === 'rejected' ? checked.message : 'invalid input')
+async function write(
+  c: ToolContext,
+  tool: WriteTool,
+  raw: Record<string, unknown>,
+): Promise<Result> {
+  const { request_id: requestId, ...input } = raw as { request_id?: string }
+  const long = oversize(tool, input)
+  if (long) return fail('invalid', long)
+  const now = c.now()
+  const today = argentinaToday(now)
+  const checked = checkValues(tool, input, { today, now })
+  if (checked.kind === 'declined') return fail(checked.declined, declineLine(checked.declined))
+  if (checked.kind !== 'ok' || !writes(checked.call)) {
+    return fail('invalid', checked.kind === 'rejected' ? checked.message : 'invalid input')
+  }
+  const call = checked.call
+  const hash = callHash(call)
+  let presented: Result | undefined
+  const committed = await commit(c.sql, {
+    accountId: c.accountId,
+    channel: 'mcp',
+    now,
+    calls: [call],
+    requireChange: true,
+    // A secret in what the client sent is stored nowhere: the turn keeps no input, as with a WhatsApp message (`redact.ts`).
+    scrub: sensitive([...strings(input)].map(([, v]) => v).join(' ')),
+    guard: async (tx: Sql): Promise<{ stop: Result } | undefined> => {
+      // A reminder is sent to WhatsApp: an account with no address there would hold one that is never sent.
+      if (call.tool === 'set_reminder' && !(await whatsappAddress(tx, c.accountId))) {
+        return { stop: fail('no_whatsapp_address', REPLY.noWhatsappAddress) }
       }
-      let beforeId: number | undefined
-      if (cursor !== undefined) {
-        const id = decodeCursor(cursor)
-        if (id === null) return fail('Invalid cursor. Use the `next_cursor` of a previous result.')
-        beforeId = id
-      }
-      try {
-        // One more than a page, to know whether there is a next one.
-        const rows = await findMovements(
-          c.sql,
-          c.accountId,
-          { ...checked.filter, limit: limit + 1 },
-          beforeId ? { beforeId } : {},
-        )
-        const page = rows.slice(0, limit)
-        const last = page.at(-1)
-        return done({
-          movements: page.map(presentMovement),
-          next_cursor: rows.length > limit && last ? encodeCursor(last.id) : null,
-        })
-      } catch (error) {
-        return unavailable('warren_find_movements', error)
+      if (requestId === undefined) return undefined
+      const [prior] = await tx<{ input_hash: string; result: Record<string, unknown> }[]>`
+          SELECT input_hash, result FROM mcp_request WHERE account_id = ${c.accountId} AND request_id = ${requestId}`
+      if (!prior) return undefined
+      // The same call gets its first answer; another call under the same id gets neither that answer nor a write.
+      return {
+        stop:
+          prior.input_hash === hash
+            ? done({ ...prior.result, replayed: true })
+            : fail(
+                'request_id_reused',
+                'request_id was already used for a different call: send a new one.',
+              ),
       }
     },
-  )
+    compose: (_tx, results, record) => {
+      const only = results[0]
+      if (!only?.line) throw new Error('an MCP write has one outcome')
+      return { reply: record ?? only.line }
+    },
+    after: async (tx, turn) => {
+      const [only] = turn.done
+      if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
+      presented = presentWrite(only.outcome, only.line, turn.id, today)
+      if (requestId !== undefined) {
+        await tx`
+            INSERT INTO mcp_request (account_id, request_id, input_hash, turn_id, result)
+            VALUES (${c.accountId}, ${requestId}, ${hash}, ${turn.id}, ${tx.json(presented.structuredContent as never)})`
+      }
+    },
+  })
+  if (committed === null) return fail('unavailable', 'nothing was written')
+  if ('stop' in committed) return committed.stop
+  if ('unchanged' in committed) {
+    const [only] = committed.unchanged
+    if (!only?.outcome || only.line === null) throw new Error('an MCP write has one outcome')
+    return presentWrite(only.outcome, only.line, null, today)
+  }
+  return presented ?? fail('unavailable', 'nothing was written')
+}
 
-  server.registerTool(
-    'warren_summarize',
-    {
-      title: 'Summarize spending and income',
-      description:
-        'Totals of the ledger over a range of Argentine days (a named period such as this_month or last_week, a month, a year ' +
-        'or explicit dates), optionally filtered by direction, category, payment or description words, grouped (by category, ' +
-        'payment, day, week or month) and compared with the previous range or another one. Totals are per direction ("out" ' +
-        'spent, "in" received) and currency, never mixed. Also returns the same summary as Warren writes it on WhatsApp, in ' +
-        'Spanish, in `summary`. Use this for any question about how much, how many or how it changed. ' +
-        QUOTE,
-      inputSchema: summarizeInput,
-      outputSchema: OUTPUTS.summarize,
-      scopeChallenge: requireScopes(READ_SCOPE),
-      annotations: { title: 'Summarize spending and income', ...READ_ONLY },
-    },
-    async (input) => {
-      const today = argentinaToday(c.now())
-      // The agent's own value guards, with the `text` field that is WhatsApp's left empty.
-      const q = { ...input, text: null }
-      const checked = checkInput('summarize', q, today)
-      if (checked.kind === 'rejected') return fail(checked.message)
-      if (checked.kind !== 'action' || checked.action.tool !== 'summarize') {
-        return fail('invalid input')
-      }
-      try {
-        // One snapshot for the asked range and the compared one.
-        const ran = await c.sql.begin('isolation level repeatable read read only', (tx) =>
-          runSummary(tx as unknown as Sql, c.accountId, checked.action.input as typeof q, today),
-        )
-        return done({
-          ...presentSide(ran.current, q.group_by, today),
-          compared_with: ran.previous ? presentSide(ran.previous, q.group_by, today) : null,
-          changes: ran.previous ? changes(ran.current, ran.previous) : [],
-          summary: ran.lines.join('\n'),
-        })
-      } catch (error) {
-        return unavailable('warren_summarize', error)
-      }
-    },
-  )
+/** One call of a tool, as the server runs it: a failure of the database is an error result without detail, never a crash. */
+export async function runTool(
+  c: ToolContext,
+  name: Tool,
+  input: Record<string, unknown>,
+): Promise<Result> {
+  try {
+    const read = READS[name]
+    return read ? await read(c, input) : await write(c, name as WriteTool, input)
+  } catch (error) {
+    return unavailable(`warren_${name}`, error)
+  }
+}
 
-  server.registerTool(
-    'warren_list_facts',
-    {
-      title: 'List what Warren remembers',
-      description:
-        'Lists everything Warren remembers about the person, in their own words: aliases (a name for a payment method, place or ' +
-        'thing, e.g. "la visa" = "Galicia"), category rules (where a kind of expense goes) and notes. Each has an id, kind ' +
-        '("alias", "category" or "note"), key and value. Read-only; these never change a movement.',
-      inputSchema: z.object({}),
-      outputSchema: OUTPUTS.facts,
-      scopeChallenge: requireScopes(READ_SCOPE),
-      annotations: { title: 'List what Warren remembers', ...READ_ONLY },
-    },
-    async () => {
-      try {
-        const facts = await allLiveFacts(c.sql, c.accountId)
-        return done({
-          facts: facts.map((f) => ({ id: f.id, kind: f.kind, key: f.key, value: f.value })),
-          total: facts.length,
-        })
-      } catch (error) {
-        return unavailable('warren_list_facts', error)
-      }
-    },
-  )
+// ---- Registration
+
+/** Every registry entry with an `mcp` block, as a tool named `warren_<tool>`. */
+export function registerTools(server: McpServer, c: ToolContext) {
+  for (const [name, entry] of Object.entries(COMMANDS) as [Tool, (typeof COMMANDS)[Tool]][]) {
+    const block = 'mcp' in entry ? (entry.mcp as McpBlock | undefined) : undefined
+    if (!block) continue
+    const isWrite = entry.kind === 'write'
+    const inputSchema = (block.input ?? (entry.input as z.ZodObject)).extend(block.extra ?? {})
+    server.registerTool(
+      `warren_${name}`,
+      {
+        title: block.title,
+        description: `${block.description} ${isWrite ? WRITES : ''} ${QUOTE}`
+          .replace(/\s+/g, ' ')
+          .trim(),
+        inputSchema,
+        outputSchema: block.output as z.ZodObject,
+        scopeChallenge: requireScopes(block.scope),
+        annotations: {
+          title: block.title,
+          ...(isWrite
+            ? {
+                readOnlyHint: false,
+                destructiveHint: block.destructive === true,
+                idempotentHint: false,
+                openWorldHint: false,
+              }
+            : readOnly),
+        },
+      },
+      (input: Record<string, unknown>) => runTool(c, name, input),
+    )
+  }
 }

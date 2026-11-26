@@ -10,7 +10,7 @@ const list = z
 
 /**
  * The name of the approved WhatsApp template that carries a reminder outside the 24 h window (`warren_reminder`,
- * language es_AR; docs/reminders-spec.md). Unset, Warren sends no template: a reminder that needs one is logged and
+ * language es_AR; docs/design.md, "Reminders"). Unset, Warren sends no template: a reminder that needs one is logged and
  * marked failed. The server and the reminder scripts read it the same way.
  */
 export const reminderTemplate = z
@@ -47,7 +47,7 @@ const fields = z.object({
     .optional()
     .transform((s) => s?.trim() || undefined),
   REMINDER_TEMPLATE: reminderTemplate,
-  // The sign-in and OAuth server for MCP (docs/mcp-spec.md). `PUBLIC_URL` turns it on and makes the other two
+  // The sign-in and OAuth server for MCP (docs/design.md, "MCP and auth"). `PUBLIC_URL` turns it on and makes the other two
   // required. Unset, none of its routes exist and none of the three is read.
   PUBLIC_URL: z
     .string()

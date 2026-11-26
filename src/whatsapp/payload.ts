@@ -14,6 +14,10 @@ const message = z.object({
       caption: z.string().optional(),
     })
     .optional(),
+  // A voice note: only its media id.
+  audio: z.object({ id: z.string(), mime_type: z.string().optional() }).optional(),
+  // The message this one replies to.
+  context: z.object({ id: z.string().optional() }).optional(),
 })
 
 const status = z.object({
@@ -45,7 +49,19 @@ const payload = z.object({
     .default([]),
 })
 
-export type InboundMessage = z.infer<typeof message> & { raw: unknown }
+/**
+ * What the worker's queue needs of a message: who sent it, its kind, the text (or a photo's caption), the media id of a photo or voice note
+ * (stored at ingest, to download it later) and the message it replied to. The raw payload is not kept.
+ */
+export interface InboundMessage {
+  id: string
+  from: string
+  type: string
+  timestamp?: number | undefined
+  text: string | null
+  mediaId: string | null
+  contextId: string | null
+}
 export type StatusUpdate = z.infer<typeof status>
 
 /** Pulls messages and status updates out of a webhook body. Entries that do not fit are skipped. */
@@ -60,7 +76,18 @@ export function parseWebhook(body: unknown): {
     for (const change of entry.changes) {
       for (const raw of change.value.messages) {
         const m = message.safeParse(raw)
-        if (m.success) out.messages.push({ ...m.data, raw })
+        if (m.success) {
+          const d = m.data
+          out.messages.push({
+            id: d.id,
+            from: d.from,
+            type: d.type,
+            timestamp: d.timestamp,
+            text: d.text?.body ?? d.image?.caption ?? null,
+            mediaId: d.image?.id ?? d.audio?.id ?? null,
+            contextId: d.context?.id ?? null,
+          })
+        }
       }
       for (const raw of change.value.statuses) {
         const s = status.safeParse(raw)
