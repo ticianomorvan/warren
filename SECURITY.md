@@ -1,7 +1,8 @@
 # Security policy
 
-Warren reads expense messages people send on WhatsApp, sends them to the Anthropic API to be
-parsed, and stores the resulting movements. Security reports matter.
+Warren reads the messages people send it on WhatsApp or through an MCP client, sends them to the
+Anthropic API to be understood (voice notes go to OpenRouter to be transcribed), and stores the
+resulting movements, facts and reminders. Security reports matter.
 
 ## Reporting a vulnerability
 
@@ -35,10 +36,18 @@ The latest commit on `main` and the hosted service.
 
 ## Threat model in short
 
-Assets are people's messages and movements, the WhatsApp access token, the app secret and the
-Anthropic API key. Secrets live only in the gitignored `.env` (and the host's environment), never
-in code, logs or eval output. The model only parses a message into a typed command; code
-validates it, does all arithmetic and writes the reply, so a message cannot make the model act.
-Design rules for the slices still to build, not protections that exist today: corrections never
-overwrite a movement, so history is kept (slices 3 and 4), and webhooks are accepted only with a
-valid signature (slice 2). Today the repository holds the parser and its eval only.
+Assets are people's messages, movements, facts and reminders; the WhatsApp access token and app
+secret; the Anthropic and OpenRouter keys; and the auth secret and keys behind MCP access tokens.
+
+- Keys live only in the gitignored `.env` and the host's environment, never in code, logs or eval
+  output. A message that looks like a secret (a card, a CBU, a password, a DNI) is stored nowhere.
+- A webhook is accepted only with a valid Meta signature, and only allowed senders get a reply.
+- The model acts only through guarded tools. Code checks every call, may only target a record the
+  person was shown and owns, does all arithmetic and writes the reply, so a message cannot make the
+  model reach another person's data or invent an amount.
+- Nothing is overwritten or deleted: a correction or delete is a new version, enforced by a
+  database trigger, and an undo is made of the same moves.
+- MCP clients sign in through a code the person confirms on WhatsApp. Tokens are short-lived JWTs
+  bound to the MCP URL, and "desconectar" on WhatsApp revokes them.
+
+The rules in full are in [`AGENTS.md`](AGENTS.md), and the reasons in [`docs/design.md`](docs/design.md).

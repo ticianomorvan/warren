@@ -54,6 +54,8 @@ src/app.ts     node:http: /health, /webhook (signature, store, 200, first signal
 src/warren.ts  createWarren(deps): the one wiring, used by server.ts, the tests and the eval
 test/          the kit: db.ts (useDatabase: a schema per file on PG_TEST_URL, PGlite otherwise), fakes.ts, until.ts, core.ts, golden/
 evals/scenarios/  the scenario eval (scenarios.jsonl, long-ledger.jsonl, drive.ts, grade.ts, report.ts, results/)
+evals/*.ts     hand-run probes: agent-smoke.ts (a few messages through understand), prompt-tokens.ts (the cached prefix's size),
+               voice-probe.ts (the transcription gate on audio files); stats.ts is shared
 scripts/       probe.ts (read-only production probe)
 docs/          design.md (how Warren works and why)
 ```
