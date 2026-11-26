@@ -81,7 +81,8 @@ PG_TEST_URL=postgres://postgres:postgres@localhost:55432/postgres pnpm test     
 pnpm start           # the server: DATABASE_URL, ANTHROPIC_API_KEY, the WhatsApp variables (src/config.ts); OPENROUTER_API_KEY turns voice notes on
 pnpm latency [--last N]   # p50/p95 by turn label and by stage, from DATABASE_URL
 pnpm import:movements <file.jsonl> --wa <wa_id> [--check]   # a backlog (one log_movements movement per line) as one turn on DATABASE_URL;
-                     # --check runs the guards and writes nothing; one "deshacer" takes the whole import back within 24 h
+                     # --check runs the guards and writes nothing; one "deshacer" takes the whole import back within 24 h.
+                     # From a statement or a spreadsheet: the `import-statement` skill (.claude/skills/) has the whole workflow
 pnpm eval:scenarios [--split dev|test|all] [--only s001,s002] [--file evals/scenarios/long-ledger.jsonl] [--budget 0.30] [--concurrency 4]
                      # multi-turn scenarios through the real pipeline and model; needs .env and spends money (a whole run is about US$0.17)
 pnpm eval:report     # writes evals/scenarios/results/latest.md from the newest three *-all.json runs
