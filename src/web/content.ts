@@ -125,7 +125,13 @@ Solo vos y los agentes que autorizás. El proveedor de infraestructura (Railway,
 
 ## Cómo los borrás
 
-En [tu cuenta](${url}/account) podés desconectar todos los agentes, descargar todos tus datos en JSON y borrar tu cuenta: se borran tu cuenta y todos tus movimientos y notas, sin vuelta atrás. Las copias de seguridad del proveedor pueden conservarlos unos días más hasta que se renuevan.
+En [tu cuenta](${url}/account) podés desconectar todos los agentes, descargar todos tus datos en JSON y borrar tu cuenta: se borran al instante tu cuenta y todos tus movimientos y notas, sin vuelta atrás. Warren no guarda copias de seguridad, así que no queda ninguna copia.
+
+## Tus derechos
+
+Tenés derecho a acceder a tus datos, rectificarlos y suprimirlos (Ley 25.326 de Protección de Datos Personales). Los ejercés desde [tu cuenta](${url}/account) o pidiéndolo en ${REPO}/issues; el pedido se responde dentro de los plazos de la ley (10 días corridos para el acceso, 5 días hábiles para rectificar o suprimir).
+
+La AGENCIA DE ACCESO A LA INFORMACIÓN PÚBLICA, en su carácter de Órgano de Control de la Ley N° 25.326, tiene la atribución de atender las denuncias y reclamos que interpongan quienes resulten afectados en sus derechos por incumplimiento de las normas vigentes en materia de protección de datos personales.
 
 ## Cookies
 
@@ -153,11 +159,11 @@ Un libro de gastos e ingresos al que accede tu agente (Claude, ChatGPT, Cursor u
 
 ## Sin garantías
 
-El servicio se ofrece "tal cual", sin garantía de disponibilidad ni de que no haya errores. Puede cambiar, tener cortes o cerrar. Conviene descargar tus datos de vez en cuando desde [tu cuenta](${url}/account). En la medida que permite la ley, no me hago responsable de pérdidas por usar o no poder usar Warren.
+El servicio se ofrece "tal cual", sin garantía de disponibilidad ni de que no haya errores. Puede cambiar, tener cortes o cerrar. Conviene descargar tus datos de vez en cuando desde [tu cuenta](${url}/account). En la medida que permite la ley, su autor no se hace responsable de pérdidas por usar o no poder usar Warren.
 
 ## Tu cuenta
 
-Podés desconectar agentes, descargar tus datos y borrar tu cuenta cuando quieras. Puedo suspender una cuenta que abuse del servicio.
+Podés desconectar agentes, descargar tus datos y borrar tu cuenta cuando quieras. El autor puede suspender una cuenta que abuse del servicio.
 
 ## Código y nombre
 
