@@ -66,8 +66,12 @@ Settled choices. Do not reopen without new evidence:
 
 ## Auth
 
-- better-auth with its `jwt`, `mcp` and `cimd` plugins, over Kysely. The MCP SDK only checks tokens. Clients are CIMD only (dynamic
-  registration is off), and client-id hosts are allowed only from `mcp/clients.ts` (today `claude.ai` and `claude.com`). Discovery
+- better-auth with its `jwt`, `mcp` and `cimd` plugins, over Kysely. The MCP SDK only checks tokens. Any agent may connect (bring your own
+  agent): by a metadata document (CIMD) on any public https host, fetched by `@better-auth/cimd/node`, which refuses private and
+  reserved addresses and pins the one it checked; or by open Dynamic Client Registration, rate limited (ChatGPT, Cursor and others
+  still register that way). Nothing is trusted for being registered: a client gets a token only after the person signs in with Google
+  and consents on a page that shows the client's name and where it sends them back. `mcp/clients.ts` keeps only the browser origins
+  allowed to call `/mcp` directly. Discovery
   advertises both CIMD support and `"none"` token auth, since Claude falls back to dynamic registration unless it sees both, and the
   SDK's legacy protocol negotiation stays on because hosted Claude speaks the 2025-11-25 auth. Tokens are 15 min JWTs with `aud` = the
   MCP URL; refresh tokens rotate. The tables are plain SQL in `002_auth.sql`; `test/migrations.test.ts` fails on drift.

@@ -45,7 +45,7 @@ describe('OAuth and MCP, end to end', () => {
       await fetch(`${app.base}/.well-known/oauth-authorization-server`)
     ).json()) as Record<string, unknown>
     expect(server.client_id_metadata_document_supported).toBe(true)
-    expect(server.registration_endpoint).toBeUndefined()
+    expect(server.registration_endpoint).toMatch(/\/api\/auth\/oauth2\/register$/)
     // Claude registers by its metadata document only when both are said: CIMD supported, and public clients ("none") accepted.
     expect(server.token_endpoint_auth_methods_supported).toContain('none')
 

@@ -43,8 +43,9 @@ Google OAuth client secret.
   commits. Warren stores none of Google's tokens: only that a Google account signed in. What a
   client sends that looks like a secret (a card, a CBU, a password, a DNI) is stored nowhere.
 - Sign-in is Google only and open to anyone; no other route can make a user. Access tokens are
-  15-minute JWTs bound to the MCP URL, from clients that identify with a metadata document on an
-  allowed host. "Disconnect all agents" on the account page revokes them.
+  15-minute JWTs bound to the MCP URL, from any client: one that identifies with a metadata document
+  (fetched only from public addresses) or registers itself (open, rate limited). A client can do
+  nothing until the person signs in and consents on a page that names where it sends them back. "Disconnect all agents" on the account page revokes them.
 - Every write goes through guarded tools: code checks every call, a target must be the person's
   own live record, code does all arithmetic and renders the record, so one agent cannot reach
   another person's data or invent an amount. One account is capped (live movements, calls per

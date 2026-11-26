@@ -41,9 +41,9 @@ This page is for you. If a person told you "set up Warren", do the steps below i
 
 - URL: \`${mcp}\`
 - Transport: Streamable HTTP. No API key.
-- Auth: OAuth 2.1 authorization code with PKCE, signing in with Google. Clients identify themselves with a Client ID Metadata Document (CIMD); there is no Dynamic Client Registration. Discovery is standard: an unauthenticated request to the URL answers \`401\` with a \`WWW-Authenticate\` header whose \`resource_metadata\` points to \`${url}/.well-known/oauth-protected-resource/mcp\`; the authorization server is described at \`${url}/.well-known/oauth-authorization-server\`.
+- Auth: OAuth 2.1 authorization code with PKCE, signing in with Google. Clients identify themselves with a Client ID Metadata Document (CIMD) served over https from any public host, or register themselves with Dynamic Client Registration (the \`registration_endpoint\` in the metadata). Discovery is standard: an unauthenticated request to the URL answers \`401\` with a \`WWW-Authenticate\` header whose \`resource_metadata\` points to \`${url}/.well-known/oauth-protected-resource/mcp\`; the authorization server is described at \`${url}/.well-known/oauth-authorization-server\`.
 - Scopes: \`ledger:read\` (look and summarize), \`ledger:write\` (log, correct, delete, undo, remember), \`offline_access\` (a refresh token, so the person signs in once).
-- Accepted clients today: those whose CIMD document is served from \`claude.ai\` or \`claude.com\` (the Claude apps and Claude Code). Another client fails at sign-in until its host is added; if that happens, tell the person and point them to ${REPO}/issues.
+- Any MCP client with OAuth support can connect. If sign-in fails anyway, tell the person and point them to ${REPO}/issues.
 
 ## Claude Code
 
@@ -61,7 +61,7 @@ The person adds Warren as a custom connector (you cannot do this for them): Sett
 
 ## ChatGPT
 
-In Settings, Connectors (Apps), enable Developer mode, create a connector with the URL \`${mcp}\` and OAuth authentication. ChatGPT may require Dynamic Client Registration, which Warren does not offer yet; if it refuses, say so.
+In Settings, Connectors (Apps), enable Developer mode, create a connector with the URL \`${mcp}\` and OAuth authentication. ChatGPT registers itself (Dynamic Client Registration) and then sends the person to sign in with Google.
 
 ## Cursor
 

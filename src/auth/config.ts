@@ -53,8 +53,8 @@ export interface AuthSettings {
 }
 
 /**
- * The OAuth 2.1 authorization server for Warren's MCP endpoint: better-auth on our own database, public clients only, each one a
- * metadata document (CIMD) from an allowed host. "Continuar con Google" is the only way in, open to anyone with a Google account:
+ * The OAuth 2.1 authorization server for Warren's MCP endpoint: better-auth on our own database, any agent: a
+ * metadata document (CIMD) on a public https host, or a client that registers itself (DCR). "Continuar con Google" is the only way in, open to anyone with a Google account:
  * no password, no email sign-up. The first Google sign-in of a person makes their `auth_user` and, in the `after` hook, their
  * `account` row; any other way a user could be created is refused in the `before` hook.
  */
@@ -138,6 +138,8 @@ export function createAuth(s: AuthSettings) {
         // Starting a Google sign-in, the one route that costs us a call to Google: a person needs a few tries at most.
         '/sign-in/social': { window: 60, max: 10 },
         '/callback/:id': { window: 60, max: 20 },
+        // Open registration: a client registers once per install, so a few a minute per address is plenty.
+        '/oauth2/register': { window: 60, max: 5 },
       },
     },
     // Warn and above only: nothing about a person goes to the log.
@@ -148,7 +150,6 @@ export function createAuth(s: AuthSettings) {
       '/sign-up/email',
       '/sign-in/email',
       '/token',
-      '/oauth2/register',
       '/oauth2/create-client',
       '/oauth2/update-client',
       '/oauth2/delete-client',
@@ -173,10 +174,14 @@ export function createAuth(s: AuthSettings) {
         scopes: [...SCOPES],
         // Public clients only (a metadata-document client has no secret): no client_credentials.
         grantTypes: ['authorization_code', 'refresh_token'],
-        // Nobody registers, edits, lists or deletes a client over HTTP: a client exists only as a
-        // metadata document from an allowed host.
+        // Any agent may connect: by its metadata document (CIMD, below) or, for a client that has none yet (ChatGPT, Cursor and
+        // others still register this way), by Dynamic Client Registration, open and rate limited. A registered client can do
+        // nothing until a person signs in with Google and consents on a page that shows where it sends them back. Nobody edits,
+        // lists or deletes a client over HTTP.
+        allowDynamicClientRegistration: true,
+        allowUnauthenticatedClientRegistration: true,
         clientPrivileges: () => false,
-        // Claude needs two flags to register by its metadata document, and falls back to Dynamic Client Registration (off here)
+        // Claude needs two flags to register by its metadata document, and falls back to Dynamic Client Registration
         // when either is missing: public clients are accepted ("none", said here) and CIMD is supported (`cimd()` says so).
         advertisedMetadata: { token_endpoint_auth_methods_supported: ['none'] },
         accessTokenExpiresIn: ACCESS_TOKEN_SECONDS,
@@ -192,7 +197,7 @@ export function createAuth(s: AuthSettings) {
           oauthConsent: { modelName: AUTH_TABLES.oauthConsent },
         },
       }),
-      // No Dynamic Client Registration: a client is its own metadata document, from an allowed host.
+      // A client whose id is its metadata document's https URL, fetched only from public addresses (`mcp/clients.ts`).
       cimd({
         fetchClientMetadataResource: s.fetchClientMetadataResource ?? fetchOverNode,
         metadataProfile: 'mcp-2026-07-28',

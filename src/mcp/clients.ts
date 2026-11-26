@@ -1,15 +1,22 @@
 /**
- * The agents allowed to connect, in one place. A client's `client_id` is a URL Warren fetches (its metadata document, CIMD), so only
- * these hosts are ever fetched, and a browser page may call `/mcp` only from `https://<host>` of one of them (or from our own origin).
- * Adding a client is adding its host.
+ * Any agent may connect (bring your own agent). A client's `client_id` may be the URL of its metadata document (CIMD): Warren fetches
+ * it only over https, from a path (never a bare host), through `@better-auth/cimd/node`, which refuses a host that resolves to a
+ * private or reserved address and pins the address it checked. Clients without a document register themselves (DCR, `config.ts`).
+ * `CLIENT_HOSTS` is only the browser side: the origins whose pages may call `/mcp` directly.
  */
 export const CLIENT_HOSTS: readonly string[] = ['claude.ai', 'claude.com']
 
-/** True for an https client id on an allowed client's host. Checked before any fetch. */
+/** True for a client id that may be fetched as a metadata document: https, no credentials or port, a path. Checked before any fetch. */
 export function clientIdAllowed(clientId: string): boolean {
   try {
     const url = new URL(clientId)
-    return url.protocol === 'https:' && CLIENT_HOSTS.includes(url.hostname)
+    return (
+      url.protocol === 'https:' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.port === '' &&
+      url.pathname.length > 1
+    )
   } catch {
     return false
   }

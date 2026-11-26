@@ -147,18 +147,55 @@ describe('the whole flow', () => {
     app.close()
   })
 
-  it('refuses a client id whose host is not allow-listed, without fetching it', async () => {
+  it('refuses a client id that is not an https document URL, without fetching it', async () => {
     const { app, claude } = await withClaude()
-    const res = await browser(app.base).go(
-      authorizeUrl(app.base, {
-        challenge: pkce().challenge,
-        clientId: 'https://evil.example/client.json',
-      }),
-    )
-    expect(res.headers.get('location') ?? '').not.toContain('/sign-in')
-    expect(res.status).toBeGreaterThanOrEqual(300)
+    for (const clientId of [
+      'http://agent.example/client.json',
+      'https://agent.example',
+      'https://agent.example:8443/client.json',
+      'https://user:pass@agent.example/client.json',
+    ]) {
+      const res = await browser(app.base).go(
+        authorizeUrl(app.base, { challenge: pkce().challenge, clientId }),
+      )
+      expect(res.headers.get('location') ?? '', clientId).not.toContain('/sign-in')
+      expect(res.status, clientId).toBeGreaterThanOrEqual(300)
+    }
     expect(claude.fetched).toEqual([])
     expect(await sql`SELECT 1 FROM auth_oauth_client`).toHaveLength(0)
+    app.close()
+  })
+
+  it('accepts a metadata document from any https host: bring your own agent', async () => {
+    const { app, claude } = await withClaude()
+    const clientId = 'https://agent.example/client.json'
+    await browser(app.base).go(authorizeUrl(app.base, { challenge: pkce().challenge, clientId }))
+    expect(claude.fetched).toEqual([clientId])
+    app.close()
+  })
+
+  it('lets a client without a document register itself (DCR), as a public client, rate limited', async () => {
+    const { app } = await withClaude()
+    const register = () =>
+      fetch(`${app.base}/api/auth/oauth2/register`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          client_name: 'Some agent',
+          redirect_uris: ['https://agent.example/oauth/callback'],
+          token_endpoint_auth_method: 'none',
+          grant_types: ['authorization_code', 'refresh_token'],
+          response_types: ['code'],
+        }),
+      })
+    const first = await register()
+    expect(first.status).toBeLessThan(300)
+    const body = (await first.json()) as { client_id?: string; client_secret?: string }
+    expect(body.client_id).toEqual(expect.any(String))
+    expect(body.client_secret).toBeUndefined()
+    const later = []
+    for (let i = 0; i < 6; i++) later.push((await register()).status)
+    expect(later).toContain(429)
     app.close()
   })
 })
@@ -276,7 +313,7 @@ describe('what is served, and where', () => {
     expect(meta.token_endpoint_auth_methods_supported).toContain('none')
     expect(meta.code_challenge_methods_supported).toEqual(['S256'])
     expect(meta.grant_types_supported).toEqual(['authorization_code', 'refresh_token'])
-    expect(meta.registration_endpoint).toBeUndefined()
+    expect(meta.registration_endpoint).toBe(`${app.base}/api/auth/oauth2/register`)
     for (const path of [
       '/.well-known/oauth-protected-resource',
       '/.well-known/oauth-protected-resource/mcp',
@@ -288,14 +325,9 @@ describe('what is served, and where', () => {
     app.close()
   })
 
-  it('closes dynamic registration, client management and the session JWT route', async () => {
+  it('closes client management and the session JWT route', async () => {
     const { app } = await withClaude()
-    for (const path of [
-      '/oauth2/register',
-      '/oauth2/create-client',
-      '/oauth2/get-clients',
-      '/token',
-    ]) {
+    for (const path of ['/oauth2/create-client', '/oauth2/get-clients', '/token']) {
       const read = path === '/token' || path === '/oauth2/get-clients'
       const res = await fetch(`${app.base}/api/auth${path}`, {
         method: read ? 'GET' : 'POST',
