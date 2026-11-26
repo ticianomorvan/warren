@@ -166,6 +166,14 @@ Settled choices, each measured or argued once. Do not reopen without new evidenc
 ## Ops
 
 - Railway settings are code (`.railway/railway.ts`). The app is one replica with a 15 s drain and overlap. See `AGENTS.md` for the rest.
+- `pnpm import:movements` seeds a person's backlog (a spreadsheet, old statements) as one turn on the `cli` channel: every 10 rows
+  are one `log_movements` call, checked by `checkValues` before anything is written, then one `commit`. One refused row and nothing
+  is written. Being one turn, the import is one step of the undo stack, and the newest one: run it when the person is not in the
+  middle of a conversation. The turn's reply is one line, so the conversation window stays small. `checkTurn` is not run: its rules
+  are a conversation's (ids shown, the per-message cap), so an import is capped at 5,000 rows instead, to hold the lock for seconds.
+  The same rows imported again into the same account, while the first import is not undone, are refused under the lock (the stored
+  calls' tool and input are compared), so a retry after a dropped terminal writes nothing. Rejected: seeding through MCP, which is
+  10 movements a call and one undo step per call.
 - `pnpm probe` checks production from outside, read-only: health, the webhook handshake, the MCP 401 and its metadata, OAuth
   discovery. There is no staging environment: with no users yet, it was deleted after the rebuild (git history has it, with a
   stand-in for Meta's Graph API and a probe that drove the whole product through it). Bring it back before changes that need it.
