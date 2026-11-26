@@ -1,17 +1,8 @@
 node_modules
-.turbo
-.next
-next-env.d.ts
-.vercel
 .env
 .env.*
-!.env.example
 *.tsbuildinfo
-coverage
-.data
-# eval runs: only the committed summary stays in the repository
-evals/results/*
-!evals/results/summary.md
+# eval runs: only the generated summary is kept
 evals/scenarios/results/*
 !evals/scenarios/results/latest.md
-!evals/scenarios/results/v1-baseline.json
+CLAUDE.local.md
