@@ -1,9 +1,9 @@
 import { defineRailway, postgres, project, service, volume } from 'railway/iac'
 
 /**
- * One environment, `production`. Variables are unmanaged, so no secret is in this file; they are set with `railway variables`.
- * A staging environment (its own service and Postgres, plus a stand-in for Meta's Graph API) existed for the rebuild and was
- * deleted on 2026-11-25; git history has it (scripts/graph-sink, the probe's staging mode).
+ * One environment, `production`. Variables are unmanaged, so no secret is in this file; they are set with `railway variables`
+ * (`DATABASE_URL`, `PUBLIC_URL`, `BETTER_AUTH_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`). A staging environment existed
+ * for an earlier rebuild and was deleted on 2026-11-25.
  */
 export default defineRailway(() => {
   const Postgres = postgres('Postgres', { region: 'us-east4-eqdc4a' })
@@ -29,7 +29,7 @@ export default defineRailway(() => {
       drainingSeconds: 15,
     },
     replicas: { 'us-east4-eqdc4a': 1 },
-    domains: ['wa.heywarren.app'],
+    domains: ['heywarren.app'],
   })
 
   return project('warren', {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import { cafe as cafeMovement, turn as coreTurn, log } from '../../test/core'
-import { type App, type Connected, mint, WA_A, WA_B, withClaude } from '../auth-test-kit'
+import { type App, type Connected, EMAIL_A, EMAIL_B, mint, withClaude } from '../auth-test-kit'
 import { COMMANDS, type OUTPUTS, type Tool } from '../core/commands'
 import { call, forge, type Json, ok, refused, rpc } from '../mcp-test-kit'
 import { sql, TODAY, useDatabase } from '../test-harness'
@@ -25,8 +25,8 @@ const AT = new Date(1760000000 * 1000)
 const turn = (account: number, calls: Parameters<typeof coreTurn>[2]) =>
   coreTurn(sql, account, calls, { at: AT })
 
-const accountOf = async (wa: string) =>
-  Number((await sql`SELECT account_id FROM account_address WHERE address = ${wa}`)[0]?.account_id)
+const accountOf = async (email: string) =>
+  Number((await sql`SELECT warren_account_id AS id FROM auth_user WHERE email = ${email}`)[0]?.id)
 
 /** Seeds movements through the core's own commit (the same path every channel writes by), dated `n` days before the fixed test day. */
 const seed = (
@@ -58,11 +58,11 @@ const seed = (
   ])
 
 beforeEach(async () => {
-  ;({ app } = await withClaude({ allowed: [WA_A, WA_B] }))
-  a = await mint(app, WA_A)
-  b = await mint(app, WA_B)
-  accountA = await accountOf(WA_A)
-  accountB = await accountOf(WA_B)
+  ;({ app } = await withClaude())
+  a = await mint(app, EMAIL_A)
+  b = await mint(app, EMAIL_B)
+  accountA = await accountOf(EMAIL_A)
+  accountB = await accountOf(EMAIL_B)
 })
 afterEach(() => app.close())
 
@@ -81,16 +81,18 @@ describe('the protocol', () => {
     expect(r.body?.result.instructions).toContain('never add, convert or round')
   })
 
-  it('tools/list: one tool per registry entry with an mcp block, reminders included, annotated, each with an output schema', async () => {
+  it('tools/list: one tool per registry entry, annotated, each with an output schema', async () => {
     const r = await rpc(app, a.access_token, 'tools/list')
     const tools = r.body?.result.tools as Json[]
-    const wanted = (Object.keys(COMMANDS) as Tool[]).filter((t) => 'mcp' in COMMANDS[t])
+    const wanted = Object.keys(COMMANDS) as Tool[]
     expect(tools.map((t) => t.name).sort()).toEqual(wanted.map((t) => `warren_${t}`).sort())
-    expect(wanted).toEqual(
-      expect.arrayContaining(['set_reminder', 'cancel_reminder', 'list_reminders', 'undo_last']),
+    expect(wanted).toContain('undo_last')
+    // Not offered: nothing of the old chat, no reminders, and nothing that deletes an account.
+    expect(tools.some((t) => /forget_all|reply|help|ask|skip|reminder|account/.test(t.name))).toBe(
+      false,
     )
-    // Not offered: forgetting everything (the person's own "sí" on WhatsApp) and the conversation's tools.
-    expect(tools.some((t) => /forget_all|reply|help|ask|skip/.test(t.name))).toBe(false)
+    // What an agent reads names no chat app: it may be any MCP client.
+    expect(JSON.stringify(tools)).not.toMatch(/whatsapp|deshacer/i)
     for (const t of tools) {
       const entry = COMMANDS[t.name.replace('warren_', '') as Tool]
       const write = entry.kind === 'write'
@@ -98,7 +100,7 @@ describe('the protocol', () => {
         write
           ? {
               readOnlyHint: false,
-              destructiveHint: 'mcp' in entry && entry.mcp?.destructive === true,
+              destructiveHint: entry.mcp.destructive === true,
               idempotentHint: false,
               openWorldHint: false,
             }
@@ -122,10 +124,10 @@ describe('the protocol', () => {
       'to',
     ])
     expect(find.inputSchema.properties.limit.maximum).toBe(50)
-    // The canonical schemas, not a second copy: a write's own fields, with the registry's `then`/`first` unions.
-    const remind = tools.find((t) => t.name === 'warren_set_reminder')
-    expect(Object.keys(remind.inputSchema.properties)).toEqual(
-      expect.arrayContaining(['what', 'first', 'every', 'request_id']),
+    // The canonical schemas, not a second copy: a write's own fields beside the request id.
+    const correct = tools.find((t) => t.name === 'warren_correct_movement')
+    expect(Object.keys(correct.inputSchema.properties)).toEqual(
+      expect.arrayContaining(['id', 'changes', 'request_id']),
     )
   })
 
@@ -140,12 +142,7 @@ describe('the protocol', () => {
   it("scope is each tool's: a write-only token cannot read, a read-only one cannot write, discovery needs none (403 insufficient_scope)", async () => {
     const writeOnly = await forge(app, a.userId, { claims: { scope: 'ledger:write' } })
     expect((await rpc(app, writeOnly, 'tools/list')).status).toBe(200)
-    for (const name of [
-      'warren_find_movements',
-      'warren_summarize',
-      'warren_list_facts',
-      'warren_list_reminders',
-    ]) {
+    for (const name of ['warren_find_movements', 'warren_summarize', 'warren_list_facts']) {
       const r = await rpc(app, writeOnly, 'tools/call', { name, arguments: {} })
       expect(r.status, name).toBe(403)
       const challenge = r.headers.get('www-authenticate') ?? ''
@@ -350,7 +347,7 @@ describe('warren_summarize', () => {
   })
 })
 
-describe('warren_list_facts and warren_list_reminders', () => {
+describe('warren_list_facts', () => {
   it("lists the person's own facts and nobody else's, not what was forgotten or replaced", async () => {
     const remember = (k: string, v: string) =>
       turn(accountA, [{ tool: 'remember_fact', input: { kind: 'alias', key: k, value: v } }])
@@ -365,27 +362,51 @@ describe('warren_list_facts and warren_list_reminders', () => {
     expect(r.facts.map((f) => [f.key, f.value])).toEqual([['la visa', 'santander']])
     expect(r.total).toBe(1)
   })
+})
 
-  it('lists live reminders, the next first, and nobody else’s', async () => {
+describe('two accounts never see each other’s rows over MCP', () => {
+  it('every read of A shows nothing of B, and B cannot touch A’s movement or fact by id, or undo A’s turn', async () => {
+    await seed(accountA, [{ d: 'secreto-de-a', a: '111' }])
     await turn(accountA, [
-      {
-        tool: 'set_reminder',
-        input: { what: 'pagar la Visa', first: { date: addDays(TODAY, 5) }, interval: 1 },
-      },
-      {
-        tool: 'set_reminder',
-        input: { what: 'llamar al médico', first: { date: addDays(TODAY, 2) }, interval: 1 },
-      },
+      { tool: 'remember_fact', input: { kind: 'note', key: 'nota de a', value: 'x' } },
     ])
-    await turn(accountB, [
-      {
-        tool: 'set_reminder',
-        input: { what: 'de B', first: { date: addDays(TODAY, 1) }, interval: 1 },
-      },
-    ])
-    const r = ok(await call(app, a.access_token, 'warren_list_reminders'), 'list_reminders')
-    expect(r.reminders.map((x) => x.what)).toEqual(['llamar al médico', 'pagar la Visa'])
-    expect(r.reminders[0]?.next_due_at).toMatch(/^\d{4}-\d\d-\d\dT/)
+    await seed(accountB, [{ d: 'de-b', a: '222' }])
+    const mine = ok(await call(app, a.access_token, 'warren_find_movements'), 'find_movements')
+    const idA = mine.movements[0]?.id as number
+    expect(mine.movements.map((m) => m.description)).toEqual(['secreto-de-a'])
+    const theirs = ok(await call(app, b.access_token, 'warren_find_movements'), 'find_movements')
+    expect(theirs.movements.map((m) => m.description)).toEqual(['de-b'])
+    // Searching for A's words finds nothing for B; B's totals are B's alone; B has none of A's facts.
+    const search = ok(
+      await call(app, b.access_token, 'warren_find_movements', { text: 'secreto' }),
+      'find_movements',
+    )
+    expect(search.movements).toEqual([])
+    const total = ok(
+      await call(app, b.access_token, 'warren_summarize', { range: { period: 'this_year' } }),
+      'summarize',
+    )
+    expect(total.totals.map((t) => t.amount)).toEqual(['222'])
+    expect(ok(await call(app, b.access_token, 'warren_list_facts'), 'list_facts').facts).toEqual([])
+    // By id, B can neither correct nor delete A's movement: it is "gone" for B, and A's is untouched.
+    refused(
+      await call(app, b.access_token, 'warren_correct_movement', {
+        id: idA,
+        changes: { amount: '1' },
+      }),
+      'gone',
+    )
+    refused(await call(app, b.access_token, 'warren_delete_movement', { id: idA }), 'gone')
+    expect(
+      ok(await call(app, a.access_token, 'warren_find_movements'), 'find_movements').movements[0],
+    ).toMatchObject({ description: 'secreto-de-a', amount: '111' })
+    // B's undo takes B's own newest turn, never A's (B has one turn of its own; A's is never reached).
+    ok(await call(app, b.access_token, 'warren_undo_last'), 'undo_last')
+    refused(await call(app, b.access_token, 'warren_undo_last'), 'nothing')
+    expect(
+      ok(await call(app, a.access_token, 'warren_find_movements'), 'find_movements').movements,
+    ).toHaveLength(1)
+    expect((await sql`SELECT count(*)::int AS n FROM fact WHERE ended_at IS NULL`)[0]?.n).toBe(1)
   })
 })
 

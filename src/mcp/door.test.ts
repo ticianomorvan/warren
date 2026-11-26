@@ -1,16 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { type App, type Connected, claims, mint, WA_A, WA_B, withClaude } from '../auth-test-kit'
+import {
+  type App,
+  type Connected,
+  claims,
+  EMAIL_A,
+  EMAIL_B,
+  mint,
+  withClaude,
+} from '../auth-test-kit'
 import { forge as forgeOf, rpc as rpcOf } from '../mcp-test-kit'
 import { sql, useDatabase } from '../test-harness'
 
 /**
- * The door of `/mcp` end to end: a real token minted through the real sign-in flow (a fake claude.ai, WhatsApp, consent, PKCE) is the
+ * The door of `/mcp` end to end: a real token minted through the real sign-in flow (a fake claude.ai, a fake Google, consent, PKCE) is the
  * bearer of JSON-RPC calls over HTTP, and tokens forged with the real signing key change one claim or header each. The tools come
  * from the registry in R6; here the door is what is measured (an authenticated `tools/list` answers 200).
  */
 useDatabase({ max: 12 })
-
-const WA_C = '5491100000003'
 
 let app: App
 const rpc = (
@@ -22,14 +28,11 @@ const rpc = (
 let a: Connected
 let b: Connected
 const forge = (over: Parameters<typeof forgeOf>[2] = {}) => forgeOf(app, a.userId, over)
-/** The allow-list, one array shared by WhatsApp and the door: a test may take someone off it. */
-let allowed: string[]
 
 beforeEach(async () => {
-  allowed = [WA_A, WA_B, WA_C]
-  ;({ app } = await withClaude({ allowed }))
-  a = await mint(app, WA_A)
-  b = await mint(app, WA_B)
+  ;({ app } = await withClaude())
+  a = await mint(app, EMAIL_A)
+  b = await mint(app, EMAIL_B)
 })
 afterEach(() => app.close())
 
@@ -96,20 +99,27 @@ describe('the door', () => {
     expect((await rpc(session.token, 'tools/list')).status).toBe(401)
   })
 
-  it('an account whose WhatsApp id is no longer allowed is refused, the others are not', async () => {
+  it('an account that disconnected its agents refuses the tokens issued before, and takes the ones issued after', async () => {
     expect((await rpc(a.access_token, 'tools/list')).status).toBe(200)
-    allowed.splice(0, allowed.length, WA_B) // A was taken off the list
+    await sql`UPDATE account SET mcp_revoked_at = now() + interval '1 second' WHERE id = (SELECT warren_account_id FROM auth_user WHERE id = ${a.userId})`
     const r = await rpc(a.access_token, 'tools/list')
     expect(r.status).toBe(401)
     expect(r.headers.get('www-authenticate')).toContain('resource_metadata=')
+    // Another person's token is not touched.
     expect((await rpc(b.access_token, 'tools/list')).status).toBe(200)
-    allowed.splice(0, allowed.length, '*')
-    expect((await rpc(a.access_token, 'tools/list')).status).toBe(200)
+    // A token issued after the disconnect works: the person signed in again.
+    expect(
+      (await rpc(await forge({ claims: { iat: Math.floor(Date.now() / 1000) + 5 } }), 'tools/list'))
+        .status,
+    ).toBe(200)
   })
 
-  it('a user whose account mapping is gone is refused', async () => {
+  it('a user whose account mapping is gone is repaired on its next call, not locked out', async () => {
     await sql`UPDATE auth_user SET warren_account_id = NULL WHERE id = ${a.userId}`
-    expect((await rpc(a.access_token, 'tools/list')).status).toBe(401)
+    expect((await rpc(a.access_token, 'tools/list')).status).toBe(200)
+    expect(
+      (await sql`SELECT warren_account_id AS id FROM auth_user WHERE id = ${a.userId}`)[0]?.id,
+    ).toEqual(expect.any(Number))
   })
 
   it('a database that cannot answer is a 503, not a reason to sign in again', async () => {

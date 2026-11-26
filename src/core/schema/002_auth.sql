@@ -1,11 +1,11 @@
--- Sign-in and OAuth for MCP (docs/design.md, "MCP and auth"): better-auth's tables and Warren's WhatsApp sign-in code.
+-- Sign-in and OAuth for MCP (docs/design.md, "Auth"): better-auth's tables, and the one way a person's data leaves.
 --
--- Part 1 is what better-auth 1.7.26 creates for our config (src/auth/config.ts: the jwt, mcp and cimd plugins, and the oauth-provider
--- they sit on), as printed by `getMigrations(auth.options).compileMigrations()` and formatted; migrations.test checks that it is still
--- all better-auth wants. better-auth never migrates at runtime. Two changes of ours: every table is `auth_*` (its `account` is not
--- our `account`), and `auth_user.warren_account_id` is the person (our `account` row) the user stands for.
---   auth_user.email is the placeholder `a<id>@users.invalid`: better-auth requires one, and no personal data goes in it.
---   auth_account stays empty (nobody has a password or a social login).
+-- Part 1 is what better-auth creates for our config (src/auth/config.ts: Google sign-in, the jwt, mcp and cimd plugins, and the
+-- oauth-provider they sit on), as printed by `getMigrations(auth.options).compileMigrations()` and formatted; migrations.test checks
+-- that it is still all better-auth wants. better-auth never migrates at runtime. Two changes of ours: every table is `auth_*` (its
+-- `account` is not our `account`), and `auth_user.warren_account_id` is the person (our `account` row) the user stands for.
+--   auth_user.email is the Google account's email: how a person is found by the import command and how they are told apart.
+--   auth_account holds the Google login of a user; Warren stores none of Google's tokens (src/auth/config.ts blanks them).
 --   auth_verification holds the one-use authorization codes; auth_jwks the signing keys of the access tokens.
 --
 CREATE TABLE "auth_user" (
@@ -206,38 +206,9 @@ CREATE INDEX "auth_oauth_consent_userId_idx" ON "auth_oauth_consent" ("userId");
 CREATE UNIQUE INDEX "auth_oauth_client_resource_clientId_resourceId_uidx" ON "auth_oauth_client_resource" ("clientId", "resourceId");
 
 
--- Part 2, the sign-in by WhatsApp. One row per time a browser opens `/sign-in` for an OAuth flow:
---   code          what the person sends to Warren ("vincular K7M2QX"); 6 characters, no look-alikes (0/O, 1/I/L).
---   secret_hash   sha256 of the secret in the browser's httpOnly cookie: only that browser can finish the sign-in.
---   client_name   what the confirmation question names ("Claude (claude.ai)").
---   ip_hash       sha256 of the address that opened the page: one address may open only a few at a time.
---   expires_at    10 minutes after the page was opened.
---   account_id, asked_at   set when an allowed sender sent the code: Warren then asked "¿Conectar ...?".
---   confirmed_at  the sender's "sí". Without it the browser is never signed in.
---   used_at       the sign-in was spent (or refused with "no"): a request works once.
-CREATE TABLE link_request (
-  id            bigserial   PRIMARY KEY,
-  code          text        NOT NULL CONSTRAINT link_request_code_unique UNIQUE
-                CONSTRAINT link_request_code_shape CHECK (code ~ '^[A-Z0-9]{6}$'),
-  secret_hash   text        NOT NULL CONSTRAINT link_request_secret_unique UNIQUE,
-  client_name   text        NOT NULL,
-  ip_hash       text        NOT NULL,
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  expires_at    timestamptz NOT NULL,
-  account_id    bigint      REFERENCES account (id),
-  asked_at      timestamptz,
-  confirmed_at  timestamptz,
-  used_at       timestamptz,
-  CONSTRAINT link_request_asked CHECK ((account_id IS NULL) = (asked_at IS NULL)),
-  CONSTRAINT link_request_confirmed CHECK (confirmed_at IS NULL OR asked_at IS NOT NULL)
-);
--- The per-address limit counts the rows an address opened lately.
-CREATE INDEX link_request_ip_idx ON link_request (ip_hash, created_at);
-
-COMMENT ON TABLE link_request IS 'One row per time a browser opened /sign-in for an OAuth flow: the code the person sends on WhatsApp, and how far the sign-in got.';
-COMMENT ON TABLE auth_user IS 'better-auth: one row per person who connected a client; warren_account_id is the account the user stands for.';
-COMMENT ON TABLE auth_session IS 'better-auth: one row per sign-in session; it only lives to finish consent.';
-COMMENT ON TABLE auth_account IS 'better-auth: one row per login method of a user (password, social). Stays empty: nobody has one.';
+COMMENT ON TABLE auth_user IS 'better-auth: one row per person who signed in with Google; warren_account_id is the account the user stands for.';
+COMMENT ON TABLE auth_session IS 'better-auth: one row per sign-in session; it lives to finish consent and to use the account page.';
+COMMENT ON TABLE auth_account IS 'better-auth: one row per login method of a user (Google). Holds no token.';
 COMMENT ON TABLE auth_verification IS 'better-auth: one row per one-use authorization code or verification token.';
 COMMENT ON TABLE auth_jwks IS 'better-auth jwt plugin: one row per signing key of the access tokens.';
 COMMENT ON TABLE auth_oauth_client IS 'oauth-provider: one row per OAuth client (Claude, registered from its CIMD document).';
@@ -247,3 +218,20 @@ COMMENT ON TABLE auth_oauth_refresh_token IS 'oauth-provider: one row per refres
 COMMENT ON TABLE auth_oauth_access_token IS 'oauth-provider: one row per opaque access token it issued.';
 COMMENT ON TABLE auth_oauth_consent IS 'oauth-provider: one row per scope set a user consented to for a client.';
 COMMENT ON TABLE auth_oauth_client_assertion IS 'oauth-provider: one row per client-assertion identifier seen, to refuse a replay.';
+
+-- Part 2, the one way out. Deleting an account is the single exception to append-only: every row of the person goes in one
+-- transaction, through this function. It names the account in the transaction-local setting `warren.erasing`, which is the only thing
+-- `append_only()` accepts for a DELETE, and clears it before it returns. Only src/auth/account.ts calls it (a test holds that).
+CREATE FUNCTION erase_account(target bigint) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM set_config('warren.erasing', target::text, true);
+  DELETE FROM mcp_request WHERE account_id = target;
+  DELETE FROM movement WHERE account_id = target;
+  DELETE FROM fact WHERE account_id = target;
+  DELETE FROM turn WHERE account_id = target;
+  -- The sign-in side: the user, and by cascade its sessions, logins, consents and tokens.
+  DELETE FROM auth_user WHERE warren_account_id = target;
+  DELETE FROM account WHERE id = target;
+  PERFORM set_config('warren.erasing', '', true);
+END $$;
+COMMENT ON FUNCTION erase_account(bigint) IS 'Deletes every row of one account in the caller''s transaction: the only DELETE append_only() lets through.';

@@ -7,7 +7,7 @@ import { jwt } from 'better-auth/plugins'
 import { PostgresJSDialect } from 'kysely-postgres-js'
 import type { Sql } from '../core/db'
 import { clientIdAllowed } from '../mcp/clients'
-import { linkSession, type SessionLinks } from './plugin'
+import { ensureAccount } from './account'
 
 /** What a token may be used for. `offline_access` is the refresh token. */
 export const SCOPES = ['ledger:read', 'ledger:write', 'offline_access'] as const
@@ -17,6 +17,9 @@ export const ACCESS_TOKEN_SECONDS = 15 * 60
 
 /** The sign-in session only exists to finish consent. */
 export const SESSION_SECONDS = 60 * 60
+
+/** The path better-auth runs Google's callback under: the only one that may make a user. */
+const GOOGLE_CALLBACK = '/callback/:id'
 
 /** The MCP endpoint, which is also the audience of every access token (RFC 8707). */
 export const mcpUrl = (publicUrl: string) => new URL('/mcp', publicUrl).href
@@ -43,17 +46,20 @@ export interface AuthSettings {
   /** `https://heywarren.app`: the issuer, and the host the OAuth routes answer on. */
   publicUrl: string
   secret: string
-  /** The sign-in's side of the database. */
-  links: SessionLinks
+  /** What makes the account of a new user (tests make it fail once). Default `ensureAccount`. */
+  makeAccount?: typeof ensureAccount
+  /** The OAuth client of "Continuar con Google". */
+  google: { clientId: string; clientSecret: string }
   /** How a client's metadata document is fetched. A test passes a fake; the default pins the DNS answer. */
   fetchClientMetadataResource?: ClientMetadataResourceFetch
   log?: (level: 'debug' | 'info' | 'warn' | 'error', message: string, ...args: unknown[]) => void
 }
 
 /**
- * The OAuth 2.1 authorization server for Warren's MCP endpoint (slice 5): better-auth on our own database,
- * public clients only, each one a metadata document (CIMD) from an allowed host. Nobody signs in with a
- * password or an email: the `warren-link` plugin makes a session for a person who confirmed on WhatsApp.
+ * The OAuth 2.1 authorization server for Warren's MCP endpoint: better-auth on our own database, any agent: a
+ * metadata document (CIMD) on a public https host, or a client that registers itself (DCR). "Continuar con Google" is the only way in, open to anyone with a Google account:
+ * no password, no email sign-up. The first Google sign-in of a person makes their `auth_user` and, in the `after` hook, their
+ * `account` row; any other way a user could be created is refused in the `before` hook.
  */
 export function createAuth(s: AuthSettings) {
   const instance = betterAuth({
@@ -61,7 +67,7 @@ export function createAuth(s: AuthSettings) {
     baseURL: s.publicUrl,
     secret: s.secret,
     database: { dialect: new PostgresJSDialect({ postgres: s.sql as never }), type: 'postgres' },
-    // The migrations are ours (`012_auth.sql`); better-auth never alters the schema.
+    // The migrations are ours (`002_auth.sql`); better-auth never alters the schema.
     user: {
       modelName: AUTH_TABLES.user,
       additionalFields: {
@@ -81,7 +87,39 @@ export function createAuth(s: AuthSettings) {
       expiresIn: SESSION_SECONDS,
       disableSessionRefresh: true,
     },
-    account: { modelName: AUTH_TABLES.account },
+    // Google's tokens are never kept (below), so a later sign-in has nothing to refresh.
+    account: { modelName: AUTH_TABLES.account, updateAccountOnSignIn: false },
+    socialProviders: {
+      google: { clientId: s.google.clientId, clientSecret: s.google.clientSecret },
+    },
+    databaseHooks: {
+      user: {
+        create: {
+          // A user exists only when Google's callback made it: not by email, not by any other route a plugin may add.
+          before: async (_user, ctx) => (ctx?.path === GOOGLE_CALLBACK ? undefined : false),
+          // The person: one `account` row, linked to the user. If it fails, sign-in goes on and the account is made on next use
+          // (`ensureAccount` in the account page and the door): a person is never locked out by one failed insert.
+          after: async (user) => {
+            try {
+              await (s.makeAccount ?? ensureAccount)(s.sql, user.id)
+            } catch (error) {
+              s.log?.(
+                'error',
+                `account not made for a new user: ${error instanceof Error ? error.name : 'unknown'}`,
+              )
+            }
+          },
+        },
+      },
+      account: {
+        create: {
+          // Warren never holds access to anything of Google's: only that this user signed in with this Google account.
+          before: async (account) => ({
+            data: { ...account, accessToken: null, refreshToken: null, idToken: null, scope: null },
+          }),
+        },
+      },
+    },
     verification: { modelName: AUTH_TABLES.verification },
     advanced: {
       database: { generateId: 'uuid' },
@@ -89,9 +127,8 @@ export function createAuth(s: AuthSettings) {
       // (docs.railway.com, Specs & Limits; staff: "for client-IP rate limiting, X-Real-IP is the header to use"). Not
       // X-Forwarded-For: its hop count is not guaranteed. Services in our own private network can set it freely, and none
       // is there. Where the header is absent, better-auth's limiter has no address and does not count (in development and
-      // test it falls back to 127.0.0.1); the /sign-in limit instead falls back to the socket's address (`routes.ts`), so
-      // requests without the header share one bucket there. better-auth keys an IPv6 address by its /64 and an
-      // IPv4-mapped one as IPv4 (one subscriber holds the whole prefix); `src/auth/ip.ts` does the same for /sign-in.
+      // test it falls back to 127.0.0.1). better-auth keys an IPv6 address by its /64 and an IPv4-mapped one as IPv4 (one
+      // subscriber holds the whole prefix).
       ipAddress: { ipAddressHeaders: ['x-real-ip'], ipv6Subnet: 64 },
       // Explicit, so the origin check also holds under NODE_ENV=test, where better-auth skips it by default.
       disableOriginCheck: false,
@@ -104,8 +141,11 @@ export function createAuth(s: AuthSettings) {
       window: 10,
       max: 100,
       customRules: {
-        // Finishing a sign-in needs a confirmed WhatsApp answer: nobody needs more than a few tries.
-        '/warren/link/complete': { window: 60, max: 10 },
+        // Starting a Google sign-in, the one route that costs us a call to Google: a person needs a few tries at most.
+        '/sign-in/social': { window: 60, max: 10 },
+        '/callback/:id': { window: 60, max: 20 },
+        // Open registration: a client registers once per install, so a few a minute per address is plenty.
+        '/oauth2/register': { window: 60, max: 5 },
       },
     },
     // Warn and above only: nothing about a person goes to the log.
@@ -113,8 +153,9 @@ export function createAuth(s: AuthSettings) {
     // Closed over HTTP outright, so each holds even if a plugin's own check changes: the session JWT
     // endpoint, and every route that makes, changes, lists or deletes an OAuth client or a consent.
     disabledPaths: [
+      '/sign-up/email',
+      '/sign-in/email',
       '/token',
-      '/oauth2/register',
       '/oauth2/create-client',
       '/oauth2/update-client',
       '/oauth2/delete-client',
@@ -139,9 +180,16 @@ export function createAuth(s: AuthSettings) {
         scopes: [...SCOPES],
         // Public clients only (a metadata-document client has no secret): no client_credentials.
         grantTypes: ['authorization_code', 'refresh_token'],
-        // Nobody registers, edits, lists or deletes a client over HTTP: a client exists only as a
-        // metadata document from an allowed host.
+        // Any agent may connect: by its metadata document (CIMD, below) or, for a client that has none yet (ChatGPT, Cursor and
+        // others still register this way), by Dynamic Client Registration, open and rate limited. A registered client can do
+        // nothing until a person signs in with Google and consents on a page that shows where it sends them back. Nobody edits,
+        // lists or deletes a client over HTTP.
+        allowDynamicClientRegistration: true,
+        allowUnauthenticatedClientRegistration: true,
         clientPrivileges: () => false,
+        // Claude needs two flags to register by its metadata document, and falls back to Dynamic Client Registration
+        // when either is missing: public clients are accepted ("none", said here) and CIMD is supported (`cimd()` says so).
+        advertisedMetadata: { token_endpoint_auth_methods_supported: ['none'] },
         accessTokenExpiresIn: ACCESS_TOKEN_SECONDS,
         // Strict rotation: a refresh token works once, with no replay window.
         refreshTokenReuseInterval: 0,
@@ -155,13 +203,12 @@ export function createAuth(s: AuthSettings) {
           oauthConsent: { modelName: AUTH_TABLES.oauthConsent },
         },
       }),
-      // No Dynamic Client Registration: a client is its own metadata document, from an allowed host.
+      // A client whose id is its metadata document's https URL, fetched only from public addresses (`mcp/clients.ts`).
       cimd({
         fetchClientMetadataResource: s.fetchClientMetadataResource ?? fetchOverNode,
         metadataProfile: 'mcp-2026-07-28',
         isMetadataDocumentUrlAllowed: clientIdAllowed,
       }),
-      linkSession(s.links),
     ],
   })
   return instance

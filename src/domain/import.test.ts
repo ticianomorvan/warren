@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { cafe, liveMovements, minutes, NOW, newAccount, turn, undo } from '../../test/core'
 import { sql, useDatabase } from '../../test/db'
 import { schemaDir } from '../core/db'
-import { accountOfWaId, importMovements, MAX_ROWS } from './import'
+import { accountOfEmail, importMovements, MAX_ROWS } from './import'
+import { MAX_LIVE_MOVEMENTS } from './movements'
 
 useDatabase({ migrations: schemaDir })
 
@@ -18,8 +19,8 @@ describe('importMovements', () => {
     const result = await importMovements({ rows: rows(23), now: NOW, into: into(a) })
     expect(result).toMatchObject({ status: 'imported', movements: 23 })
     expect(await liveMovements(sql)).toHaveLength(23)
-    const turns = await sql`SELECT channel, label, jsonb_array_length(calls) AS calls FROM turn`
-    expect(turns).toEqual([{ channel: 'cli', label: 'import', calls: 3 }])
+    const turns = await sql`SELECT client, jsonb_array_length(calls) AS calls FROM turn`
+    expect(turns).toEqual([{ client: 'cli', calls: 3 }])
   })
 
   it('only checks without a target', async () => {
@@ -45,7 +46,7 @@ describe('importMovements', () => {
     expect(result.status).toBe('refused')
   })
 
-  it('is one step of the undo stack: one "deshacer" takes it all back', async () => {
+  it('is one step of the undo stack: one undo takes it all back', async () => {
     const a = await newAccount(sql)
     await importMovements({ rows: rows(15), now: NOW, into: into(a) })
     await turn(sql, a, [undo], { at: minutes(5) })
@@ -79,11 +80,29 @@ describe('importMovements', () => {
   })
 })
 
-describe('accountOfWaId', () => {
-  it('finds the account of a WhatsApp number', async () => {
+describe('the account cap', () => {
+  it('refuses an import that would take the account past the live-movement limit, and writes nothing', async () => {
     const a = await newAccount(sql)
-    await sql`INSERT INTO account_address (account_id, channel, address) VALUES (${a}, 'whatsapp', '5493510000000')`
-    expect(await accountOfWaId(sql, '5493510000000')).toBe(a)
-    expect(await accountOfWaId(sql, '5493519999999')).toBeNull()
+    // Fills the account up to the cap in one statement: a real log of 100k rows would only slow the test.
+    await sql`INSERT INTO turn (id, account_id, client) VALUES (1000, ${a}, 'test')`
+    await sql`
+      INSERT INTO movement (account_id, made_in, direction, amount, currency, occurred_on, description, category, confidence)
+      SELECT ${a}, 1000, 'out', 1, 'ARS', '2026-11-20', 'x', 'otros', 'high' FROM generate_series(1, ${MAX_LIVE_MOVEMENTS - 5})`
+    const result = await importMovements({ rows: rows(6), now: NOW, into: into(a) })
+    expect(result).toEqual({ status: 'full', live: MAX_LIVE_MOVEMENTS - 5 })
+    expect(await sql`SELECT 1 FROM turn WHERE id <> 1000`).toHaveLength(0)
+    expect((await importMovements({ rows: rows(5), now: NOW, into: into(a) })).status).toBe(
+      'imported',
+    )
+  })
+})
+
+describe('accountOfEmail', () => {
+  it('finds the account of the Google email a person signed in with, ignoring case', async () => {
+    const a = await newAccount(sql)
+    await sql`INSERT INTO auth_user (name, email, "emailVerified", warren_account_id)
+      VALUES ('Ana', 'Ana@Example.test', true, ${a})`
+    expect(await accountOfEmail(sql, ' ana@example.test ')).toBe(a)
+    expect(await accountOfEmail(sql, 'otra@example.test')).toBeNull()
   })
 })

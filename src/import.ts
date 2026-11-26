@@ -1,15 +1,17 @@
 import { readFileSync } from 'node:fs'
 import { connect, type Sql } from './core/db'
-import { accountOfWaId, type ImportResult, importMovements } from './domain/import'
+import { accountOfEmail, type ImportResult, importMovements } from './domain/import'
 
 /**
- * `pnpm import:movements <file.jsonl> --wa <wa_id> [--check]`: a person's backlog into their ledger as one turn, so one "deshacer"
- * takes it all back within the undo window. One `log_movements` movement per line. `--check` validates the file and writes nothing.
+ * `pnpm import:movements <file.jsonl> (--account <id> | --email <google email>) [--check]`: a person's backlog into their ledger as one
+ * turn, so one `warren_undo_last` takes it all back within the undo window. One `log_movements` movement per line. `--check` validates the file and writes nothing.
  * The import becomes the newest step of the person's undo stack: run it when they are not in the middle of a conversation. Writes go
  * to DATABASE_URL (for Railway, the Postgres service public URL through its TCP proxy), which is never printed.
  */
 function usage(problem: string): never {
-  console.error(`${problem}\nUsage: pnpm import:movements <file.jsonl> --wa <wa_id> [--check]`)
+  console.error(
+    `${problem}\nUsage: pnpm import:movements <file.jsonl> (--account <id> | --email <google email>) [--check]`,
+  )
   process.exit(1)
 }
 
@@ -17,9 +19,15 @@ const args = process.argv.slice(2)
 const file = args[0]
 if (!file || file.startsWith('--')) usage('Name the file first.')
 const checkOnly = args.includes('--check')
-const waAt = args.indexOf('--wa')
-const waId = waAt >= 0 ? (args[waAt + 1] ?? '').replace(/\D/g, '') : ''
-if (!checkOnly && waId.length < 8) usage('--wa needs the WhatsApp number, digits only.')
+const flag = (name: string) => {
+  const at = args.indexOf(name)
+  return at >= 0 ? (args[at + 1] ?? '').trim() : ''
+}
+const accountFlag = flag('--account')
+const email = flag('--email')
+if (!checkOnly && !/^[1-9]\d*$/.test(accountFlag) && !email.includes('@')) {
+  usage('Name the person: --account <id> or --email <the Google email they signed in with>.')
+}
 
 const rows: unknown[] = []
 const broken: number[] = []
@@ -46,6 +54,9 @@ function report(result: ImportResult): void {
   } else if (result.status === 'already') {
     console.error(`These rows were already imported (turn ${result.turn}); nothing was written.`)
     process.exitCode = 1
+  } else if (result.status === 'full') {
+    console.error(`The account already holds ${result.live} movements; nothing was written.`)
+    process.exitCode = 1
   } else if (result.status === 'checked') {
     console.log(`${result.movements} rows pass the guards; nothing was written.`)
   } else {
@@ -60,9 +71,14 @@ if (checkOnly) {
   if (!url) usage('Set DATABASE_URL.')
   const sql: Sql = connect(url, { max: 1 })
   try {
-    const accountId = await accountOfWaId(sql, waId)
+    const accountId = accountFlag
+      ? ((await sql`SELECT id::int AS id FROM account WHERE id = ${Number(accountFlag)}`)[0]?.id ??
+        null)
+      : await accountOfEmail(sql, email)
     if (accountId === null) {
-      console.error('No account has that WhatsApp number.')
+      console.error(
+        accountFlag ? `No account has the id ${accountFlag}.` : 'No account has that email.',
+      )
       process.exitCode = 1
     } else {
       report(await importMovements({ rows, into: { sql, accountId } }))

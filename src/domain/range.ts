@@ -43,7 +43,7 @@ export function rangeDays(r: DateRange): number {
 
 const refuse = (reason: string): Resolution => ({ ok: false, reason })
 
-/** What the model is told when it asks for days that have not happened. */
+/** What the agent is told when it asks for days that have not happened. */
 const futureReason = (what: string, today: string) =>
   `${what} has not started yet: today is ${today}. Nothing is stored for it. Tell the person with reply, in Spanish and with no number (for example "Eso todavía no pasó."), and do not summarize it.`
 
@@ -216,7 +216,7 @@ function bounded(whole: Whole, today: string, what: string): Resolution {
 /**
  * The inclusive Argentine days a range covers, counted from `today` (an Argentine day). Pure. A period that is not
  * over ends today ("en lo que va del año", "esta semana"), so the days shown are the days that count. A range that
- * has not started, is reversed or is longer than two years is refused with the reason the model is told.
+ * has not started, is reversed or is longer than two years is refused with the reason the agent is told.
  */
 export function resolveRange(spec: RangeInput, today: string): Resolution {
   const [year = 0, month = 1] = parts(today)
@@ -338,7 +338,7 @@ export function sentinel(r: Range): RangeInput {
 
 /**
  * Every rule of a typed summary's days in one place: the range, "previous" or a second range, and what cannot be compared. A
- * string is the reason it cannot run (for the model or the MCP client).
+ * string is the reason it cannot run (for the agent or the MCP client).
  */
 export function planRange(
   q: Pick<Input<'summarize'>, 'range' | 'group_by' | 'compare'>,

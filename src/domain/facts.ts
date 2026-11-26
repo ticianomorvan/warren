@@ -1,16 +1,12 @@
 import { CATEGORIES, FACT_KINDS, type FactKind } from '../core/commands'
-import { hasForeignDigit, unwritten } from '../core/numbers'
-import { looksContact, looksSecret, sensitive } from '../core/secrets'
+import { hasForeignDigit } from '../core/numbers'
+import { looksContact, looksSecret } from '../core/secrets'
 import { normalizeText } from '../core/values'
 
 /** The most live facts one account holds. A person who reaches it is told, and forgets one to make room. */
 export const MAX_FACTS = 100
-/** The most facts the model is shown per message (the newest). Code lists them all on request. */
-export const CONTEXT_FACTS = 30
 export const MAX_KEY = 40
 export const MAX_VALUE = 100
-/** The most facts shown beyond the newest ones because the message says their key. */
-export const MAX_MATCHED_FACTS = 20
 
 /** The sent text of a fact: whitespace squashed, and the characters that could close a tag or a quote swapped for a space. */
 export const tidy = (text: string) =>
@@ -38,26 +34,26 @@ export interface FactInput {
 
 export type FactCheck =
   | { ok: true; fact: FactInput }
-  /** What the model is told, to send it again. */
+  /** What the client is told, to send it again. */
   | { ok: false; message: string }
-  /** A secret or contact data: nothing is stored and the person is told so (the model is not asked to fix it). */
+  /** A secret or contact data: nothing is stored. */
   | { ok: false; refused: 'secret' | 'contact' }
 
 /**
  * The value rules of a fact, whoever sends it: a secret (a card or CBU number, a password, a DNI) or contact data (an email,
  * a phone) is refused and the sender told so; the key is 1 to 4 short words, the value fits, a `category` value is one of the
- * categories. `messageHasSecret`: the message the fact came with held a secret (a conversation's). Nothing about whose words they are.
+ * categories.
  */
-export function checkFactValues(input: FactInput, messageHasSecret = false): FactCheck {
+export function checkFactValues(input: FactInput): FactCheck {
   const key = normalizeKey(input.key)
   const value = tidy(input.value)
   const stored = `${key} ${value}`
-  // What the model would store, as it wrote it (a key loses its punctuation and a card number its separators).
+  // What would be stored, as it was sent (a key loses its punctuation and a card number its separators).
   const raw = `${tidy(input.key)} ${value}`
   // A phone number with its country code is as long as a card number: it is contact data, not a secret.
   const contact = looksContact(raw)
   if (contact && /\+\d/.test(raw)) return { ok: false, refused: 'contact' }
-  if (looksSecret(raw) || messageHasSecret) return { ok: false, refused: 'secret' }
+  if (looksSecret(raw)) return { ok: false, refused: 'secret' }
   if (contact) return { ok: false, refused: 'contact' }
   const why = (message: string): FactCheck => ({ ok: false, message })
 
@@ -75,54 +71,12 @@ export function checkFactValues(input: FactInput, messageHasSecret = false): Fac
   return { ok: true, fact: { kind: input.kind, key, value } }
 }
 
-/**
- * The rules of a fact before it is stored, none of them the model's to waive:
- * - it is a secret (a card or CBU number, a password, a DNI) or contact data (an email, a phone): refused, and the person is told so;
- * - the key is 1 to 4 short words and the value fits, and a `category` value is one of the categories;
- * - the person said it: the key (an alias also accepts the value) are words of their message, so a model
- *   cannot remember something it only inferred;
- * - every number in it is a number the person wrote (`cobro el 5` keeps its 5; a model's 4509 is refused).
- * `message` is the person's own message, or what was heard in a voice note.
- */
-export function checkFact(input: FactInput, message: string): FactCheck {
-  const checked = checkFactValues(input, sensitive(message))
-  if (!checked.ok) return checked
-  const { key, value } = checked.fact
-  const stored = `${key} ${value}`
-  const why = (message: string): FactCheck => ({ ok: false, message })
-  // The person's own words: the key, or for an alias either side (the other may be in your terms: "la visa" is "crédito visa").
-  const said = normalizeKey(message)
-  // Whole words, a plural allowed ("cafe" is in "los cafés"): the key "ana" is not in "compré una banana".
-  const inMessage = (words: string) =>
-    words !== '' &&
-    new RegExp(
-      `(?:^| )${words
-        .split(' ')
-        .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('(?:es|s)? ')}(?:es|s)?(?= |$)`,
-    ).test(said)
-  const traced =
-    input.kind === 'alias' ? inMessage(key) || inMessage(normalizeKey(value)) : inMessage(key)
-  if (!traced) {
-    return why(
-      'the key must be words the person wrote in this message; remember only what they state, never what you inferred (if unsure, ask with reply)',
-    )
-  }
-  const made = unwritten(stored, message)
-  if (made.length > 0) {
-    return why(
-      `numbers the person did not write: ${[...new Set(made)].join(', ')}. A fact holds only numbers they wrote; leave them out`,
-    )
-  }
-  return { ok: true, fact: { kind: input.kind, key, value } }
-}
-
 // ---- The facts as stored (the new schema): versions of an entity, live while `ended_at IS NULL`. `id` is the entity id, the
-// ---- same across every version, and the one the model and MCP clients see.
+// ---- same across every version, and the one MCP clients see.
 
 import type { Sql } from '../core/db'
 
-/** A live fact as the model, the record and the list see it. `version` is the row of the version, which only the history reads. */
+/** A live fact as the agent, the record and the list see it. `version` is the row of the version, which only the history reads. */
 export interface FactRow {
   id: number
   version: number
@@ -135,32 +89,6 @@ export interface FactRow {
 
 const columns = (sql: Sql) =>
   sql`entity_id AS id, id AS version, kind, key, value, logged_at AS "loggedAt"`
-
-/**
- * The facts the model is shown with a message: the newest `limit`, and, so that an old alias still works, every other live
- * fact whose key the message says (at most `MAX_MATCHED_FACTS`), newest first; and how many live facts the account has in all.
- */
-export async function liveFacts(
-  sql: Sql,
-  accountId: number,
-  message = '',
-  limit = CONTEXT_FACTS,
-): Promise<{ facts: FactRow[]; total: number }> {
-  const newest = await sql<(FactRow & { total: number })[]>`
-    SELECT ${columns(sql)}, count(*) OVER ()::int AS total FROM fact
-    WHERE account_id = ${accountId} AND ended_at IS NULL
-    ORDER BY fact.id DESC LIMIT ${limit}`
-  const total = newest[0]?.total ?? 0
-  const said = normalizeKey(message)
-  if (said === '' || total <= newest.length) return { facts: newest, total }
-  // A key counts when the message has it from the start of a word ("cafe" in "cafes").
-  const named = await sql<FactRow[]>`
-    SELECT ${columns(sql)} FROM fact
-    WHERE account_id = ${accountId} AND ended_at IS NULL AND id <> ALL(${newest.map((f) => f.version)}::bigint[])
-      AND strpos(${` ${said}`}, ' ' || key) > 0
-    ORDER BY fact.id DESC LIMIT ${MAX_MATCHED_FACTS}`
-  return { facts: [...newest, ...named].sort((a, b) => b.version - a.version), total }
-}
 
 /** Every live fact of the account, by kind and key: what "¿qué sabés de mí?" lists. */
 export function allLiveFacts(sql: Sql, accountId: number) {
@@ -255,12 +183,4 @@ export async function rememberFact(
   }
   if ((await countLiveFacts(sql, o.accountId)) >= MAX_FACTS) return { kind: 'full' }
   return { kind: 'new', fact: await insertFact(sql, o) }
-}
-
-/** Forgets every live fact of the account; returns them as they were. */
-export function forgetAll(sql: Sql, accountId: number, turnId: number) {
-  return sql<FactRow[]>`
-    UPDATE fact SET ended_in = ${turnId}, ended_at = now()
-    WHERE account_id = ${accountId} AND ended_at IS NULL
-    RETURNING ${columns(sql)}`
 }

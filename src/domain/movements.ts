@@ -1,13 +1,10 @@
-import { type Category, type Changes, RECENT_LIMIT } from '../core/commands'
+import type { Category, Changes } from '../core/commands'
 import type { Sql } from '../core/db'
-import { tokens } from '../core/numbers'
 import { canonicalAmount, normalizeText } from '../core/values'
-
-export { RECENT_LIMIT }
 
 /**
  * A live movement as the parser and the reply see it. `id` is the entity id: the same across every version of the movement,
- * and the one the model and MCP clients see. `version` is the row of the version, which only the history reads.
+ * and the one MCP clients see. `version` is the row of the version, which only the history reads.
  */
 export interface MovementRow {
   id: number
@@ -33,14 +30,6 @@ const columns = (sql: Sql) => sql`
   to_char(occurred_on, 'YYYY-MM-DD') AS date, description, category, payment, confidence,
   to_char(logged_at AT TIME ZONE 'America/Argentina/Buenos_Aires', 'HH24:MI') AS time,
   logged_at AS "loggedAt"`
-
-/** The account's newest live movements, newest first. A corrected movement counts as new again (its version is the newest row). */
-export function recentMovements(sql: Sql, accountId: number, limit = RECENT_LIMIT) {
-  return sql<MovementRow[]>`
-    SELECT ${columns(sql)} FROM movement
-    WHERE account_id = ${accountId} AND ended_at IS NULL
-    ORDER BY movement.id DESC LIMIT ${limit}`
-}
 
 /** The entity id of the account's newest live movement, or null when it has none. */
 export async function newestLiveId(sql: Sql, accountId: number): Promise<number | null> {
@@ -82,30 +71,28 @@ export async function insertMovements(
 
 /**
  * A row lock on the account's live movement of this entity. Null when it is not: another turn corrected or deleted it, and a
- * second change must not apply to it. With `shown` (the version the person was shown, and the turn that asks), the live version must
- * be that one or one this same turn made: a movement corrected meanwhile (over MCP, say) is not acted on in its new form. (A write
- * transaction holds the account lock already; the row lock is the second layer.)
+ * second change must not apply to it. (A write transaction holds the account lock already; the row lock is the second layer.)
  */
 export async function lockLive(
   sql: Sql,
   accountId: number,
   entityId: number,
-  shown?: { version: number; turnId: number },
 ): Promise<MovementRow | null> {
   const [row] = await sql<MovementRow[]>`
     SELECT ${columns(sql)} FROM movement
     WHERE entity_id = ${entityId} AND account_id = ${accountId} AND ended_at IS NULL
-      ${shown ? sql`AND (movement.id = ${shown.version} OR made_in = ${shown.turnId})` : sql``}
     FOR UPDATE`
   return row ?? null
 }
 
-/** The live movements among these entities that belong to the account, newest first. */
-export function liveByIds(sql: Sql, accountId: number, ids: number[]) {
-  return sql<MovementRow[]>`
-    SELECT ${columns(sql)} FROM movement
-    WHERE account_id = ${accountId} AND entity_id = ANY(${ids}::bigint[]) AND ended_at IS NULL
-    ORDER BY movement.id DESC`
+/** The most live movements one account holds: past it a log is refused (`movement_limit`), so one account cannot fill the database. */
+export const MAX_LIVE_MOVEMENTS = 100_000
+
+/** How many live movements the account holds. */
+export async function countLive(sql: Sql, accountId: number): Promise<number> {
+  const [row] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM movement WHERE account_id = ${accountId} AND ended_at IS NULL`
+  return row?.n ?? 0
 }
 
 /** Ends a version in a turn. Never removes the row; false when it was not live. */
@@ -194,7 +181,7 @@ const foldedPayment = `lower(translate(coalesce(payment, ''), ${ACCENTS[0]}, ${A
 
 /**
  * The account's live movements that match every filter set, newest first, `limit` of them (the caller caps it: the turn check
- * for WhatsApp's model, the page size for MCP) and, for a next page, only those whose entity is below `beforeEntity`. Newest is by
+ * the page size for MCP) and, for a next page, only those whose entity is below `beforeEntity`. Newest is by
  * entity (when the movement was first logged), which a correction does not change, so a movement corrected between two pages is
  * neither skipped nor shown twice. The words match the `search` column (description and category, folded).
  */
@@ -220,39 +207,4 @@ export function findMovements(
       ${payment ? sql`AND position(${payment}::text IN ${sql.unsafe(foldedPayment)}) > 0` : sql``}
       ${words.length > 0 ? sql`AND search LIKE ALL (${words.map(like)}::text[])` : sql``}
     ORDER BY entity_id DESC LIMIT ${Math.max(f.limit, 1)}`
-}
-
-/** At most this many older movements are added to the context for a message. */
-export const MENTIONED_LIMIT = 8
-
-/**
- * The older live movements a message names: those beyond the `RECENT_LIMIT` newest (the model already sees those) that have a word of
- * 4 or more letters of the message at the start of a word of their `search` column (description and category, folded), or an
- * amount the message writes. Newest first, `limit` of them, as `findMovements` ranks. It only retrieves: the model still picks the id.
- */
-export function mentionedMovements(
-  sql: Sql,
-  accountId: number,
-  message: string,
-  limit = MENTIONED_LIMIT,
-) {
-  const folded = normalizeText(message)
-  const words = [
-    ...new Set(folded.split(/[^a-z0-9]+/).filter((w) => /[a-z]/.test(w) && w.length >= 4)),
-  ]
-  // The amounts the message writes, read as the numbers check reads them (a full stop or comma after "3500." is not part of it).
-  const amounts = [
-    ...new Set(tokens(folded).flatMap((t) => (t.needs.startsWith('n:') ? [t.needs.slice(2)] : []))),
-  ].filter((n) => /^\d+(\.\d{1,2})?$/.test(n) && Number(n) > 0)
-  if (words.length === 0 && amounts.length === 0) return Promise.resolve([] as MovementRow[])
-  const like = (w: string) => `% ${w.replace(/[\\%_]/g, '\\$&')}%`
-  return sql<MovementRow[]>`
-    SELECT ${columns(sql)} FROM movement
-    WHERE account_id = ${accountId} AND ended_at IS NULL
-      AND entity_id NOT IN (
-        SELECT entity_id FROM movement WHERE account_id = ${accountId} AND ended_at IS NULL
-        ORDER BY id DESC LIMIT ${RECENT_LIMIT})
-      AND (${words.length > 0 ? sql`(' ' || search) LIKE ANY (${words.map(like)}::text[])` : sql`false`}
-        OR ${amounts.length > 0 ? sql`amount = ANY (${amounts}::numeric[])` : sql`false`})
-    ORDER BY movement.id DESC LIMIT ${limit}`
 }

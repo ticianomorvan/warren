@@ -6,10 +6,16 @@ import { allowedOrigins } from './clients'
 import type { Door } from './door'
 import { registerTools } from './tools'
 
-const INSTRUCTIONS =
-  "Warren keeps a person's personal-finance ledger for Argentina: spending and income logged from WhatsApp, in ARS and USD, and their reminders. " +
-  'Use warren_summarize for any total, count or comparison, and warren_find_movements to look at individual movements. ' +
-  'Every amount is computed by Warren: quote it as given and never add, convert or round amounts yourself.'
+/**
+ * What every client's agent is told on connect; the first 512 characters carry the rules, since a client may cut the rest. Written
+ * for any agent (Claude, ChatGPT, Cursor, a script), never for one chat app.
+ */
+export const INSTRUCTIONS =
+  "Warren is the person's personal-finance ledger (spending and income, ARS and USD). Rules: never add, convert or round money yourself; " +
+  'quote `display` and the totals the tools return. Use warren_summarize for any total, count or comparison. Log only what the ' +
+  'person said, and ask before a choice that changes totals (the category, the day, a possible duplicate). ' +
+  'A mistake is fixed with warren_correct_movement or warren_delete_movement; warren_undo_last takes back the newest change as a whole. ' +
+  'Write calls take an optional request_id: send the same one when you retry. Amounts are decimal strings ("3500", "1500.50"), days are yyyy-mm-dd in Argentina.'
 
 /** The most a request body may hold: a tool call is a few hundred bytes. */
 const MAX_BODY = 256 * 1024
@@ -43,11 +49,13 @@ export function createMcpEndpoint(o: {
     (ctx) => {
       const accountId = (ctx.authInfo?.extra as { accountId?: unknown } | undefined)?.accountId
       if (typeof accountId !== 'number') throw new Error('no account from the door')
+      const client = ctx.authInfo?.clientId
+      if (!client) throw new Error('no client from the door')
       const server = new McpServer(
         { name: 'warren', version: '0.1.0' },
         { instructions: INSTRUCTIONS },
       )
-      registerTools(server, { sql: o.sql, accountId, now: o.now ?? (() => new Date()) })
+      registerTools(server, { sql: o.sql, accountId, client, now: o.now ?? (() => new Date()) })
       return server
     },
     {

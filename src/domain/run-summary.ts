@@ -13,8 +13,8 @@ export interface RanSummary {
 }
 
 /**
- * Runs a summary the model or an MCP client asked for: plans the days, sums them in SQL (the asked range and, when it is compared,
- * the other one) and renders the reply. One path for WhatsApp and MCP, so the numbers are the same. `checkValues` has already planned
+ * Runs a summary an MCP client asked for: plans the days, sums them in SQL (the asked range and, when it is compared,
+ * the other one) and renders the reply. One path, so the numbers are the same everywhere. `checkValues` has already planned
  * this against the same day: a failure here is a bug, not a refusal.
  */
 export async function runSummary(

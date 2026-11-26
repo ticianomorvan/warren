@@ -30,7 +30,7 @@ export const canonicalAmount = (amount: string) =>
     '',
   )
 
-/** A value the movement table cannot hold, or a rule the model broke. Never repaired: the model is told. */
+/** A value the movement table cannot hold, or a rule the agent broke. Never repaired: the agent is told. */
 export type Issue = { path: string; message: string }
 
 const AMOUNT_RE = /^\d+(\.\d{1,2})?$/
@@ -78,9 +78,9 @@ function checkValues(
 }
 
 /**
- * Code copies a description and a payment name into the reply as the model wrote them, so a run of
+ * Code copies a description and a payment name into the reply as the agent wrote them, so a run of
  * four or more digits there ("café 12000", "visa 4509") would put a figure in the record that no
- * rule vouches for. Refused, never repaired: the model is told and sends it again.
+ * rule vouches for. Refused, never repaired: the agent is told and sends it again.
  */
 function checkWords(values: Words, path: string): Issue[] {
   return (['description', 'payment'] as const).flatMap((field) => {

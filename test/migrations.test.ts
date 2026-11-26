@@ -28,20 +28,19 @@ async function broke(run: PromiseLike<unknown>): Promise<string> {
   throw new Error('the statement was accepted')
 }
 
-let n = 0
-/** A person, an address and the turn a version is made in. */
+let _n = 0
+/** A person and the turn a version is made in. */
 async function seed() {
-  n += 1
+  _n += 1
   const [account] = await sql<
     { id: number }[]
   >`INSERT INTO account DEFAULT VALUES RETURNING id::int AS id`
-  await sql`INSERT INTO account_address (account_id, channel, address) VALUES (${account?.id ?? 0}, 'whatsapp', ${`54911${n}`})`
   const accountId = account?.id ?? 0
   return { accountId, turn: () => newTurn(accountId) }
 }
 async function newTurn(accountId: number): Promise<number> {
   const [t] = await sql<{ id: number }[]>`
-    INSERT INTO turn (account_id, channel, label, reply) VALUES (${accountId}, 'whatsapp', 'log', '✓') RETURNING id::int AS id`
+    INSERT INTO turn (account_id, client) VALUES (${accountId}, 'test') RETURNING id::int AS id`
   return t?.id ?? 0
 }
 async function newMovement(
@@ -56,13 +55,6 @@ async function newMovement(
     RETURNING id::int AS id, entity_id::int AS entity_id`
   return { id: m?.id ?? 0, entityId: m?.entity_id ?? 0 }
 }
-async function newReminder(accountId: number, madeIn: number) {
-  const [r] = await sql<{ id: number }[]>`
-    INSERT INTO reminder (account_id, made_in, what, schedule, next_due_at)
-    VALUES (${accountId}, ${madeIn}, 'pagar la luz', ${sql.json({ kind: 'once' })}, now() + interval '1 day') RETURNING id::int AS id`
-  return r?.id ?? 0
-}
-
 describe('applying', () => {
   it('records every file once, and applying again changes nothing', async () => {
     const files = (await readdir(schemaDir)).filter((f) => f.endsWith('.sql')).sort()
@@ -82,7 +74,6 @@ describe('applying', () => {
     expect(tables.map((t) => t.name)).toEqual(
       [
         'account',
-        'account_address',
         'auth_account',
         'auth_jwks',
         'auth_oauth_access_token',
@@ -96,14 +87,9 @@ describe('applying', () => {
         'auth_user',
         'auth_verification',
         'fact',
-        'link_request',
         'mcp_request',
         'movement',
-        'reminder',
-        'reminder_send',
-        'reply',
         'turn',
-        'wa_message',
       ].sort(),
     )
     expect(tables.filter((t) => !t.comment).map((t) => t.name)).toEqual([])
@@ -114,7 +100,7 @@ describe('applying', () => {
       sql,
       publicUrl: 'https://example.test',
       secret: 'x'.repeat(40),
-      links: { spend: async () => null },
+      google: { clientId: 'x', clientSecret: 'x' },
     })
     const plan = await getMigrations(auth.options)
     expect(plan.toBeCreated.map((t) => t.table)).toEqual([])
@@ -123,29 +109,12 @@ describe('applying', () => {
   })
 })
 
-describe('accounts and addresses', () => {
-  it('refuses a second account claiming an address', async () => {
-    const { accountId } = await seed()
-    const [other] = await sql<
-      { id: number }[]
-    >`INSERT INTO account DEFAULT VALUES RETURNING id::int AS id`
-    const [taken] = await sql<
-      { address: string }[]
-    >`SELECT address FROM account_address WHERE account_id = ${accountId}`
-    expect(
-      await broke(
-        sql`INSERT INTO account_address (account_id, channel, address) VALUES (${other?.id ?? 0}, 'whatsapp', ${taken?.address ?? ''})`,
-      ),
-    ).toBe('account_address_one_owner')
-  })
-})
-
 describe('turn', () => {
   it('refuses a turn that undoes itself', async () => {
     const { accountId } = await seed()
     expect(
       await broke(
-        sql`INSERT INTO turn (id, account_id, channel, label, reply, undoes) VALUES (987654, ${accountId}, 'whatsapp', 'undo', 'x', 987654)`,
+        sql`INSERT INTO turn (id, account_id, client, undoes) VALUES (987654, ${accountId}, 'cli', 987654)`,
       ),
     ).toBe('turn_undoes_earlier')
   })
@@ -156,13 +125,13 @@ describe('turn', () => {
     const theirTurn = await theirs.turn()
     expect(
       await broke(
-        sql`INSERT INTO turn (account_id, channel, label, reply, undoes) VALUES (${mine.accountId}, 'whatsapp', 'undo', 'x', ${theirTurn})`,
+        sql`INSERT INTO turn (account_id, client, undoes) VALUES (${mine.accountId}, 'cli', ${theirTurn})`,
       ),
     ).toBe('turn_undoes_same_account')
     const first = await mine.turn()
     expect(
       await broke(
-        sql`INSERT INTO turn (id, account_id, channel, label, reply, undoes) VALUES (${first - 1}, ${mine.accountId}, 'whatsapp', 'undo', 'x', ${first})`,
+        sql`INSERT INTO turn (id, account_id, client, undoes) VALUES (${first - 1}, ${mine.accountId}, 'cli', ${first})`,
       ),
     ).toBe('turn_undoes_earlier')
   })
@@ -188,24 +157,22 @@ describe('turn', () => {
   it('refuses a second undo of the same turn', async () => {
     const s = await seed()
     const target = await s.turn()
-    await sql`INSERT INTO turn (account_id, channel, label, reply, undoes) VALUES (${s.accountId}, 'whatsapp', 'undo', 'x', ${target})`
+    await sql`INSERT INTO turn (account_id, client, undoes) VALUES (${s.accountId}, 'cli', ${target})`
     expect(
       await broke(
-        sql`INSERT INTO turn (account_id, channel, label, reply, undoes) VALUES (${s.accountId}, 'mcp', 'undo', 'x', ${target})`,
+        sql`INSERT INTO turn (account_id, client, undoes) VALUES (${s.accountId}, 'https://claude.ai/c.json', ${target})`,
       ),
     ).toBe('turn_undoes_once')
   })
 
-  it('refuses an unknown channel', async () => {
+  it('refuses a turn with no client', async () => {
     const { accountId } = await seed()
-    expect(
-      await broke(
-        sql`INSERT INTO turn (account_id, channel, label, reply) VALUES (${accountId}, 'telegram', 'log', 'x')`,
-      ),
-    ).toBe('turn_channel_known')
+    expect(await broke(sql`INSERT INTO turn (account_id, client) VALUES (${accountId}, '')`)).toBe(
+      'turn_client_not_empty',
+    )
   })
 
-  it('holds one answer per request id and refuses a second turn for the same message', async () => {
+  it('holds one answer per request id', async () => {
     const s = await seed()
     const t = await s.turn()
     await sql`INSERT INTO mcp_request (account_id, request_id, input_hash, turn_id, result) VALUES (${s.accountId}, 'r1', 'h', ${t}, '{}')`
@@ -214,15 +181,6 @@ describe('turn', () => {
         sql`INSERT INTO mcp_request (account_id, request_id, input_hash, turn_id, result) VALUES (${s.accountId}, 'r1', 'h', ${t}, '{}')`,
       ),
     ).toBe('mcp_request_pkey')
-    await sql`INSERT INTO wa_message (wamid, wa_id, kind, turn_id) VALUES ('w1', '1', 'text', ${t})`
-    expect(
-      await broke(
-        sql`INSERT INTO wa_message (wamid, wa_id, kind, turn_id) VALUES ('w2', '1', 'text', ${t})`,
-      ),
-    ).toBe('wa_message_turn_once')
-    expect(
-      await broke(sql`INSERT INTO wa_message (wamid, wa_id, kind) VALUES ('w1', '1', 'text')`),
-    ).toBe('wa_message_wamid_unique')
   })
 })
 
@@ -257,10 +215,6 @@ describe('versions', () => {
       INSERT INTO fact (account_id, made_in, kind, key, value) VALUES (${s.accountId}, ${t}, 'alias', 'visa', 'la del Galicia') RETURNING id::int AS id`
     expect(await broke(sql`UPDATE fact SET ended_at = now() WHERE id = ${f?.id ?? 0}`)).toBe(
       'fact_ended_pair',
-    )
-    const r = await newReminder(s.accountId, t)
-    expect(await broke(sql`UPDATE reminder SET ended_at = now() WHERE id = ${r}`)).toBe(
-      'reminder_ended_pair',
     )
   })
 
@@ -304,7 +258,7 @@ describe('the append-only guard', () => {
       { n: number }[]
     >`SELECT count(*)::int AS n FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
       WHERE t.tgname LIKE '%append_only' AND NOT t.tgisinternal AND c.relnamespace = current_schema()::regnamespace`
-    expect(row?.n).toBe(5)
+    expect(row?.n).toBe(4)
   })
 
   it('rejects an UPDATE of a value column', async () => {
@@ -325,18 +279,14 @@ describe('the append-only guard', () => {
     expect(await broke(sql`UPDATE fact SET value = 'el 6' WHERE id = ${f?.id ?? 0}`)).toMatch(
       /append-only/,
     )
-    const r = await newReminder(s.accountId, t)
-    expect(await broke(sql`UPDATE reminder SET what = 'otra cosa' WHERE id = ${r}`)).toMatch(
-      /append-only/,
-    )
-    expect(await broke(sql`UPDATE turn SET reply = 'x' WHERE id = ${t}`)).toMatch(/append-only/)
+    expect(await broke(sql`UPDATE turn SET record = 'x' WHERE id = ${t}`)).toMatch(/append-only/)
     await sql`INSERT INTO mcp_request (account_id, request_id, input_hash, turn_id, result) VALUES (${s.accountId}, 'r-guard', 'h', ${t}, '{}')`
     expect(
       await broke(sql`UPDATE mcp_request SET result = '{"a":1}' WHERE request_id = 'r-guard'`),
     ).toMatch(/append-only/)
   })
 
-  it('rejects a DELETE', async () => {
+  it('rejects a DELETE, from any statement', async () => {
     const s = await seed()
     const t = await s.turn()
     const m = await newMovement(s.accountId, t)
@@ -344,7 +294,7 @@ describe('the append-only guard', () => {
     expect(await broke(sql`DELETE FROM turn WHERE id = ${await s.turn()}`)).toMatch(/never deleted/)
   })
 
-  it('allows the ended pair, once, and next_due_at on a reminder', async () => {
+  it('allows the ended pair, once', async () => {
     const s = await seed()
     const t1 = await s.turn()
     const t2 = await s.turn()
@@ -358,29 +308,78 @@ describe('the append-only guard', () => {
       await broke(sql`UPDATE movement SET ended_in = NULL, ended_at = NULL WHERE id = ${m.id}`),
     ).toMatch(/does not change its ending/)
 
-    const r = await newReminder(s.accountId, t1)
-    await sql`UPDATE reminder SET next_due_at = now() + interval '2 days' WHERE id = ${r}`
-    await sql`UPDATE reminder SET next_due_at = NULL WHERE id = ${r}`
-    await sql`UPDATE reminder SET ended_in = ${t2}, ended_at = now() WHERE id = ${r}`
-    const [row] = await sql<
-      { ended: boolean; due: Date | null }[]
-    >`SELECT ended_at IS NOT NULL AS ended, next_due_at AS due FROM reminder WHERE id = ${r}`
-    expect(row).toEqual({ ended: true, due: null })
-    // The scheduler's state is for a version that can still fire: an ended one keeps its next occurrence as it was.
-    expect(await broke(sql`UPDATE reminder SET next_due_at = now() WHERE id = ${r}`)).toMatch(
-      /does not change its next occurrence/,
-    )
-
     const [f] = await sql<{ id: number }[]>`
       INSERT INTO fact (account_id, made_in, kind, key, value) VALUES (${s.accountId}, ${t1}, 'note', 'cobro2', 'el 5') RETURNING id::int AS id`
     await sql`UPDATE fact SET ended_in = ${t2}, ended_at = now() WHERE id = ${f?.id ?? 0}`
   })
+})
 
-  it('does not allow next_due_at on a movement or a fact', async () => {
-    // next_due_at is declared mutable state of the reminder only; the other tables have no such column to change.
-    const cols = await sql<{ table_name: string }[]>`
-      SELECT table_name FROM information_schema.columns WHERE table_schema = current_schema() AND column_name = 'next_due_at'`
-    expect(cols.map((c) => c.table_name)).toEqual(['reminder'])
+describe('erase_account: the one way out', () => {
+  async function filled(s: Awaited<ReturnType<typeof seed>>) {
+    const t = await s.turn()
+    const m = await newMovement(s.accountId, t)
+    await sql`INSERT INTO fact (account_id, made_in, kind, key, value) VALUES (${s.accountId}, ${t}, 'note', 'cobro', 'el 5')`
+    await sql`INSERT INTO mcp_request (account_id, request_id, input_hash, turn_id, result) VALUES (${s.accountId}, 'r1', 'h', ${t}, '{}')`
+    // A correction, so the account holds versions and an ended pair too.
+    const t2 = await s.turn()
+    await sql`UPDATE movement SET ended_in = ${t2}, ended_at = now() WHERE id = ${m.id}`
+    await sql`INSERT INTO movement (entity_id, account_id, made_in, direction, amount, currency, occurred_on, description, category, confidence)
+      VALUES (${m.entityId}, ${s.accountId}, ${t2}, 'out', 3800, 'ARS', '2026-11-20', 'café', 'restaurantes', 'high')`
+    await sql`INSERT INTO auth_user (name, email, "emailVerified", warren_account_id) VALUES ('x', ${`u${s.accountId}@example.test`}, true, ${s.accountId})`
+  }
+  const rows = (accountId: number) =>
+    sql<{ t: string; n: number }[]>`
+      SELECT 'account' AS t, count(*)::int AS n FROM account WHERE id = ${accountId}
+      UNION ALL SELECT 'turn', count(*)::int FROM turn WHERE account_id = ${accountId}
+      UNION ALL SELECT 'movement', count(*)::int FROM movement WHERE account_id = ${accountId}
+      UNION ALL SELECT 'fact', count(*)::int FROM fact WHERE account_id = ${accountId}
+      UNION ALL SELECT 'mcp_request', count(*)::int FROM mcp_request WHERE account_id = ${accountId}
+      UNION ALL SELECT 'auth_user', count(*)::int FROM auth_user WHERE warren_account_id = ${accountId}`
+
+  it('removes every row of that account, in one call, and not one of another', async () => {
+    const gone = await seed()
+    const kept = await seed()
+    await filled(gone)
+    await filled(kept)
+    await sql`SELECT erase_account(${gone.accountId})`
+    expect((await rows(gone.accountId)).map((r) => r.n)).toEqual([0, 0, 0, 0, 0, 0])
+    expect((await rows(kept.accountId)).map((r) => [r.t, r.n])).toEqual([
+      ['account', 1],
+      ['turn', 2],
+      ['movement', 2],
+      ['fact', 1],
+      ['mcp_request', 1],
+      ['auth_user', 1],
+    ])
+  })
+
+  it('leaves the guard shut afterwards: the same statements still fail outside it', async () => {
+    const s = await seed()
+    await filled(s)
+    await sql`SELECT erase_account(${s.accountId})`
+    const other = await seed()
+    await filled(other)
+    expect(await broke(sql`DELETE FROM movement WHERE account_id = ${other.accountId}`)).toMatch(
+      /never deleted/,
+    )
+    expect(await broke(sql`DELETE FROM fact WHERE account_id = ${other.accountId}`)).toMatch(
+      /never deleted/,
+    )
+    // A turn still holds versions and requests, so the database refuses it for that before the guard is asked.
+    await broke(sql`DELETE FROM turn WHERE account_id = ${other.accountId}`)
+    expect((await rows(other.accountId)).find((r) => r.t === 'turn')?.n).toBe(2)
+  })
+
+  it('does not let a transaction that names one account delete another’s rows', async () => {
+    const mine = await seed()
+    const theirs = await seed()
+    await filled(theirs)
+    const run = sql.begin(async (tx) => {
+      await tx`SELECT set_config('warren.erasing', ${String(mine.accountId)}, true)`
+      await tx`DELETE FROM movement WHERE account_id = ${theirs.accountId}`
+    })
+    expect(await broke(run)).toMatch(/never deleted/)
+    expect((await rows(theirs.accountId)).find((r) => r.t === 'movement')?.n).toBe(2)
   })
 })
 
@@ -391,5 +390,24 @@ describe('the platform', () => {
     >`SELECT version() AS v, scale(1.25)::int AS scale`
     expect(v?.scale).toBe(2)
     expect(v?.v).toMatch(realPostgres ? /PostgreSQL 17/ : /PostgreSQL/)
+  })
+})
+
+describe('a database made by the old schema', () => {
+  it('is refused at start, not served: the files are skipped by name, so the shape is checked', async () => {
+    const old = await createTestDatabase({ migrations: false })
+    try {
+      await old.sql`CREATE TABLE schema_migration (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`
+      await old.sql`INSERT INTO schema_migration (name) VALUES ('001_init.sql'), ('002_auth.sql')`
+      await old.sql`CREATE TABLE turn (id bigserial PRIMARY KEY, channel text NOT NULL)`
+      await old.sql`CREATE TABLE wa_message (id bigserial PRIMARY KEY)`
+      await expect(migrate(old.sql, schemaDir)).rejects.toThrow(/old WhatsApp schema/)
+    } finally {
+      await old.close()
+    }
+  })
+
+  it('and a fresh one passes, every start', async () => {
+    await expect(migrate(sql, schemaDir)).resolves.toBeUndefined()
   })
 })
